@@ -375,6 +375,7 @@ impl AutomationEngine {
         // Once, after the rules are known: an issued-but-unconfirmed write made by a
         // rule that still drives the channel needs no recovery (the rule will settle it
         // by writing again), and that question cannot be answered before the rules load.
+        self.flush_control_state();
         if !self.inner.recovered.swap(true, Ordering::SeqCst)
             && let Err(error) = self.recover_control_state()
         {
@@ -436,11 +437,10 @@ impl AutomationEngine {
             let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
         }
         // Last chance to record what is still owed before the process goes away.
-        if self.inner.dirty.load(Ordering::SeqCst)
-            || !self.inner.handovers.lock().unresolved().is_empty()
-        {
-            let _ = self.persist_control_state();
+        if !self.inner.handovers.lock().unresolved().is_empty() {
+            self.inner.dirty.store(true, Ordering::SeqCst);
         }
+        self.flush_control_state();
         self.inner
             .runtime
             .publish_automation(None, "engine_stopped", "automation loop stopped");
@@ -909,9 +909,7 @@ impl AutomationEngine {
 
         // Anything the tick changed about unresolved control responsibility goes to
         // disk here, so a crash after this point loses nothing that was known.
-        if self.inner.dirty.load(Ordering::SeqCst) {
-            let _ = self.persist_control_state();
-        }
+        self.flush_control_state();
         outcomes
     }
 
@@ -1040,7 +1038,7 @@ impl AutomationEngine {
                         // write an empty record and then mark the books clean.
                         self.remember(&rule.id, state.clone());
                         self.inner.dirty.store(true, Ordering::SeqCst);
-                        let _ = self.persist_control_state();
+                        self.flush_control_state();
                         state.last_message = format!(
                             "{} — accepted {:.0} % but not confirmed: {}",
                             evaluation.message,
@@ -1161,7 +1159,7 @@ impl AutomationEngine {
         // state before it can be written down.
         self.remember(&rule.id, state.clone());
         self.inner.dirty.store(true, Ordering::SeqCst);
-        let _ = self.persist_control_state();
+        self.flush_control_state();
         self.inner.runtime.publish_automation(
             Some(rule.id.clone()),
             "rule_error",
@@ -1392,6 +1390,18 @@ impl AutomationEngine {
             }
         }
         result
+    }
+
+    /// Write the record if anything changed since the last write.
+    ///
+    /// One place, called from every path that can change what is owed — a rule edit, a
+    /// deletion, a reload, a tick, shutdown — because the alternative is a list of call
+    /// sites to keep in step, and one that gets forgotten is a responsibility that dies
+    /// with the process.
+    fn flush_control_state(&self) {
+        if self.inner.dirty.load(Ordering::SeqCst) {
+            let _ = self.persist_control_state();
+        }
     }
 
     /// Why the last attempt to record control responsibility failed, if it did.
@@ -1904,7 +1914,7 @@ impl AutomationEngine {
             // The queue changed; write it down now rather than at the end of a tick
             // that may never come. A failure is reported by `persist_control_state`
             // and surfaced through `persistence_error`.
-            let _ = self.persist_control_state();
+            self.flush_control_state();
         }
 
         // 2. Drop the memory that no longer describes this rule.
@@ -1969,6 +1979,11 @@ impl AutomationEngine {
             tick,
             ohm_core::now_ms(),
         );
+        // Queueing *is* the change that has to be recorded, so the book is marked dirty
+        // here rather than at each call site: a path that queues a handover and forgets
+        // to mark it — a rule file that vanished on reload, say — would lose the
+        // responsibility if the process died before the next tick.
+        self.inner.dirty.store(true, Ordering::SeqCst);
     }
 
     /// Validate and persist a rule, then make it live.
@@ -2052,8 +2067,8 @@ impl AutomationEngine {
         self.inner.states.lock().remove(&rule_id);
         if held.is_some() {
             self.hand_over(rule_id.clone(), held, None, "was deleted");
-            let _ = self.persist_control_state();
         }
+        self.flush_control_state();
         // Deleting the winner may have freed the target another rule wants.
         self.refresh_conflicts_for_active_set();
         if existed || file_removed {

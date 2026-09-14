@@ -208,6 +208,39 @@ async fn an_unconfirmed_write_is_a_recoverable_responsibility() {
     let _ = runtime2.shutdown().await;
 }
 
+/// The responsibility must be on disk as soon as it exists — including when it is
+/// created by a reload rather than by an edit through the app.
+#[tokio::test]
+async fn a_handover_queued_by_a_reload_is_recorded_immediately() {
+    let (temp, runtime, engine, rig) = rig_session().await;
+    let paths = ConfigPaths::from_root(temp.path());
+
+    engine.save_rule(flat("r1", RIG0, PERCENT, 55.0)).unwrap();
+    tick(&runtime, &engine).await;
+    assert_eq!(rig.held(RIG0, PERCENT), 55.0);
+
+    // The rule file disappears while the app is running, and the reload notices.
+    std::fs::remove_file(paths.rules_dir().join("r1.yaml")).unwrap();
+    engine.load_rules().unwrap();
+
+    // No tick has happened since: the process could die right now, so the record has to
+    // be on disk already.
+    let store = ohm_automation::RecoveryStore::from_paths(&paths);
+    let record = store
+        .load()
+        .expect("the record is readable")
+        .expect("the record exists");
+    assert_eq!(
+        record.handovers.len(),
+        1,
+        "a reload that queues a handover must record it at once: {record:?}"
+    );
+    assert_eq!(record.handovers[0].device.as_str(), RIG0);
+
+    engine.stop().await;
+    let _ = runtime.shutdown().await;
+}
+
 /// A rule that still drives the channel will settle its own unknown write by writing
 /// again — so nothing is recovered for it, and nothing is written behind its back.
 #[tokio::test]
