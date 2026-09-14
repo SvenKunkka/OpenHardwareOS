@@ -20,7 +20,10 @@ import type { HandoverReport, HandoverState } from '../types';
 export const HANDOVER_STATE_TONE: Record<HandoverState, Tone> = {
   // Queued, still being retried, and not confirmed yet.
   pending: 'warn',
-  // Out of attempts: still owed, and now it needs a human.
+  // A rule claims the channel but has not driven it, so nobody is protecting it and
+  // the runtime is deliberately not writing under the claimant either.
+  awaiting_owner: 'warn',
+  // Out of attempts, or waiting for ever: still owed, and now it needs a human.
   failed: 'danger',
   confirmed: 'ok',
   superseded: 'neutral',
@@ -31,6 +34,8 @@ export function handoverStateLabel(state: HandoverState): string {
   switch (state) {
     case 'pending':
       return 'pending';
+    case 'awaiting_owner':
+      return 'waiting for its new owner';
     case 'failed':
       return 'failed';
     case 'confirmed':
@@ -45,8 +50,10 @@ export function handoverStateHint(state: HandoverState): string {
   switch (state) {
     case 'pending':
       return 'The runtime is still trying to hand this channel to the fail-safe duty. Until that is confirmed the channel is not known to be protected.';
+    case 'awaiting_owner':
+      return 'A rule targets this channel but has not driven it, so the runtime is not writing under it — the channel is not known to be protected. It will be handed over as soon as that rule takes control, gives the channel up, or the wait runs out.';
     case 'failed':
-      return 'Every attempt to hand this channel to the fail-safe duty failed, and the runtime has stopped retrying it. This channel needs you to act: retry the handover, or fix the reason the write failed.';
+      return 'Every attempt to hand this channel to the fail-safe duty failed — or the rule that claimed it never took control — and the runtime has stopped retrying. This channel needs you to act: fix or disable the rule named here, then retry the handover.';
     case 'confirmed':
       return 'The fail-safe duty was written and the device confirmed it, so this channel is protected.';
     case 'superseded':
@@ -58,12 +65,23 @@ export function handoverStateHint(state: HandoverState): string {
 export function handoverIsOwed(state: HandoverState): boolean {
   switch (state) {
     case 'pending':
+    case 'awaiting_owner':
     case 'failed':
       return true;
     case 'confirmed':
     case 'superseded':
       return false;
   }
+}
+
+/**
+ * The sentence for a handover that is waiting on a claimant: who claims the channel,
+ * for how long, and the fact that the channel is unprotected meanwhile.
+ */
+export function handoverOwnerNote(report: HandoverReport): string | undefined {
+  if (report.state !== 'awaiting_owner') return undefined;
+  const who = report.claimant ? `\`${report.claimant}\`` : 'another rule';
+  return `${who} targets this channel but has not driven it (${report.claimed_ticks} tick(s) waiting), so the runtime is not writing under it: the channel is not known to be protected.`;
 }
 
 /** `device/capability`, the channel the handover is about. */

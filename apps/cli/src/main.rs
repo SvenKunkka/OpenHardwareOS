@@ -782,6 +782,16 @@ fn describe_handover(report: &ohm_automation::HandoverReport) -> Vec<String> {
              `ohm-cli handovers --retry`",
             report.attempts
         )),
+        ohm_automation::HandoverState::AwaitingOwner => lines.push(format!(
+            "      state  : claimed by `{}`, which has not driven it ({} tick(s) waiting) — the \
+             channel is not protected while this lasts",
+            report
+                .claimant
+                .as_ref()
+                .map(ohm_core::RuleId::as_str)
+                .unwrap_or("another rule"),
+            report.claimed_ticks
+        )),
         ohm_automation::HandoverState::Confirmed => {}
         ohm_automation::HandoverState::Superseded => {}
     }
@@ -1025,6 +1035,8 @@ mod tests {
             last_attempt_ms: 2,
             confirmed_value: None,
             superseded_by: None,
+            claimant: None,
+            claimed_ticks: 0,
         };
         let text = describe_handover(&report).join("\n");
         assert!(text.contains("fan.mock.0/fan.speed_percent"), "{text}");
@@ -1056,6 +1068,36 @@ mod tests {
         assert!(
             !text.contains("retrying stopped"),
             "a pending handover is still being worked on: {text}"
+        );
+    }
+
+    /// A handover waiting for a claimant to take control is not settled, and the text
+    /// must say who it is waiting for.
+    #[test]
+    fn a_handover_waiting_for_its_claimant_says_so() {
+        let report = ohm_automation::HandoverReport {
+            device: ohm_core::DeviceId::new("fan.mock.0").unwrap(),
+            capability: ohm_core::CapabilityId::new("fan.speed_percent").unwrap(),
+            from_rule: ohm_core::RuleId::new("old-rule").unwrap(),
+            reason: "rule `old-rule` was retargeted".into(),
+            state: ohm_automation::HandoverState::AwaitingOwner,
+            attempts: 1,
+            first_error: None,
+            last_error: None,
+            queued_at_ms: 1,
+            last_attempt_ms: 1,
+            confirmed_value: None,
+            superseded_by: None,
+            claimant: Some(ohm_core::RuleId::new("r2").unwrap()),
+            claimed_ticks: 7,
+        };
+        let text = describe_handover(&report).join("\n");
+        assert!(text.contains("awaiting_owner"), "{text}");
+        assert!(text.contains("r2"), "the claimant must be named: {text}");
+        assert!(text.contains('7'), "and how long it has waited: {text}");
+        assert!(
+            text.contains("not protected"),
+            "and that the channel is unprotected meanwhile: {text}"
         );
     }
 

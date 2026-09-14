@@ -738,6 +738,8 @@ fallback:
             last_attempt_ms: 20,
             confirmed_value: None,
             superseded_by: None,
+            claimant: None,
+            claimed_ticks: 0,
         };
         let json = serde_json::to_value(&owed).unwrap();
         // `serde_json::Value` orders keys, so compare as a set.
@@ -751,6 +753,7 @@ fallback:
         let mut expected = vec![
             "attempts",
             "capability",
+            "claimed_ticks",
             "device",
             "from_rule",
             "last_attempt_ms",

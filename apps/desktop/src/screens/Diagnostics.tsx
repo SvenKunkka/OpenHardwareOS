@@ -19,6 +19,7 @@ import { describeWriteReport } from '../lib/writeStatus';
 import {
   handoverChannel,
   handoverErrors,
+  handoverOwnerNote,
   handoverIsOwed,
   handoverStateHint,
 } from '../lib/handovers';
@@ -456,6 +457,7 @@ function HandoversPanel({
           <div className="stack" style={{ marginTop: 'var(--space-4)' }}>
             {owed.map((report) => {
               const { cause, latest } = handoverErrors(report);
+              const ownerNote = handoverOwnerNote(report);
               return (
                 <div
                   className="stack stack--tight"
@@ -494,6 +496,14 @@ function HandoversPanel({
                   {latest ? (
                     <p className="small muted" data-testid="handover-latest">
                       <span className="dim">Latest attempt</span> {latest}
+                    </p>
+                  ) : null}
+                  {ownerNote ? (
+                    // A claimed channel that nobody drives is the case where the UI
+                    // could most easily look reassuring: it has an owner, and yet
+                    // nothing is protecting it.
+                    <p className="small" data-testid="handover-claimant">
+                      <span className="dim">Claimed</span> {ownerNote}
                     </p>
                   ) : null}
                   <p

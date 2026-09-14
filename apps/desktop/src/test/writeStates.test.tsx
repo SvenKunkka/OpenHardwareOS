@@ -424,6 +424,46 @@ describe('the channel handovers on Diagnostics', () => {
     expect(screen.queryByRole('button', { name: /Retry failed handovers/ })).toBeNull();
   });
 
+  it('shows a channel claimed but never driven as owed, naming the claimant', async () => {
+    // The case that looked reassuring and was not: a rule targets the channel, so it
+    // has an "owner", but it has never written to it — the runtime deliberately does
+    // not write under a rule that owns the channel, so nothing is protecting it.
+    ipcMock().api.ruleHandovers.mockResolvedValue([
+      handoverFixture({
+        state: 'awaiting_owner',
+        attempts: 1,
+        claimant: 'rule-gpu-fan-b',
+        claimed_ticks: 7,
+        first_error: undefined,
+        last_error: undefined,
+        reason:
+          'fan.mock.0/fan.speed_percent is claimed by rule `rule-gpu-fan-b` (last status: fallback) but not driven by it',
+      }),
+    ]);
+
+    renderWithProviders(<Diagnostics onOpenSettings={() => undefined} />);
+
+    const row = await screen.findByTestId('handover');
+    expect(row.getAttribute('data-state')).toBe('awaiting_owner');
+    const badge = within(row).getByText('waiting for its new owner');
+    expect(badge.className).toContain('badge--warn');
+    expect(badge.className).not.toContain('badge--ok');
+    // The claimant and how long it has been waiting are on the screen, not just in
+    // the log: "someone else has it" is only reassuring if you can see who.
+    const note = within(row).getByTestId('handover-claimant');
+    expect(note.textContent).toContain('rule-gpu-fan-b');
+    expect(note.textContent).toContain('7');
+    expect(note.textContent).toMatch(/not known to be protected/i);
+    expect(within(row).getByTestId('handover-state-note').textContent).toMatch(
+      /not known to be protected/i,
+    );
+    // It is owed work, so it is listed as such and counted.
+    expect(screen.getByText('Channel handovers (1 owed)')).toBeTruthy();
+    // A waiting handover has not failed, so the retry control is not offered for it.
+    expect(screen.queryByRole('button', { name: /Retry failed handovers/ })).toBeNull();
+    expect(screen.queryByTestId('handover-resolved')).toBeNull();
+  });
+
   it('files a resolved handover as history, never as owed work', async () => {
     ipcMock().api.ruleHandovers.mockResolvedValue([
       handoverFixture({

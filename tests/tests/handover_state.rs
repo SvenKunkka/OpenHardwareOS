@@ -307,28 +307,52 @@ async fn a_superseded_handover_names_the_rule_that_took_over() {
     engine.save_rule(successor).unwrap();
     engine.save_rule(flat("r1", RIG1, PERCENT, 55.0)).unwrap();
     engine.set_rule_enabled("r2", true).unwrap();
+    // The first tick: the handover is considered *before* the rules run, and at that
+    // moment the new owner has not driven the channel yet — so it is not resolved.
+    // The owner then runs and writes.
     tick(&engine).await;
-
     assert_eq!(
         rig.held(RIG0, PERCENT),
         40.0,
         "the new owner decides the value"
     );
+    let waiting = engine
+        .handovers()
+        .into_iter()
+        .find(|report| report.device.as_str() == RIG0)
+        .expect("the handover is still on record");
+    assert!(
+        waiting.state.is_unresolved(),
+        "a declared target is not a takeover until the owner has driven the channel: {}",
+        waiting.summary()
+    );
+
+    // The second tick sees the confirmed write, which *is* the evidence.
+    tick(&engine).await;
     let report = engine
         .handovers()
         .into_iter()
         .find(|report| report.device.as_str() == RIG0)
-        .expect("the dropped handover is still on record");
+        .expect("the resolved handover is still on record");
     assert_eq!(report.state, HandoverState::Superseded);
     assert_eq!(
         report.superseded_by.as_ref().map(|rule| rule.as_str()),
         Some("r2")
     );
-    assert_eq!(report.attempts, 0, "and nothing was written");
+    assert_eq!(
+        report.attempts, 0,
+        "and the fail-safe duty was never written onto the owner's channel"
+    );
     assert!(
         report.summary().contains("r2"),
         "the summary must name the owner: {}",
         report.summary()
+    );
+    assert_eq!(
+        rig.held(RIG0, PERCENT),
+        40.0,
+        "the owner's value survives: {:?}",
+        rig.requested(RIG0, PERCENT)
     );
 }
 

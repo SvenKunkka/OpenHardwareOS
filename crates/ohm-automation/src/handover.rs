@@ -35,6 +35,16 @@ pub const HANDOVER_RETRY_TICKS: u64 = 5;
 /// `AutomationEngine::retry_failed_handovers` is the documented way to re-arm it.
 pub const MAX_HANDOVER_ATTEMPTS: u32 = 5;
 
+/// How long a channel may stay claimed-but-uncontrolled before the handover is
+/// reported as failed rather than waiting silently.
+///
+/// A rule that targets a channel but never drives it — its sensor is gone and its
+/// fallback is `hold`, its writes are refused — leaves the channel exactly as
+/// unprotected as no owner at all. Waiting is right for a while (the rule may be one
+/// tick away from taking over, and writing under it would fight the rule that owns
+/// the channel); waiting for ever is not, because nothing would ever tell the user.
+pub const HANDOVER_OWNER_WAIT_TICKS: u64 = 50;
+
 /// How many finished handovers are kept for inspection.
 const HISTORY_LIMIT: usize = 32;
 
@@ -44,6 +54,14 @@ const HISTORY_LIMIT: usize = 32;
 pub enum HandoverState {
     /// Queued, and not yet confirmed. It is retried on a bounded cadence.
     Pending,
+    /// An enabled rule targets this channel but has not taken control of it — it has
+    /// produced no output, or its writes are unconfirmed or refused. The engine
+    /// deliberately does **not** write the fail-safe duty while a rule claims the
+    /// channel (that would fight the rule and leave the hardware and the display
+    /// disagreeing), but naming a channel is not driving it: the responsibility stays
+    /// on the record, with the claimant named, until it is either taken over for real
+    /// or the claim disappears.
+    AwaitingOwner,
     /// The fail-safe duty was written and confirmed by the device.
     Confirmed,
     /// The attempt budget is spent. The record stays, and a user action re-arms it.
@@ -57,6 +75,7 @@ impl HandoverState {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Pending => "pending",
+            Self::AwaitingOwner => "awaiting_owner",
             Self::Confirmed => "confirmed",
             Self::Failed => "failed",
             Self::Superseded => "superseded",
@@ -69,7 +88,7 @@ impl HandoverState {
     /// abandoned curve last said — so it stays in front of the user rather than being
     /// filed away with the successes.
     pub fn is_unresolved(&self) -> bool {
-        matches!(self, Self::Pending | Self::Failed)
+        matches!(self, Self::Pending | Self::AwaitingOwner | Self::Failed)
     }
 
     /// Settled: either the fail-safe duty was confirmed, or another rule owns the
@@ -119,6 +138,13 @@ pub struct HandoverReport {
     /// The rule that took the channel over, when that is why it was superseded.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub superseded_by: Option<RuleId>,
+    /// The enabled rule that targets the channel without driving it, when that is
+    /// what the handover is waiting for. Visible on purpose: "someone else has it" is
+    /// only reassuring if you can see who, and that they are actually driving.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub claimant: Option<RuleId>,
+    /// Ticks spent waiting for that claimant to take control.
+    pub claimed_ticks: u64,
 }
 
 impl HandoverReport {
@@ -143,8 +169,15 @@ impl HandoverReport {
                 self.first_error.as_deref().unwrap_or("no reason recorded")
             ),
             HandoverState::Superseded => match &self.superseded_by {
-                Some(rule) => format!("{base} — {rule} owns it now"),
+                Some(rule) => format!("{base} — {rule} took it over"),
                 None => format!("{base} — the channel has an owner again"),
+            },
+            HandoverState::AwaitingOwner => match &self.claimant {
+                Some(rule) => format!(
+                    "{base} — claimed by {rule}, which has not driven it ({} tick(s) waiting)",
+                    self.claimed_ticks
+                ),
+                None => format!("{base} — waiting for its new owner to take control"),
             },
         }
     }
@@ -165,6 +198,14 @@ pub(crate) struct Handover {
     pub last_attempt_ms: i64,
     pub confirmed_value: Option<f64>,
     pub superseded_by: Option<RuleId>,
+    /// The rule currently claiming the channel without driving it.
+    pub claimant: Option<RuleId>,
+    /// Ticks spent in [`HandoverState::AwaitingOwner`].
+    pub claimed_ticks: u64,
+    /// `true` when the handover was parked *because* a claimant never took control,
+    /// as opposed to failing on its own write. Such a handover resumes by itself once
+    /// the claim disappears: the reason it was parked is gone.
+    pub parked_by_claim: bool,
     /// The first tick on which this handover may be attempted.
     next_attempt_tick: u64,
 }
@@ -184,6 +225,8 @@ impl Handover {
             last_attempt_ms: self.last_attempt_ms,
             confirmed_value: self.confirmed_value,
             superseded_by: self.superseded_by.clone(),
+            claimant: self.claimant.clone(),
+            claimed_ticks: self.claimed_ticks,
         }
     }
 }
@@ -235,12 +278,11 @@ impl HandoverBook {
             last_attempt_ms: 0,
             confirmed_value: None,
             superseded_by: None,
+            claimant: None,
+            claimed_ticks: 0,
+            parked_by_claim: false,
             next_attempt_tick: tick,
         });
-    }
-
-    pub fn open(&self) -> &[Handover] {
-        &self.open
     }
 
     /// Handovers still owed: pending ones, and parked ones waiting for a re-arm.
@@ -255,6 +297,107 @@ impl HandoverBook {
             .chain(self.history.iter())
             .map(Handover::report)
             .collect()
+    }
+
+    /// Every unresolved handover: pending, awaiting an owner that never took control,
+    /// and parked.
+    pub fn unresolved(&self) -> &[Handover] {
+        &self.open
+    }
+
+    /// Record that the channel is claimed by a rule that has not taken control of it.
+    /// Returns how many ticks it has now been waiting. Writes nothing.
+    pub fn mark_awaiting(
+        &mut self,
+        device: &DeviceId,
+        capability: &CapabilityId,
+        claimant: &RuleId,
+        reason: String,
+    ) -> u64 {
+        let Some(index) = self
+            .open
+            .iter()
+            .position(|item| &item.device == device && &item.capability == capability)
+        else {
+            return 0;
+        };
+        let item = &mut self.open[index];
+        // Only a pending handover starts waiting; one that is already waiting keeps
+        // counting, and a parked (failed) one is not un-parked by a claim appearing.
+        if item.state == HandoverState::Pending {
+            item.state = HandoverState::AwaitingOwner;
+            item.claimed_ticks = 0;
+        }
+        if item.state == HandoverState::AwaitingOwner {
+            item.claimed_ticks = item.claimed_ticks.saturating_add(1);
+            item.claimant = Some(claimant.clone());
+            item.reason = reason;
+        }
+        item.claimed_ticks
+    }
+
+    /// The claim went unmet for too long: park the handover as failed, while keeping
+    /// it on the record, and remember *why* it was parked.
+    pub fn park_unmet_claim(
+        &mut self,
+        device: &DeviceId,
+        capability: &CapabilityId,
+        reason: String,
+    ) -> bool {
+        let Some(index) = self
+            .open
+            .iter()
+            .position(|item| &item.device == device && &item.capability == capability)
+        else {
+            return false;
+        };
+        let item = &mut self.open[index];
+        if item.state != HandoverState::AwaitingOwner {
+            return false;
+        }
+        item.state = HandoverState::Failed;
+        item.parked_by_claim = true;
+        item.reason = reason;
+        if item.first_error.is_none() {
+            item.first_error = Some(format!(
+                "the rule that claimed this channel never took control of it ({} tick(s))",
+                item.claimed_ticks
+            ));
+        }
+        item.last_error = item.first_error.clone();
+        true
+    }
+
+    /// The claim is gone. A handover parked *because of* that claim resumes by itself
+    /// — the reason it stopped no longer exists — and comes back as pending.
+    pub fn release_claim(
+        &mut self,
+        device: &DeviceId,
+        capability: &CapabilityId,
+        tick: u64,
+    ) -> bool {
+        let Some(index) = self
+            .open
+            .iter()
+            .position(|item| &item.device == device && &item.capability == capability)
+        else {
+            return false;
+        };
+        let item = &mut self.open[index];
+        let was_awaiting = item.state == HandoverState::AwaitingOwner;
+        let was_claim_parked = item.state == HandoverState::Failed && item.parked_by_claim;
+        if !was_awaiting && !was_claim_parked {
+            return false;
+        }
+        item.state = HandoverState::Pending;
+        item.claimant = None;
+        item.claimed_ticks = 0;
+        item.parked_by_claim = false;
+        // A resumed handover gets a fresh budget: the previous attempts were not
+        // failures of the channel, they were the channel being left alone.
+        item.attempts = 0;
+        item.next_attempt_tick = tick;
+        true
     }
 
     /// Is this channel due an attempt?
@@ -428,7 +571,7 @@ mod tests {
         );
 
         assert_eq!(book.open_count(), 1, "one channel is one unfinished job");
-        let item = &book.open()[0];
+        let item = &book.unresolved()[0];
         assert_eq!(
             item.attempts, 1,
             "an edit must not buy the channel more writes"

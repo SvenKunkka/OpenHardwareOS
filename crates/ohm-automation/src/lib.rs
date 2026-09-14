@@ -81,7 +81,10 @@ pub use engine::{
 pub use evaluator::{
     ControlHold, Evaluation, EvaluationInput, RuleOutcome, RuleState, RuleStatus, evaluate,
 };
-pub use handover::{HANDOVER_RETRY_TICKS, HandoverReport, HandoverState, MAX_HANDOVER_ATTEMPTS};
+pub use handover::{
+    HANDOVER_OWNER_WAIT_TICKS, HANDOVER_RETRY_TICKS, HandoverReport, HandoverState,
+    MAX_HANDOVER_ATTEMPTS,
+};
 pub use rule::{
     Aggregate, Comparator, Condition, DEFAULT_DEADBAND, DEFAULT_HYSTERESIS,
     DEFAULT_UPDATE_INTERVAL_MS, Fallback, FallbackAction, MIN_UPDATE_INTERVAL_MS, OtherwiseAction,

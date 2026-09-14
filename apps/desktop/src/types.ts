@@ -440,7 +440,12 @@ export interface RuleFileNote {
  * the abandoned rule last said, and the fail-safe duty is not confirmed in
  * force. `confirmed` and `superseded` are settled.
  */
-export type HandoverState = 'pending' | 'confirmed' | 'failed' | 'superseded';
+export type HandoverState =
+  | 'pending'
+  | 'awaiting_owner'
+  | 'confirmed'
+  | 'failed'
+  | 'superseded';
 
 /**
  * One channel a rule left behind, as the runtime handed (or tried to hand) it to
@@ -466,6 +471,14 @@ export interface HandoverReport {
   confirmed_value?: number;
   /** The rule that owns the channel now, when that is why it was superseded. */
   superseded_by?: string;
+  /**
+   * The enabled rule that targets the channel without driving it, when that is what
+   * the handover is waiting for. A declared target is not a takeover, so the channel
+   * is still owed the fail-safe duty while this is set.
+   */
+  claimant?: string;
+  /** How many ticks have been spent waiting for that claimant to take control. */
+  claimed_ticks: number;
 }
 
 export interface CapabilityRef {

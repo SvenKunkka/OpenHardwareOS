@@ -273,6 +273,9 @@ struct ChannelLog {
 pub struct Rig {
     channels: parking_lot::Mutex<HashMap<String, ChannelLog>>,
     behaviour: parking_lot::Mutex<HashMap<String, Behaviour>>,
+    /// `device/capability` pairs that report as unavailable, like an unplugged probe
+    /// or a sensor the driver stopped answering for.
+    unavailable: parking_lot::Mutex<std::collections::HashSet<String>>,
 }
 
 impl Rig {
@@ -280,7 +283,23 @@ impl Rig {
         Arc::new(Self {
             channels: parking_lot::Mutex::new(HashMap::new()),
             behaviour: parking_lot::Mutex::new(HashMap::new()),
+            unavailable: parking_lot::Mutex::new(std::collections::HashSet::new()),
         })
+    }
+
+    /// Make a reading unavailable (a disconnected probe, a sensor that stopped
+    /// answering). Used to exercise what a rule does when it cannot see its source.
+    pub fn set_reading_unavailable(&self, device: &str, capability: &str) {
+        self.unavailable
+            .lock()
+            .insert(Self::key(device, capability));
+    }
+
+    /// The sensor answers again.
+    pub fn set_reading_available(&self, device: &str, capability: &str) {
+        self.unavailable
+            .lock()
+            .remove(&Self::key(device, capability));
     }
 
     pub fn key(device: &str, capability: &str) -> String {
@@ -393,8 +412,17 @@ impl HardwareAdapter for Rig {
     }
 
     async fn read_state(&self, device: &Device) -> ohm_core::Result<DeviceState> {
-        let mut state = DeviceState::new(device.id.clone(), ohm_core::now_ms())
-            .with_reading(Reading::ok("temperature.core", 50.0));
+        let mut state = DeviceState::new(device.id.clone(), ohm_core::now_ms());
+        let sensor = Self::key(device.id.as_str(), "temperature.core");
+        if self.unavailable.lock().contains(&sensor) {
+            state = state.with_reading(Reading::unavailable(
+                "temperature.core",
+                ohm_device_model::UnavailableReason::ReadError,
+                Some("the probe stopped answering".into()),
+            ));
+        } else {
+            state = state.with_reading(Reading::ok("temperature.core", 50.0));
+        }
         for capability in &device.capabilities {
             if capability.kind == ohm_device_model::CapabilityKind::Actuator {
                 state = state.with_reading(Reading::ok(

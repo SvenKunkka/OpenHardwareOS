@@ -438,29 +438,37 @@ impl AutomationEngine {
     ///   the user — instead of dropping it.
     async fn perform_pending_handovers(&self, tick: u64, now: i64) {
         let duty = self.inner.runtime.settings().safety.fail_safe_duty_percent;
+        // Unresolved handovers only: pending, waiting for a claimant, and parked.
+        // Resolved ones have been filed away and must never be revisited.
         let pending: Vec<crate::handover::Handover> = self
             .inner
             .handovers
             .lock()
-            .open()
+            .unresolved()
             .iter()
-            .filter(|item| item.state.is_attemptable())
+            .filter(|item| item.state.is_unresolved())
             .cloned()
             .collect();
 
         for handover in pending {
-            // 1. Does the channel have an owner again? Then it is not ours to touch.
-            if let Some(owner) = self.owner_of(&handover.device, &handover.capability) {
-                let superseded = self.inner.handovers.lock().supersede(
-                    &handover.device,
-                    &handover.capability,
-                    Some(owner.clone()),
-                );
+            let device = &handover.device;
+            let capability = &handover.capability;
+
+            // 1. Has an enabled rule *taken the channel over*? That means it has
+            //    driven it and the device confirmed the value — naming the channel as
+            //    a target is not evidence, and treating it as evidence is how a
+            //    channel ends up abandoned at an old duty while nobody notices.
+            if let Some(owner) = self.confirmed_owner_of(device, capability) {
+                let superseded =
+                    self.inner
+                        .handovers
+                        .lock()
+                        .supersede(device, capability, Some(owner.clone()));
                 if superseded {
                     let message = format!(
-                        "{}/{} is driven by {owner} again; the handover queued by {} was dropped \
-                         without a write",
-                        handover.device, handover.capability, handover.from_rule
+                        "{device}/{capability} was taken over by {owner}, which has confirmed a write \
+                         to it; the handover queued by {} is closed",
+                        handover.from_rule
                     );
                     self.inner.runtime.publish_automation(
                         Some(handover.from_rule.clone()),
@@ -472,17 +480,84 @@ impl AutomationEngine {
                 continue;
             }
 
-            // 2. Is this attempt due? A retry may not happen on the very next tick.
-            if !self
-                .inner
-                .handovers
-                .lock()
-                .is_due(&handover.device, &handover.capability, tick)
-            {
+            // 2. Is the channel *claimed* by an enabled rule that has not driven it?
+            //    Do not write — that would fight the rule that owns the channel and
+            //    leave the hardware disagreeing with what the rule reports — but do not
+            //    pretend the channel is safe either. Keep it owed, name the claimant,
+            //    and let the wait be bounded.
+            if let Some(claimant) = self.claimant_of(device, capability) {
+                let status = self
+                    .owner_status(&claimant)
+                    .unwrap_or_else(|| "not evaluated yet".to_string());
+                let reason = format!(
+                    "{device}/{capability} is claimed by rule `{claimant}` ({status}) but not driven \
+                     by it; the channel is still at the value left by `{}`",
+                    handover.from_rule
+                );
+                let waited = self.inner.handovers.lock().mark_awaiting(
+                    device,
+                    capability,
+                    &claimant,
+                    reason.clone(),
+                );
+                if waited > crate::handover::HANDOVER_OWNER_WAIT_TICKS {
+                    let parked = self.inner.handovers.lock().park_unmet_claim(
+                        device,
+                        capability,
+                        format!(
+                            "rule `{claimant}` has claimed {device}/{capability} for {waited} ticks \
+                             without driving it; the channel is unprotected. Fix or disable that \
+                             rule, then re-arm this handover."
+                        ),
+                    );
+                    if parked {
+                        let message = format!(
+                            "gave up waiting for `{claimant}` to take over {device}/{capability} \
+                             after {waited} ticks; the channel is still unprotected"
+                        );
+                        self.inner.runtime.log("warn", message.clone());
+                        self.inner.runtime.publish_automation(
+                            Some(handover.from_rule.clone()),
+                            "rule_handover_failed",
+                            message,
+                        );
+                    }
+                } else if waited == 1 {
+                    // One notice when the wait starts, not one per tick.
+                    self.inner.runtime.log("info", reason.clone());
+                    self.inner.runtime.publish_automation(
+                        Some(handover.from_rule.clone()),
+                        "rule_handover_awaiting_owner",
+                        reason,
+                    );
+                }
                 continue;
             }
 
-            // 3. Attempt it, and record what actually happened rather than what was
+            // 3. No claimant. A handover parked because of a claim resumes by itself —
+            //    the reason it stopped is gone — while one parked by its own failed
+            //    writes waits for an explicit user re-arm.
+            if handover.state != crate::handover::HandoverState::Pending {
+                let resumed = self
+                    .inner
+                    .handovers
+                    .lock()
+                    .release_claim(device, capability, tick);
+                if !resumed {
+                    continue;
+                }
+                self.inner.runtime.log(
+                    "info",
+                    format!("the claim on {device}/{capability} is gone; its handover resumes"),
+                );
+            }
+
+            // 4. Is this attempt due? A retry may not happen on the very next tick.
+            if !self.inner.handovers.lock().is_due(device, capability, tick) {
+                continue;
+            }
+
+            // 5. Attempt it, and record what actually happened rather than what was
             //    intended.
             let origin = WriteOrigin::Safety {
                 reason: handover.reason.clone(),
@@ -491,8 +566,8 @@ impl AutomationEngine {
                 .inner
                 .runtime
                 .write_value(
-                    handover.device.as_str(),
-                    handover.capability.as_str(),
+                    device.as_str(),
+                    capability.as_str(),
                     Value::Number(duty),
                     origin,
                 )
@@ -524,11 +599,11 @@ impl AutomationEngine {
             let mut book = self.inner.handovers.lock();
             match confirmed {
                 Some(value) => {
-                    book.confirm(&handover.device, &handover.capability, Some(value), now);
+                    book.confirm(device, capability, Some(value), now);
                     drop(book);
                     let message = format!(
-                        "{}/{} set to {value:.0} % after {} stopped driving it",
-                        handover.device, handover.capability, handover.from_rule
+                        "{device}/{capability} set to {value:.0} % after {} stopped driving it",
+                        handover.from_rule
                     );
                     self.inner.runtime.publish_automation(
                         Some(handover.from_rule.clone()),
@@ -541,17 +616,12 @@ impl AutomationEngine {
                     // An attempt was made and did not settle the channel: the original
                     // reason for the handover and the reason it failed are both kept.
                     let error = error.unwrap_or_else(|| "the write was not confirmed".into());
-                    let state = book.record_attempt(
-                        &handover.device,
-                        &handover.capability,
-                        Some(error.clone()),
-                        tick,
-                        now,
-                    );
+                    let state =
+                        book.record_attempt(device, capability, Some(error.clone()), tick, now);
                     drop(book);
                     let message = format!(
-                        "could not hand {}/{} over to the {duty:.0} % fail-safe duty: {error}",
-                        handover.device, handover.capability
+                        "could not hand {device}/{capability} over to the {duty:.0} % fail-safe duty: \
+                         {error}"
                     );
                     self.inner.runtime.log("warn", message.clone());
                     self.inner.runtime.publish_automation(
@@ -568,14 +638,12 @@ impl AutomationEngine {
         }
     }
 
-    /// Which enabled rule drives this channel, if any?
+    /// Which enabled rule claims this channel as its target, if any?
     ///
-    /// Ownership is *declared* ownership: an enabled rule whose target is this
-    /// channel. It is deliberately checked before the rule has had a chance to run in
-    /// this tick — a rule that was just enabled owns its channel from that moment, and
-    /// the engine must not write the fail-safe duty onto a channel that is about to be
-    /// driven by its real owner.
-    fn owner_of(&self, device: &DeviceId, capability: &CapabilityId) -> Option<RuleId> {
+    /// A claim is a reason **not to write** — the channel is about to be driven by
+    /// that rule, and a safety write would fight it — but it is not evidence that the
+    /// channel is being driven. See [`Self::confirmed_owner_of`].
+    fn claimant_of(&self, device: &DeviceId, capability: &CapabilityId) -> Option<RuleId> {
         self.rules()
             .into_iter()
             .find(|rule| {
@@ -584,6 +652,31 @@ impl AutomationEngine {
                     && &rule.target.capability == capability
             })
             .map(|rule| rule.id)
+    }
+
+    /// Which enabled rule has **actually taken this channel over**?
+    ///
+    /// Evidence, not intent: the rule holds this channel and the device confirmed a
+    /// value for it. A rule whose writes are unconfirmed, refused, or never issued
+    /// does not own the channel in any sense the engine can act on, so a handover for
+    /// it stays owed.
+    fn confirmed_owner_of(&self, device: &DeviceId, capability: &CapabilityId) -> Option<RuleId> {
+        let claimant = self.claimant_of(device, capability)?;
+        let states = self.inner.states.lock();
+        let hold = states.get(&claimant)?.control.as_ref()?;
+        hold.is(device, capability)
+            .then_some(())
+            .filter(|_| hold.confirmed.is_some())
+            .map(|_| claimant)
+    }
+
+    /// The rule's own last status, as text, for a diagnostic message.
+    fn owner_status(&self, rule_id: &RuleId) -> Option<String> {
+        self.inner
+            .states
+            .lock()
+            .get(rule_id)
+            .map(|state| format!("last status: {}", state.last_status.as_str()))
     }
 
     async fn tick_inner(&self, force: bool) -> Vec<RuleOutcome> {
