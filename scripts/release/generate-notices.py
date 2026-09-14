@@ -35,7 +35,7 @@ def main():
     result = subprocess.run(
         [args.cargo, "metadata", "--locked", "--format-version", "1",
          "--filter-platform", args.target, "--manifest-path", str(repo / "Cargo.toml")],
-        cwd=repo, check=True, text=True, stdout=subprocess.PIPE,
+        cwd=repo, check=True, text=True, encoding="utf-8", stdout=subprocess.PIPE,
     )
     metadata = json.loads(result.stdout)
     selected = {node["id"] for node in metadata["resolve"]["nodes"]}
