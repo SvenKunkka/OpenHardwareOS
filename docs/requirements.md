@@ -11,6 +11,7 @@ still missing. The rule from here on:
 > Anything else is **Partial**, **Missing**, or **Unverified on hardware**.
 
 Last reviewed: 2026-09-14, against the working tree (no release tag yet).
+Test baseline at that revision: 397 Rust tests + 22 frontend behaviour tests, all passing.
 
 ## Status vocabulary
 
@@ -204,8 +205,10 @@ Ordered by what blocks a defensible Windows MVP:
    NVML and LHM; today NVML steps aside when LHM is enabled
    (`crates/adapters/src/lib.rs`). The general fix (a stable `physical_id` plus
    adapter priority) is planned in ADR 0005, not implemented.
-4. **Frontend behaviour tests** for the condition editor, tray switches and
-   conflict messaging (added this round).
+4. ~~Frontend behaviour tests for the condition editor, tray switches and
+   conflict messaging.~~ **Done this round**: 4 files / 22 tests in
+   `apps/desktop/src/test`, with a mutation check showing they fail when the
+   behaviour they describe is broken.
 5. **Unconsumed interface surface.** `WriteOrigin::{Api, Startup}`,
    `Response::Event`, `CapabilityKind::Event`, `Capability::poll_interval_ms`
    are declared and unused. `AdapterCapabilities::{poll_interval_ms,

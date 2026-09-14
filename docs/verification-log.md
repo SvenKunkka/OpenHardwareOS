@@ -21,6 +21,10 @@ happens on macOS; **Windows has never been exercised** — see
 | `cargo test --workspace` | **372 passed, 0 failed** |
 | `git rev-parse --is-inside-work-tree` | not a repository (initialised in this round) |
 
+Final state of this round: **397 Rust tests pass, 0 fail**, `cargo fmt --check`
+clean, `cargo build --workspace` with 0 warnings, `cargo deny check` clean, 22
+frontend tests pass. Five local commits, no remote.
+
 `cargo clippy --version` reports **0.1.92** while `rustc --version` reports
 **1.98.0**. The Homebrew toolchain ships them out of step, so `cargo clippy
 --workspace` aborts before reading project code with:
@@ -45,7 +49,17 @@ check.
 | 4 | One output, one writer | 5 new engine tests: refusal on save, refusal on enable, disabled rules own nothing, file-level conflicts resolved deterministically with a `RuleConflict` diagnostic, and a conflict reaching the active set is skipped (`RuleStatus::Error`, `writes == 0`, the output carries exactly the owner's value) |
 | 5 | `AdapterCapabilities::poll_interval_ms` honoured (was declared and unread) | `cargo test -p ohm-runtime` → 62 passed, incl. `an_adapter_hint_slows_its_own_polling_without_affecting_others` and `an_adapter_without_a_hint_is_polled_every_cycle` |
 | 6 | CPU package power states its source instead of vanishing | `cargo run -p ohm-cli -- doctor` prints a **Capability notes** section: with no provider, "CPU package power: not available … comes from LibreHardwareMonitor (Provider: lhm) … reported as missing rather than as 0 W"; with the simulated provider, it names the device and adapter supplying it |
-| 7 | CI no longer masks failures; `deny.toml` added; Windows bundle job added | Not runnable here (GitHub Actions); reviewed by hand. The lint job is required, and the Windows job builds the NSIS installer and uploads it as a review artifact without publishing anything |
+| 7 | CI no longer masks failures; `deny.toml` added; Windows bundle job added | `cargo-deny 0.20.2` installed locally and **run**: `cargo deny check` → `advisories ok, bans ok, licenses ok, sources ok`. The first attempt failed to parse — the file had been written against an older schema — which is exactly why running the tool matters. GitHub Actions itself cannot run from this machine |
+| 8 | LHM writes are confirmed by reading the channel back | `cargo test -p ohm-adapter-lhm` → 37 passed, incl. `a_write_is_confirmed_by_reading_the_channel_back` and `a_channel_that_ignores_writes_is_reported_as_refused` (the fake server models a board that answers `200 OK` and keeps its old duty) |
+| 9 | Frontend: condition editor, conflict surface, behaviour tests | In `apps/desktop`: `npm run typecheck` clean, `npm run test` → **4 files, 22 tests passed**, `npm run build` clean (376 kB). Independently re-run by me, not only reported by the workstream. A mutation check confirms the tests bite |
+| 10 | The `when` gate end to end, plus a shipped gated example | `cargo test -p ohm-integration-tests --test gate_behaviour` → 6 passed; `cargo run -p ohm-cli -- rules check examples/rules/gpu-cooling-gaming-only.yaml` → "valid against the attached hardware" |
+
+Three test bugs were found by these tests and fixed, each worth recording because
+it taught something about the system: a gate threshold written as `0.99` when the
+capability reports **percent** (the unit of a threshold is the unit of its
+source); an assertion that assumed the curve output is always above the
+stand-down duty (it is not); and an assertion that ignored the deadband, by which
+the applied value legitimately lags the instantaneous curve.
 
 Commands executed for the above:
 
