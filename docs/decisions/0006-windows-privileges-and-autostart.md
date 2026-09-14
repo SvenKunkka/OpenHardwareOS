@@ -95,10 +95,14 @@ absent helper, because it starts from its own scheduled task rather than the `Ru
 
 **Negative**
 
-- **The autostart toggle is not yet wired to the UI.** `autostart.rs` is implemented
-  and unit-tested and `AppInfo.elevated` is exposed, but there is no
-  `#[tauri::command]` for autostart in `commands.rs` and no `ipc.ts` binding, so the
-  "honest reporting" rule lives in code and tests rather than in front of the user.
+- **The autostart toggle is wired, but has never been exercised on Windows.**
+  `commands::update_settings` calls `autostart::set_enabled` whenever
+  `start_with_windows` changes, and the setting is corrected back if the write fails
+  (the Run-key path is `cfg(windows)`, so on this development machine that branch is
+  compiled out). "Honest reporting" is therefore implemented — a refusal rewrites the
+  setting to `false` and logs why — but it is **Prepared, not Build/run passed**:
+  see `docs/windows-validation/` step §11, which verifies the registry value with
+  `reg query`.
 - Per-user autostart plus a machine-wide helper is inherently two mechanisms, and the
   second does not exist yet: a user wanting fan control at logon must start LHM and
   this app themselves. Uninstall must also return fan control to the firmware (LHM's

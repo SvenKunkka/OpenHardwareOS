@@ -700,10 +700,10 @@ as a line; the full JSON is what the desktop UI's device view shows and what
   "capabilities": [
     { "id": "temperature.core", "kind": "sensor", "unit": "celsius", "readable": true, "writable": false },
     { "id": "temperature.hotspot", "kind": "sensor", "unit": "celsius", "readable": true, "writable": false },
-    { "id": "gpu.load", "kind": "sensor", "unit": "percent", "readable": true, "writable": false },
+    { "id": "load.gpu", "kind": "sensor", "unit": "percent", "readable": true, "writable": false },
     { "id": "power.gpu", "kind": "sensor", "unit": "watt", "readable": true, "writable": false },
-    { "id": "memory.used", "kind": "sensor", "unit": "bytes", "readable": true, "writable": false },
-    { "id": "clock.mhz", "kind": "sensor", "unit": "mhz", "readable": true, "writable": false },
+    { "id": "memory.used", "kind": "sensor", "unit": "byte", "readable": true, "writable": false },
+    { "id": "clock.mhz", "kind": "sensor", "unit": "megahertz", "readable": true, "writable": false },
     { "id": "fan.rpm", "kind": "sensor", "unit": "rpm", "readable": true, "writable": false },
     { "id": "fan.speed_percent", "kind": "actuator", "unit": "percent", "min": 0, "max": 100,
       "readable": true, "writable": true }
@@ -712,8 +712,14 @@ as a line; the full JSON is what the desktop UI's device view shows and what
 ```
 
 Files to inspect for that JSON: `adapters/nvidia/src/lib.rs` (device construction, ids,
-capabilities), `crates/ohm-device-model/src/` (the `caps` constants and the reading
-states), and — for a live copy — the desktop **Devices** screen or `Diagnostics`.
+capabilities), `crates/ohm-device-model/src/` (the `caps` constants, the `Device` struct —
+where the field is `device_type` but serialises as `"type"` — and the reading states), and,
+for a live copy, the desktop **Devices** screen or `Diagnostics`.
+
+The example above is abridged. A real device object also carries `name`, and optionally
+`model`, `metadata` and `tags`; each capability also carries `name` and `safety_critical`,
+and optionally `step`, `values`, `description` and `poll_interval_ms`. Compare against the
+live JSON rather than assuming the field list is complete.
 
 Honest expectations — these are **not** bugs:
 
