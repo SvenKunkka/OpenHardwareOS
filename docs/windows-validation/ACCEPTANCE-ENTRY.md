@@ -97,7 +97,9 @@
 ```
 
 仓库自 v0.1.2 起用 `rust-toolchain.toml` 固定 `1.98.1`（CI 用同一版本），所以**不传**
-`-Toolchain` 时，包内检出的 rustup 代理也会选 1.98.1。传了则以传入值为准。
+`-Toolchain` 时，包内检出的 rustup 代理也会选 1.98.1；如果这台机器上的 `cargo` 不是
+rustup 代理（例如 Homebrew 装的），它不会读这个文件——那就显式传 `-Toolchain 1.98.1`，
+预检也会检查 `clippy` 与 `rustc` 是否来自同一版本。
 
 `build.ps1` 只在本次构建确实产生了 `tauri.conf.json` 所声明的 NSIS 安装包时才报 BUILD COMPLETE；
 空目录、旧产物、别的版本都会以 INSTALLER MISSING / EMPTY / STALE / MISMATCH 明确失败。

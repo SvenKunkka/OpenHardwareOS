@@ -1,9 +1,13 @@
 # The compiler the release is built and tested with.
 #
-# Pinning it here means a checkout, a local shell and a CI workflow resolve the
-# same release, so `cargo` in this directory cannot silently be a different
-# compiler than the one that produced a published artefact. CI also sets
-# RUSTUP_TOOLCHAIN explicitly; the two must agree.
+# Pinning it here means a rustup-managed `cargo` — CI, a fresh checkout, the
+# Windows acceptance machine — resolves the same release, so it cannot silently
+# be a different compiler than the one that produced a published artefact.
+# A cargo binary that is *not* a rustup shim bypasses this file entirely: on the
+# development machine `/opt/homebrew/bin/cargo` comes first on PATH, which is why
+# the round-6 verification pass invokes `rustup run 1.98.1` explicitly and why
+# the acceptance pre-check refuses a `clippy`/`rustc` pair from different
+# releases. CI also sets RUSTUP_TOOLCHAIN explicitly; the two must agree.
 #
 # `rust-version` in Cargo.toml stays the *minimum* the crates compile with
 # (1.95); this file is the *exact* toolchain used for release verification.

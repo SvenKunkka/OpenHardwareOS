@@ -952,3 +952,154 @@ No hardware was written to, no autostart or device-control setting was changed, 
 installed on the host, and nothing was pushed, published, tagged or triggered. The licence
 decisions (ADR 0002, ADR 0004) remain **Proposed**. The unrelated untracked directory
 `k10max-prospector/` was left exactly as found.
+
+---
+
+## 2026-09-14 — round 6: the published pipeline, the first Windows CI run, and v0.1.2
+
+**Revision: `2dfb340`.** Everything in the pass below was run at that commit in one go
+(`/tmp/ohm-verify/pass-v0.1.2.sh`), with the working tree clean apart from the untracked
+`k10max-prospector/`. The documentation commit that contains this entry follows `2dfb340`
+and changes no code, no packaging and no version number.
+
+### 1. The repository was pushed, and the first CI run was red
+
+Round 5's last commit (`4a72112`) was the first thing ever pushed, so it produced the first
+CI run this project ever had. macOS, Linux, the frontend, clippy and the licence audit
+passed; **both Windows jobs failed**, and the log names the reason:
+
+```
+error[E0433]: cannot find `COMLibrary` in `wmi`
+  --> adapters\system\src\windows.rs:67:20
+error[E0061]: this function takes 0 arguments but 1 argument was supplied
+  --> adapters\system\src\windows.rs:68:22
+error: could not compile `ohm-adapter-system` (lib) due to 2 previous errors
+```
+
+`adapters/system/src/windows.rs` sits behind `#[cfg(windows)]`, so no build on this machine
+had ever read it: `wmi` 0.18 had removed `COMLibrary` and changed `WMIConnection::new()`.
+Five rounds of "Windows: Prepared" had never included "Windows: compiles", and nothing in
+those rounds could have caught it. After the API fix (`34db43b`) the next Windows run failed
+on a **test** instead:
+
+```
+test recovery::tests::saving_into_an_unwritable_place_fails_loudly ... FAILED
+test result: FAILED. 91 passed; 1 failed
+panicked at crates\ohm-automation\src\recovery.rs:311:28:
+writing into a read-only directory must fail: ()
+```
+
+That test was written in round 2 and encoded Unix semantics — a read-only *directory* stops
+a write; on Windows it does not. It was replaced with a platform-independent case
+(`6e37954`). A third Windows-only defect followed in the release workflow (Cargo metadata
+decoded as non-UTF-8, `e64fe22`), after which every run has been green and v0.1.0 and v0.1.1
+were published by the maintainer.
+
+**The gate that was missing** is added this round: `cargo check --locked --target
+x86_64-pc-windows-msvc -p ohm-adapter-system` type-checks the crate that broke, from macOS,
+against the real `cfg(windows)` code, with no Windows SDK. It cannot cover the whole
+workspace — `ohm-adapters → ureq → rustls → ring` compiles C for MSVC, which no non-Windows
+host can do — so `apps/desktop`'s Windows files (`autostart.rs`, `shell.rs`) still depend on
+the CI job. That is stated as a dependency, not as verification.
+
+### 2. Two defects in the published artefacts themselves
+
+Both were found by auditing the **released files** rather than the repository.
+
+* **`SHA256SUMS` was CRLF.** `package-windows.ps1` wrote it with
+  `[IO.File]::WriteAllLines`, which uses the host newline. On macOS and Linux `shasum -c
+  SHA256SUMS` then reads each line as `<digest><two spaces><name>\r` and reports **every**
+  entry as a missing file. The digests were always right: the published CLI archive hashes
+  to `7640fab80689fd31005971ac73cf730a0fde2c7cafe679d77b92dfff26954934`, exactly the value
+  in the list. Fixed by test, not by reading.
+* **`install.ps1` was not the committed script.** It was copied out of the Windows checkout,
+  whose `core.autocrlf` had converted it, so the published file was CRLF while the blob is
+  LF. The content is identical and the digest is not reproducible from the repository: the
+  published `493f8adae428f77e970364a8aab68a502652ce6e207c8b9e28d85de28d1e1a53` equals the
+  committed blob `ddefa83800bbb40f5e3ad41874d4f5e3e16ad512628ecd577a510cb1c6782950` only
+  after `tr -d '\r'`.
+
+`package-windows.ps1` now normalises that script, proves the result **is** the blob in this
+commit (`git hash-object` against `git rev-parse HEAD:scripts/install.ps1`), writes
+`SHA256SUMS` with LF, and refuses to produce a package when either check fails — a genuinely
+CRLF blob fails loudly instead of being published as something nobody can trace.
+`.gitattributes` (`* text=auto eol=lf`) makes a checkout reproduce the committed bytes on
+every platform, so the class of problem cannot return through another copied file. A new
+fixture harness, `scripts/release/test-packaging.ps1`, runs before packaging in the release
+workflow.
+
+### 3. The toolchain was pinned in CI, not in the repository
+
+CI and the release workflow both set `RUSTUP_TOOLCHAIN: 1.98.1`, this machine used a locally
+installed `1.98.0`, and `rust-version` says `1.95`. `rust-toolchain.toml` now pins the exact
+release CI uses. The qualification is measured rather than assumed: inside the repository
+`rustup show active-toolchain` reports `1.98.1 (overridden by …/rust-toolchain.toml)`, while a
+plain `cargo --version` still reports **1.98.0 (Homebrew)** — `/opt/homebrew/bin/cargo` is not
+a rustup shim and never reads the file. The pass therefore invokes `rustup run 1.98.1`
+explicitly, and outside the repository the owner's default (`stable`, 1.92.0) is unchanged.
+
+### 4. Documentation that had stopped being true
+
+* `docs/roadmap.md` claimed "real Windows hardware validation (nothing has run on Windows
+  yet)" and `docs/requirements.md` said the same in three places. Since v0.1.0 CI has built,
+  tested and installed on `windows-latest`. Both now separate the two claims that were being
+  conflated: software on Windows *has* run; hardware on a machine somebody uses has not.
+* `requirements.md` no longer describes the project as being at a deliverable stop, and
+  closes the Windows-compile gap in place (item 11) rather than leaving it implicit.
+* `docs/windows-validation/README.md` now separates "CI has run" from "a target machine has
+  run" row by row — the NSIS bundle is *built* on CI and has still never been installed.
+* The six-stage hardware plan, which existed only as GitHub issues #1–#7, is versioned in
+  `docs/plans/hardware-support/` (commit `3dc235f`, before this pass): seven files, each body
+  byte-identical to its issue, plus the authority rule and the three label sets (C1–C8,
+  stage 1–6 / S1.1–6.7, PUMP-01–PUMP-04) written down so they cannot be misread as one.
+
+### 5. v0.1.2
+
+Prepared with the project's own tool — `scripts/versions.py prepare v0.1.2 --branch
+codex/v0.1.2 --apply` — which synchronized the workspace, the internal dependencies,
+`Cargo.lock`, the desktop npm package and its lock, and `tauri.conf.json`, and moved the
+catalogue node from planned to development. v0.2.0 (pump support) stays planned and now
+hangs off v0.1.2 in the tree. README and `docs/windows-install.md` name v0.1.2, which the
+public install check requires of the tagged README.
+
+### The verification pass (all commands re-run at `2dfb340`, nothing carried over)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `rustup run 1.98.1 cargo fmt --all -- --check` | exit 0 |
+| 2 | `rustup run 1.98.1 cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0, no warnings |
+| 3 | `rustup run 1.98.1 cargo test --workspace --locked` | **488 passed, 0 failed, 0 ignored**, across 44 test-result lines including doc tests |
+| 4 | `cargo-deny check` | advisories ok, bans ok, licenses ok, sources ok |
+| 5 | `scripts/versions.py check` and `check --generated` | OK: 4 catalogue entries; application version 0.1.2 |
+| 6 | `python3 -m unittest scripts/tests/test_versions.py` | **30 tests, OK** |
+| 7 | `npm run typecheck` / `npm test` / `npm run build` | clean / **5 files, 42 tests** / clean, 397.20 kB bundle |
+| 8 | `scripts/tests/make-acceptance-package.test.sh` | **4 cases, 20 checks, 0 failures** |
+| 9 | `scripts/release/test-packaging.ps1` (new) | **6 cases, 0 failures** |
+| 10 | `docs/windows-validation/package/scripts/tests/run-script-tests.ps1` | **18 cases, 151 checks, 0 failures** (test doubles only) |
+| 11 | `cargo check --locked --target x86_64-pc-windows-msvc -p ohm-adapter-system` | exit 0 — the new local gate |
+| 12 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** at app version 0.1.2: real window, real webview, real commands; the probe reported 2 adapters / 7 devices; the real per-user config directory was absent before and after; the seeded `fan.lhm.0` handover was still failed with 3 attempts while the scoped retry returned 1 |
+| 13 | `shasum -a 256 -c MANIFEST.sha256` in the `4a72112` and `5fd8c23` packages | every file still matches |
+
+### What round 6 could **not** verify
+
+* **Windows on a machine somebody uses** — unchanged, and now stated precisely: CI runs exist
+  and are linked from `docs/versions.json` and the acceptance entry, but a runner is not
+  hardware acceptance and no fan or pump has ever responded to a write.
+* **The v0.1.2 artefacts do not exist.** Nothing was published in this round: no tag, no
+  GitHub Release, no uploaded asset. Everything above verifies the source and the packaging
+  logic; the Windows CLI, the NSIS installer and the LF `SHA256SUMS` become facts only when
+  the release workflow runs on `windows-latest` and the maintainer publishes. In particular
+  `scripts/release/test-packaging.ps1` proves the packaging steps and their guards against
+  fixtures — **not** that a Windows build succeeds.
+* **Visual acceptance of the desktop** — unchanged: attempted in round 5, unusable, still
+  unverified.
+* **A physical fan** — unchanged.
+* **The Windows-target gate's coverage** — `ohm-adapter-system` only, for the `ring` reason
+  in §1.
+
+### Deliberately **not** done in round 6
+
+No hardware was written to; no autostart or global environment value was changed; nothing was
+installed on the host; nothing was pushed, tagged, published or triggered remotely; no
+licence was approved on the user's behalf. The unrelated untracked directory
+`k10max-prospector/` was left exactly as found. ADR 0002 and ADR 0004 remain **Proposed**.

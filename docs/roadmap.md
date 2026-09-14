@@ -451,8 +451,11 @@ project one: the machine's `PATH` toolchain mixed `clippy-driver 0.1.92` with
 following packages: … requires rustc 1.95` before reading any project code. A
 matched toolchain was installed from the official channel; from round 6 the
 repository pins the exact release CI uses in `rust-toolchain.toml` (`1.98.1`), so
-a checkout, a local shell and a workflow all resolve the same compiler, and
-`--ignore-rust-version` is not used. It exits 0 with no warnings across all
+every rustup-managed `cargo` — CI, a fresh checkout, the Windows acceptance
+machine — resolves the same compiler, and `--ignore-rust-version` is not used.
+The development machine's `PATH` still puts a Homebrew `cargo` that is not a
+rustup shim before the proxy, so its own verification pass invokes
+`rustup run 1.98.1` explicitly. It exits 0 with no warnings across all
 fifteen crates, including `ohm-adapter-system` and `ohm-desktop`, which the
 mismatched pair could never see. That first clean run found real lints — a
 collapsible `if` in `adapters/system`, an unused parameter in

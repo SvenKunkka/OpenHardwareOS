@@ -45,7 +45,7 @@ python scripts/versions.py check --generated
 
 ## 发布一版并留下证据
 
-1. 提交目标源码，运行 CI，并以明确的 `vMAJOR.MINOR.PATCH` 触发 `Windows release assets`。工作流检查版本、测试、构建 CLI 和桌面安装包，输出安装文件、SHA-256 和包含源码提交的 `release.json`。
+1. 提交目标源码，运行 CI，并以明确的 `vMAJOR.MINOR.PATCH` 触发 `Windows release assets`。工作流检查版本、测试、构建 CLI 和桌面安装包，输出安装文件、SHA-256 和包含源码提交的 `release.json`。打包前先跑两组夹具测试（`test-install.ps1`、`test-packaging.ps1`）；打包脚本还会自检发布资产的行尾与可追溯性——`SHA256SUMS` 必须是 LF，`install.ps1` 必须与提交内的 blob 逐字节一致，否则不出包。
 2. 检查成功工作流的源码提交、下载文件和摘要，再针对该提交创建 tag 和 GitHub Release；早期版本标记为预览版。已经发布的 tag 和安装文件保留不动，修复应使用新的版本号。
 3. 公开发布后，将真实发行信息登记到版本清单。需要已登录并能读取仓库的 GitHub CLI：
 

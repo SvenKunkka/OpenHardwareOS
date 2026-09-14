@@ -17,7 +17,9 @@
   摘要逐条复核、CRLF 工作区、真正 CRLF 的提交、以及两个守卫本身是否有效；
   已接入 Windows 发布工作流。
 - 新增 `.gitattributes`（`* text=auto eol=lf`），让检出内容等于提交内容。
-- 新增 `rust-toolchain.toml` 固定 `1.98.1`，使检出处、本地与 CI 使用同一编译器；
+- 新增 `rust-toolchain.toml` 固定 `1.98.1`：rustup 管理的 `cargo`（CI、干净检出、
+  Windows 验收机器）因此解析到同一编译器。开发机上 `PATH` 里的 Homebrew `cargo`
+  不是 rustup 代理、会绕过该文件，所以本机验证仍显式使用 `rustup run 1.98.1`。
   `rust-version = "1.95"` 仍是允许的最低版本。
 - 硬件支持六阶段计划落成为 `docs/plans/hardware-support/`，并写明它与
   `C1–C8` 能力域、阶段小阶段编号、`PUMP-01–04` 工作包三套编号的关系。
