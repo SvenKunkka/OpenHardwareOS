@@ -1103,3 +1103,170 @@ No hardware was written to; no autostart or global environment value was changed
 installed on the host; nothing was pushed, tagged, published or triggered remotely; no
 licence was approved on the user's behalf. The unrelated untracked directory
 `k10max-prospector/` was left exactly as found. ADR 0002 and ADR 0004 remain **Proposed**.
+
+---
+
+## 2026-09-14 — round 7: v0.1.2 is published, and three control claims are made honest
+
+**Revision: `a885fd0`.** The pass below ran at that commit in one go
+(`/tmp/ohm-verify/pass-r7.sh`) with 0 non-zero steps. The publication in §1 happened before it,
+from `release/v0.1.2` at `1219457`; the commit carrying this entry follows `a885fd0` and changes
+documentation only.
+
+### 1. v0.1.2 is published, and the packaging fixes are proven on Windows output
+
+The first release build for v0.1.2 **failed on my own new fixture suite** (step 19) and produced
+no assets. The test read the committed blob as *text* (`git cat-file | Out-String`) and asserted
+it held no CR: PowerShell joins a native command's output with the host newline, so on Windows
+the blob reads as CRLF whatever it contains, and the run failed on a repository that is entirely
+LF. Two further problems came out of the same investigation: `git hash-object <file>` applies
+the end-of-line conversion to a *file* argument, so a CRLF file hashes like its LF blob, and the
+assertions were text-based where they had to be byte-based. Fixed in `1219457`; the suite now
+compares sizes and raw-byte hashes (`--no-filters`), and passes on the Windows runner.
+
+v0.1.2 = `1219457`, tagged and published as a preview with seven assets. The duplicate build the
+tag push triggered was cancelled; the reviewed build is [run 34839424804](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34839424804).
+
+Verified from the **download**, not from the workflow's own claim:
+
+* `SHA256SUMS` is LF-only, and `shasum -a 256 -c SHA256SUMS` validates all six entries — the
+  check that failed on *every* entry for v0.1.0 and v0.1.1.
+* the published `install.ps1` hashes to the committed blob `f2617d08`, which is the **same blob**
+  v0.1.1 published as CRLF (`493f8ada…`). The commit did not change; the publication did.
+* `release.json` names `source_commit = 1219457…`, `version = v0.1.2`, `rustc 1.98.1`.
+
+The public install check passed on Windows PowerShell 5.1
+([run 34840668305](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34840668305)):
+download, checksum, versioned install, source-commit check, `doctor` and a ten-step simulated
+demo.
+
+CI failed **once** on the release commit:
+`writeStates.test.tsx > manual control: a write the device never confirmed > reports the request
+as unconfirmed` never saw its `writeCapability` call. It passed on re-run (all eight jobs) and
+passes locally (42/42). The helper's change-then-click sequence is a race in the test, not in the
+product; it is recorded here rather than re-run away, and fixed in the next version.
+
+A source package was built at the release commit: `OpenHardwareOS-1219457-windows-acceptance`,
+245 files, archive `c11c0849fcfc08b06de27d7ad6a29f273526412c5e8a64474f11f54d33580cd1`, manifest
+`a259c6f17899cd1de2bced370fd44828067b45eea46e9c31c0fc6a2ba447c118`.
+
+### 2. The exit path reported what it attempted as what it achieved
+
+`release_control()` returned a count of writes it had *tried*, and `shutdown()` recorded that
+number as "outputs handed back to firmware". A write the adapter accepted but could never read
+back — a board that answers `200 OK` and has no readable channel, which is what real hardware
+produces — was therefore audited as a successful release.
+
+Reading that code found a second, worse defect: the target list came from
+`DeviceTable::cooling_devices()`, which is `Fan | Pump`. A GPU is a `Gpu` device with a writable
+fan channel, so **a GPU fan under the runtime's control kept its last duty on exit** while the
+audit said everything had been handed back. On this simulated machine the exit path now drives 3
+channels instead of 2; restoring `cooling_devices()` makes the new regression test fail with
+"2 of 3", which is how the fix was checked.
+
+`ControlRelease` (`crates/ohm-runtime/src/release.rs`) keeps confirmed / unconfirmed / refused /
+failed / simulated apart, with `problems()` and `caveats()` for the two kinds of bad news, and
+`Runtime::shutdown` writes one audit entry per claim: `control_released`,
+`control_release_unconfirmed`, `control_release_failed`, `control_release_skipped`,
+`control_relinquished`, `control_not_handed_back`, `adapter_shutdown_failed`. `runtime_stopped`
+says "clean shutdown" only when it was.
+
+`AdapterCapabilities::hands_back_control_on_shutdown` exists because `HardwareAdapter::shutdown`
+defaults to `Ok(())`: an adapter that does nothing returned success and was counted as a
+hand-back. LHM opts in (it sends `SetDefault` per channel), the mock and the simulated OPD
+transport opt in, and **NVML stays out** — it has no `shutdown` implementation, so its channels
+are now reported as *not* handed back instead of being claimed as released. That gap is
+`docs/requirements.md` item 12.
+
+Seven tests in `tests/tests/control_release.rs` pin each claim: a confirmed write is a release; a
+simulated one is not a confirmed one; an unconfirmed one is never counted as released and its
+audit entry says "not a confirmed release"; a refusal is a refusal and not a failure; with
+`relinquish_on_exit` off nothing is written and nothing is claimed; an adapter that does not hand
+back is listed as such; a failed hand-back is reported separately from the write that succeeded.
+
+### 3. LHM fan channels were paired by coincidence
+
+The pairing took a number from the display name when there was one and otherwise from the sensor
+*path*, then keyed both sides into a `BTreeMap`. Two consequences: two sensors resolving to the
+same key silently replaced one another (a board reporting two `Fan #1` sensors, or several
+sensors with no number at all, lost a channel from the model without a word), and a tachometer
+named `Fan #1` could be paired with a control numbered by its *position*, which is an enumeration
+artefact rather than an identity — and the control is what a rule writes to.
+
+The anchor is now explicit (`Anchor::Name` / `Anchor::Path`), nothing is merged, and a channel
+whose control cannot be shown to belong to the tachometer beside it is **read-only**: the
+tachometer stays visible, the control is withheld, and the reason lands on the device
+(`lhm_control_withheld`) and on the adapter's status, which `probe()` reports as Degraded with the
+specific reason. An unnumbered control is not exposed as a device at all — there would be nothing
+to show and nothing anyone could safely write — but it is reported, not hidden.
+
+Four new mapping tests: duplicate numbers, a control paired only by path position, unnumbered
+sensors kept apart instead of merged, and reorder/reconnect leaving the pairing and the
+writability unchanged.
+
+**Still open, and stated as such:** the device *id* is positional (`fan.lhm.<n>` over the tree
+order), so a reorder can still change which physical channel a saved rule targets. That half needs
+a stable identity in the id itself, which is what rules, audit entries and the UI all key on, and
+is not changed in this round.
+
+### 4. A provider was chosen by intent, not by availability
+
+NVML was not constructed at all when the settings enabled LibreHardwareMonitor:
+
+```rust
+nvidia: settings.adapter_enabled(NVML) && (nvidia_forced || !lhm_enabled)
+```
+
+Both describe the same GPU, so one must step aside — but the decision came from *intent*. On
+Linux, and on any Windows machine with LibreHardwareMonitor closed, enabling LHM therefore
+removed the only GPU provider, and nothing in the UI said why.
+
+The relationship is now declared (`AdapterInfo::yields_to`) and the decision is made from
+evidence: `DiscoveryManager::discover_all` probes every adapter first, then leaves a fallback out
+of the cycle while its primary probed usable *in the same cycle*, reporting it as
+`Unavailable` / `disabled` with the reason and the setting that forces it. Because it is
+re-decided every cycle, a primary that appears or disappears later is handled without a restart.
+
+Three tests in `tests/tests/provider_fallback.rs` drive the hand-over both ways and back; the
+`crates/adapters` tests cover the settings mapping and that the declaration reaches the adapter.
+
+### The verification pass (all commands re-run at `a885fd0`, nothing carried over)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `rustup run 1.98.1 cargo fmt --all -- --check` | exit 0 |
+| 2 | `rustup run 1.98.1 cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0, no warnings |
+| 3 | `rustup run 1.98.1 cargo test --workspace --locked` | **508 passed, 0 failed, 0 ignored**, across 46 test-result lines including doc tests |
+| 4 | `cargo-deny check` | advisories ok, bans ok, licenses ok, sources ok |
+| 5 | `scripts/versions.py check --remote --generated` | OK: 4 catalogue entries; **published releases verified on GitHub** |
+| 6 | `python3 -m unittest scripts/tests/test_versions.py` | **30 tests, OK** |
+| 7 | `npm run typecheck` / `npm test` / `npm run build` | clean / **5 files, 42 tests** / clean, 397.20 kB |
+| 8 | `scripts/tests/make-acceptance-package.test.sh` | **4 cases, 0 failures** |
+| 9 | `scripts/release/test-packaging.ps1` | **6 cases, 0 failures** |
+| 10 | `docs/windows-validation/package/scripts/tests/run-script-tests.ps1` | **18 cases, 151 checks, 0 failures** (doubles only) |
+| 11 | `cargo check --locked --target x86_64-pc-windows-msvc -p ohm-adapter-system` | exit 0 |
+| 12 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** — real window, real webview, real commands; the seeded `fan.lhm.0` handover untouched; the real per-user config directory absent before and after |
+| 13 | `shasum -a 256 -c SHA256SUMS` on the **downloaded** v0.1.2 assets | all six entries OK |
+| 14 | `shasum -a 256 -c MANIFEST.sha256` in the `1219457`, `4a72112` and `5fd8c23` packages, plus the `1219457` sidecar | every file still matches |
+
+### What round 7 could **not** verify
+
+* **Windows on a machine somebody uses** — unchanged. The CI runs are evidence about software
+  (build, tests, packaging, install), not about any physical fan or pump.
+* **NVML still hands nothing back on exit** (requirements item 12). It is now *reported* instead of
+  being claimed as a release; making it true needs NVML's default-fan-speed call and a fake-NVML
+  harness the adapter does not have.
+* **The positional device-id half of the LHM identity problem** (§3).
+* **The flaky desktop test's root cause** — observed once on a CI runner, not reproduced here.
+* **Visual acceptance and a physical fan** — unchanged.
+
+### Deliberately **not** done in round 7
+
+No hardware was written to; no autostart or global environment value was changed; nothing was
+installed on the host; no licence was approved on the user's behalf; ADR 0002 and ADR 0004 remain
+**Proposed**; the unrelated untracked directory `k10max-prospector/` was left exactly as found.
+
+Publication — tag, GitHub Release and the CI dispatches — **was** this round's objective and is the
+first time anything left this machine. It was confined to the project's own release flow, from a
+reviewed build whose `release.json` names the commit the tag points at, and the two packages the
+maintainer already published (v0.1.0, v0.1.1) were left untouched.
