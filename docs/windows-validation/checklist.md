@@ -527,17 +527,26 @@ npx tauri build
 
 Expected: it runs `npm run build` (the `beforeBuildCommand`), then the release build, then
 bundling; exit code 0, and the last lines of the output list the artefacts it produced —
-**capture those lines verbatim**, they are the authoritative path. Because
-`apps/desktop/src-tauri` is a member of the root Cargo workspace, the bundle usually lands in
-the workspace target directory, but a per-crate target directory is also possible; check both
-and record the one that exists:
+**capture those lines verbatim**, they are the authoritative path.
+
+Where to look for the artefacts if you want them independently: `apps/desktop/src-tauri` is a
+member of the root Cargo workspace, so the bundle lands in the **workspace target directory**,
+which is `<repo>\target` — there is no `apps\desktop\src-tauri\target`. Do not assume it: ask
+cargo, then list what is there (this is the same source of truth
+`.github/workflows/ci.yml` uses in its `windows-bundle` job):
 
 ```powershell
-PS> Get-ChildItem .\target\release\bundle\nsis, .\apps\desktop\src-tauri\target\release\bundle\nsis -ErrorAction SilentlyContinue |
+PS> $target = (cargo metadata --format-version 1 --no-deps | ConvertFrom-Json).target_directory
+PS> $target
+PS> Get-ChildItem "$target\release\bundle" -Recurse |
       Select-Object FullName, Length, LastWriteTime
 ```
 
-Expected: `OpenHardwareOS_0.1.0_x64-setup.exe` (the version tracks `tauri.conf.json`).
+Expected: `$target` ends in `\target` and is the repository's own `target` directory (record
+the exact string), and the listing contains
+`$target\release\bundle\nsis\OpenHardwareOS_0.1.0_x64-setup.exe` (the version tracks
+`tauri.conf.json`). If `$target\release\bundle` does not exist, the build did not bundle —
+record that, rather than looking for the file somewhere else.
 
 `bundle.targets` is `["nsis"]` in `tauri.conf.json`, so no MSI is produced — that is
 deliberate (see `docs/research.md` §9.4).

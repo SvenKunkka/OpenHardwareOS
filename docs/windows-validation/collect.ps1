@@ -182,16 +182,37 @@ function Get-JsonProbe {
     }
 }
 
+function Get-WorkspaceTargetDir {
+    # Every artefact in this repository lives in the *workspace* target directory:
+    # `apps/desktop/src-tauri` is a member of the root Cargo workspace, so there is no
+    # `apps\desktop\src-tauri\target` to look in. Ask cargo instead of assuming, so that a
+    # `--target-dir` flag or a `build.target-dir` setting cannot hide the artefacts from
+    # this collector; `<repo>\target` is used when cargo is not on PATH.
+    #
+    # `--manifest-path` is passed explicitly: without it cargo resolves the workspace from
+    # the *current directory*, so running this collector from inside another Rust project
+    # would report that project's target directory.
+    $manifest = Join-Path $script:RepoRoot 'Cargo.toml'
+    $cargo = Get-Command 'cargo' -ErrorAction SilentlyContinue
+    if ($null -ne $cargo -and (Test-Path -LiteralPath $manifest -PathType Leaf)) {
+        try {
+            $json = (& $cargo.Source 'metadata' '--format-version' '1' '--no-deps' '--manifest-path' $manifest 2>$null) -join ''
+            if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($json)) {
+                $target = (ConvertFrom-Json $json).target_directory
+                if (-not [string]::IsNullOrWhiteSpace($target)) { return [string]$target }
+            }
+        } catch {
+            # fall through to the default below
+        }
+    }
+    return (Join-Path $script:RepoRoot 'target')
+}
+
 function Get-CliCandidates {
-    $relative = @(
-        'target\release\ohm-cli.exe',
-        'target\debug\ohm-cli.exe',
-        'apps\desktop\src-tauri\target\release\ohm-cli.exe',
-        'apps\desktop\src-tauri\target\debug\ohm-cli.exe'
-    )
+    $targetRoot = Get-WorkspaceTargetDir
     $found = New-Object System.Collections.Generic.List[string]
-    foreach ($rel in $relative) {
-        $candidate = Join-Path $script:RepoRoot $rel
+    foreach ($profile in @('release', 'debug')) {
+        $candidate = Join-Path $targetRoot (Join-Path $profile 'ohm-cli.exe')
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
             [void]$found.Add($candidate)
         }

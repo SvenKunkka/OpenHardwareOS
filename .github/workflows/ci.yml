@@ -12,15 +12,31 @@ env:
 
 jobs:
   # Formatting and lints are *required*: a warning tolerated silently is a warning
-  # nobody fixes. The machine this repository was developed on has a split
-  # toolchain (Homebrew ships rustc 1.98 with clippy-driver 0.1.92), so local
-  # clippy cannot see the whole workspace; here the toolchain is installed as a
-  # matching pair, which makes CI the authoritative check.
+  # nobody fixes. The machine this repository was developed on had a split
+  # toolchain (Homebrew's clippy-driver could not build `sysinfo`), so local clippy
+  # could not see the whole workspace; here the toolchain is a matching pair, which
+  # makes CI the authoritative check.
   lint:
     name: Format and clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # Clippy compiles the desktop crate, which links against WebKitGTK.
+      # Package list from https://v2.tauri.app/start/prerequisites/ (Debian/Ubuntu).
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -49,12 +65,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      # Note: this works on a clean checkout. `tauri.conf.json` points
+      # `frontendDist` at `../dist`, and Tauri's codegen tolerates that directory
+      # not existing at compile time, so the Rust build does not depend on a
+      # prebuilt frontend. The bundle job below does build it.
       - name: Build
         run: cargo build --workspace --all-targets
 
@@ -110,11 +145,17 @@ jobs:
         run: npm run build
 
   # The Windows installer. Building it is the only way to know that the bundle
-  # configuration, the icons and the NSIS packaging actually work. The artifact is
-  # kept for review and is *not* published anywhere.
+  # configuration, the icons and the NSIS packaging actually work.
+  #
+  # The bundle lands in the *workspace* target directory (`<repo>/target`), not in
+  # `apps/desktop/src-tauri/target`, because this is a Cargo workspace. The path is
+  # taken from `cargo metadata` rather than hardcoded, so the two can never drift
+  # apart again. The artifact is kept for review and is *not* published anywhere.
   windows-bundle:
     name: Windows bundle (NSIS)
     runs-on: windows-latest
+    outputs:
+      target_dir: ${{ steps.workspace.outputs.target_dir }}
     steps:
       - uses: actions/checkout@v4
 
@@ -130,6 +171,15 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Read the workspace target directory
+        id: workspace
+        shell: pwsh
+        run: |
+          $meta = cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
+          $target = $meta.target_directory
+          Write-Host "workspace target directory: $target"
+          "target_dir=$target" >> $env:GITHUB_OUTPUT
+
       - name: Install frontend dependencies
         working-directory: apps/desktop
         run: npm ci
@@ -140,8 +190,16 @@ jobs:
 
       - name: Report what was produced
         shell: pwsh
+        env:
+          TARGET_DIR: ${{ steps.workspace.outputs.target_dir }}
         run: |
-          Get-ChildItem -Recurse -Path apps/desktop/src-tauri/target/release/bundle |
+          $bundleRoot = Join-Path $env:TARGET_DIR 'release/bundle'
+          Write-Host "bundle root: $bundleRoot"
+          if (-not (Test-Path $bundleRoot)) {
+            Write-Error "no bundle directory at $bundleRoot — the packaging configuration or the target path changed"
+            exit 1
+          }
+          Get-ChildItem -Recurse -Path $bundleRoot |
             Where-Object { -not $_.PSIsContainer } |
             Select-Object FullName, Length |
             Format-Table -AutoSize
@@ -150,7 +208,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: openhardwareos-windows-nsis
-          path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+          path: ${{ steps.workspace.outputs.target_dir }}/release/bundle/nsis/*.exe
           if-no-files-found: error
           retention-days: 14
 
