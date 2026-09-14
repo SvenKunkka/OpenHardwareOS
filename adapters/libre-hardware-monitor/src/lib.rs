@@ -182,6 +182,21 @@ impl HardwareAdapter for LhmAdapter {
                          is running as Administrator",
                     );
                 }
+                if !mapping.ambiguous_channels.is_empty() {
+                    // Usable but limited, and the reason is specific: these
+                    // channels can be read and must not be written.
+                    return AdapterStatus::degraded(
+                        self.id(),
+                        UnavailableReason::HardwareLimitation,
+                        format!(
+                            "{} channel(s) are read-only because their control could not be \
+                             matched to a physical channel: {}",
+                            mapping.ambiguous_channels.len(),
+                            mapping.ambiguous_channels.join("; ")
+                        ),
+                    )
+                    .with_device_count(mapping.devices.len());
+                }
                 AdapterStatus::available(self.id(), mapping.devices.len())
             }
             Err(error) => {

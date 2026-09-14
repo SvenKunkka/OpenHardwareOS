@@ -41,6 +41,10 @@ pub struct LhmMapping {
     pub devices: Vec<Device>,
     /// `device id -> (capability id -> LHM sensor id)`
     pub sensors: BTreeMap<DeviceId, SensorMap>,
+    /// Channels whose control could not be shown to belong to the tachometer
+    /// beside it, with the reason. Non-empty means part of the model is
+    /// deliberately read-only; the adapter reports it as a degraded status.
+    pub ambiguous_channels: Vec<String>,
 }
 
 impl LhmMapping {
@@ -141,6 +145,11 @@ pub fn map_tree(tree: &LhmNode) -> LhmMapping {
             continue;
         }
         for channel in fans {
+            if let Some(reason) = &channel.ambiguous {
+                mapping
+                    .ambiguous_channels
+                    .push(format!("{}: {reason}", hardware.text));
+            }
             let Some((device, sensors)) = build_fan_device(hardware, &channel, fan_index) else {
                 continue;
             };
@@ -163,6 +172,42 @@ fn descendant_sensors(node: &LhmNode) -> Vec<&LhmNode> {
         .collect()
 }
 
+/// Where a channel's pairing number came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Anchor {
+    /// The display name carries the number (`Fan #1`). LibreHardwareMonitor
+    /// derives these names from the board layout, so the same number is the same
+    /// physical channel on the next run.
+    Name(usize),
+    /// Only the sensor path ends in a number (`/lpc/nct6687d/fan/0`).
+    Path(usize),
+}
+
+impl Anchor {
+    fn number(self) -> usize {
+        match self {
+            Anchor::Name(index) | Anchor::Path(index) => index,
+        }
+    }
+
+    fn describe(self) -> &'static str {
+        match self {
+            Anchor::Name(_) => "its name",
+            Anchor::Path(_) => "its position in the sensor path",
+        }
+    }
+}
+
+/// The number the sensor's own name carries, if any.
+fn name_anchor(sensor: &LhmNode) -> Option<Anchor> {
+    sensor.name_index().map(Anchor::Name)
+}
+
+/// The number used to pair a tachometer with its control, and where it came from.
+fn anchor_of(sensor: &LhmNode) -> Option<Anchor> {
+    name_anchor(sensor).or_else(|| sensor.id_index().map(Anchor::Path))
+}
+
 /// One fan channel: a tachometer reading and/or its control.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FanChannel {
@@ -173,59 +218,142 @@ pub struct FanChannel {
     pub rpm: Option<LhmNode>,
     pub control: Option<LhmNode>,
     pub is_pump: bool,
+    /// Set when the tachometer and the control cannot be shown to be the same
+    /// physical channel. The channel is then readable but **not** writable: a
+    /// control aimed at the wrong header is how a fan stops, or spins to full.
+    pub ambiguous: Option<String>,
 }
 
 /// Pair `Fan #N` with `Fan Control #N` inside one hardware node.
+///
+/// Two things this deliberately does *not* do any more: merge sensors that
+/// resolve to the same number (the map insert used to keep whichever came last,
+/// so a channel could vanish silently), and pair a tachometer with a control
+/// whose number comes from a different place — the name is stable per board
+/// layout, the path index is an enumeration artefact, so a match between the two
+/// is a coincidence rather than an identity.
 fn fan_channels(hardware: &LhmNode) -> Vec<FanChannel> {
-    let mut rpm: BTreeMap<Option<usize>, LhmNode> = BTreeMap::new();
-    let mut controls: BTreeMap<Option<usize>, LhmNode> = BTreeMap::new();
-    let mut pumps: Vec<Option<usize>> = Vec::new();
+    let mut rpms: Vec<(Option<Anchor>, LhmNode)> = Vec::new();
+    let mut controls: Vec<(Option<Anchor>, LhmNode)> = Vec::new();
 
     for sensor in hardware.own_sensors() {
         let Some(kind) = sensor.sensor_type.as_deref().map(LhmSensorKind::from_type) else {
             continue;
         };
-        let key = sensor.name_index().or_else(|| sensor.id_index());
-        let lower = sensor.text.to_ascii_lowercase();
-        if lower.contains("pump") {
-            pumps.push(key);
-        }
         match kind {
-            LhmSensorKind::Fan => {
-                rpm.insert(key, sensor.clone());
-            }
-            LhmSensorKind::Control => {
-                controls.insert(key, sensor.clone());
-            }
+            LhmSensorKind::Fan => rpms.push((anchor_of(sensor), sensor.clone())),
+            LhmSensorKind::Control => controls.push((anchor_of(sensor), sensor.clone())),
             _ => {}
         }
     }
 
-    let mut keys: Vec<Option<usize>> = rpm.keys().chain(controls.keys()).copied().collect();
-    keys.sort();
-    keys.dedup();
+    let mut channels = Vec::new();
 
-    keys.into_iter()
-        .map(|key| {
-            let is_pump = pumps.contains(&key);
-            let label = rpm
-                .get(&key)
-                .or_else(|| controls.get(&key))
-                .map(|node| node.text.clone())
-                .filter(|text| !text.is_empty())
-                .unwrap_or_else(|| match key {
-                    Some(index) => format!("#{}", index + 1),
-                    None => "Fan".to_string(),
-                });
-            FanChannel {
-                index: key,
-                label,
-                rpm: rpm.get(&key).cloned(),
-                control: controls.get(&key).cloned(),
-                is_pump,
+    // One channel per number, in a stable order.
+    let mut numbers: Vec<usize> = rpms
+        .iter()
+        .chain(controls.iter())
+        .filter_map(|(anchor, _)| anchor.map(Anchor::number))
+        .collect();
+    numbers.sort_unstable();
+    numbers.dedup();
+
+    fn claiming<'a>(
+        entries: &'a [(Option<Anchor>, LhmNode)],
+        number: usize,
+    ) -> Vec<&'a (Option<Anchor>, LhmNode)> {
+        entries
+            .iter()
+            .filter(|(anchor, _)| anchor.map(Anchor::number) == Some(number))
+            .collect()
+    }
+
+    for number in numbers {
+        let rpm_here = claiming(&rpms, number);
+        let control_here = claiming(&controls, number);
+
+        let mut ambiguous = None;
+        if rpm_here.len() > 1 {
+            ambiguous = Some(format!(
+                "{} tachometers claim channel #{number}; only the first is shown and the control \
+                 is read-only",
+                rpm_here.len()
+            ));
+        } else if control_here.len() > 1 {
+            ambiguous = Some(format!(
+                "{} controls claim channel #{number}; none of them can be shown to be this channel",
+                control_here.len()
+            ));
+        } else if let (Some((rpm_anchor, _)), Some((control_anchor, _))) =
+            (rpm_here.first(), control_here.first())
+        {
+            if rpm_anchor != control_anchor {
+                ambiguous = Some(format!(
+                    "the tachometer is identified by {} and the control by {}; they cannot be \
+                     shown to be the same channel",
+                    rpm_anchor.map(Anchor::describe).unwrap_or("nothing"),
+                    control_anchor.map(Anchor::describe).unwrap_or("nothing")
+                ));
             }
-        })
-        .collect()
+        }
+
+        channels.push(one_channel(
+            Some(number),
+            rpm_here.first().map(|(_, node)| node.clone()),
+            control_here.first().map(|(_, node)| node.clone()),
+            ambiguous,
+        ));
+    }
+
+    // Sensors with no number anywhere never share a channel: two unnumbered
+    // sensors are indistinguishable, and merging them dropped one of them.
+    for (_, node) in rpms.iter().filter(|(anchor, _)| anchor.is_none()) {
+        channels.push(one_channel(None, Some(node.clone()), None, None));
+    }
+    for (_, node) in controls.iter().filter(|(anchor, _)| anchor.is_none()) {
+        channels.push(one_channel(
+            None,
+            None,
+            Some(node.clone()),
+            Some(
+                "this control carries no channel number in its name or path, so it cannot be \
+                 matched to a physical fan; it is read-only"
+                    .to_string(),
+            ),
+        ));
+    }
+
+    channels
+}
+
+/// Assemble one channel, deriving its label and whether it is a pump.
+fn one_channel(
+    index: Option<usize>,
+    rpm: Option<LhmNode>,
+    control: Option<LhmNode>,
+    ambiguous: Option<String>,
+) -> FanChannel {
+    let label = rpm
+        .as_ref()
+        .or(control.as_ref())
+        .map(|node| node.text.clone())
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| match index {
+            Some(index) => format!("#{}", index + 1),
+            None => "Fan".to_string(),
+        });
+    let is_pump = rpm
+        .iter()
+        .chain(control.iter())
+        .any(|node| node.text.to_ascii_lowercase().contains("pump"));
+    FanChannel {
+        index,
+        label,
+        rpm,
+        control,
+        is_pump,
+        ambiguous,
+    }
 }
 
 /// Build the device for one fan channel.
@@ -267,7 +395,9 @@ fn build_fan_device(
         }
     }
 
-    if let Some(control) = &channel.control {
+    if let Some(control) = &channel.control
+        && channel.ambiguous.is_none()
+    {
         let (id, label) = if channel.is_pump {
             (caps::PUMP_SPEED_PERCENT, "Pump Speed")
         } else {
@@ -298,6 +428,10 @@ fn build_fan_device(
     .with_metadata("lhm_id", hardware.id.clone())
     .with_metadata("lhm_channel", channel_label)
     .with_metadata("source", "LibreHardwareMonitor web server");
+    let device = match &channel.ambiguous {
+        Some(reason) => device.with_metadata("lhm_control_withheld", reason.clone()),
+        None => device,
+    };
 
     Some((device, sensors))
 }
@@ -604,6 +738,193 @@ mod tests {
 
         // Every control channel in the fixture is reachable: 1 GPU + 5 chassis.
         assert_eq!(mapping.control_count(), 6);
+    }
+
+    /// A motherboard whose only sensors are the ones a test cares about.
+    fn tree_with(sensors: &str) -> LhmMapping {
+        let json = format!(
+            r#"{{"id":"/","Text":"Sensor","Children":[{{"id":"/lpc/0","Text":"Nuvoton NCT6687D","HardwareId":"/lpc/0","HardwareType":"Motherboard","Children":[{sensors}]}}]}}"#
+        );
+        map_tree(&parse_tree(&json).unwrap())
+    }
+
+    fn fans(mapping: &LhmMapping) -> Vec<&Device> {
+        mapping
+            .devices
+            .iter()
+            .filter(|device| device.device_type == DeviceType::Fan)
+            .collect()
+    }
+
+    fn sensor_of(mapping: &LhmMapping, device: &Device, capability: &str) -> Option<String> {
+        mapping
+            .sensor_id(&device.id, &CapabilityId::new_unchecked(capability))
+            .map(str::to_string)
+    }
+
+    /// Two tachometers claiming one number is not a channel with two readings;
+    /// it is a channel nobody can identify, so its control is withheld.
+    #[test]
+    fn duplicate_channel_numbers_are_reported_and_the_control_is_withheld() {
+        let mapping = tree_with(
+            r#"
+            { "id": "/lpc/0/fan/0", "Text": "Fan #1", "Type": "Fan", "Value": "900 RPM" },
+            { "id": "/lpc/0/fan/1", "Text": "Fan #1", "Type": "Fan", "Value": "950 RPM" },
+            { "id": "/lpc/0/control/0", "Text": "Fan Control #1", "Type": "Control", "Value": "50.0 %" }
+            "#,
+        );
+        let channels = fans(&mapping);
+        assert_eq!(channels.len(), 1, "the duplicate must not become a second device");
+        let channel = channels[0];
+        assert!(channel.supports(caps::FAN_RPM), "the reading stays available");
+        assert!(
+            !channel.supports(caps::FAN_SPEED_PERCENT),
+            "an unidentifiable channel must not be writable"
+        );
+        assert!(!channel.is_controllable());
+        let reason = channel
+            .metadata
+            .get("lhm_control_withheld")
+            .expect("the device says why its control is missing");
+        assert!(reason.contains("2 tachometers claim channel #1"), "{reason}");
+        assert_eq!(mapping.ambiguous_channels.len(), 1, "{:?}", mapping.ambiguous_channels);
+    }
+
+    /// A number from the name and a number from the path are not the same number.
+    #[test]
+    fn a_control_paired_only_by_path_position_is_read_only() {
+        let mapping = tree_with(
+            r#"
+            { "id": "/lpc/0/fan/0", "Text": "Fan #1", "Type": "Fan", "Value": "900 RPM" },
+            { "id": "/lpc/0/control/1", "Text": "Fan Control", "Type": "Control", "Value": "50.0 %" }
+            "#,
+        );
+        let channel = fans(&mapping)
+            .into_iter()
+            .find(|device| device.supports(caps::FAN_RPM))
+            .expect("the tachometer is still readable");
+        assert!(channel.supports(caps::FAN_RPM));
+        assert!(
+            !channel.supports(caps::FAN_SPEED_PERCENT),
+            "a control identified only by its position must not be written"
+        );
+        let reason = channel.metadata.get("lhm_control_withheld").unwrap();
+        assert!(
+            reason.contains("identified by its name") && reason.contains("by its position"),
+            "{reason}"
+        );
+    }
+
+    /// Sensors with no number at all used to be merged into one channel, which
+    /// silently kept only the last of each kind.
+    #[test]
+    fn unnumbered_sensors_are_kept_apart_and_cannot_be_written() {
+        let mapping = tree_with(
+            r#"
+            { "id": "/lpc/0/fan/left", "Text": "Chassis Fan", "Type": "Fan", "Value": "900 RPM" },
+            { "id": "/lpc/0/fan/right", "Text": "Chassis Fan", "Type": "Fan", "Value": "950 RPM" },
+            { "id": "/lpc/0/control/pwm", "Text": "Chassis Fan Control", "Type": "Control", "Value": "50.0 %" }
+            "#,
+        );
+        let channels = fans(&mapping);
+        assert_eq!(
+            channels.len(),
+            2,
+            "each unnamed tachometer keeps its own device: {}",
+            channels
+                .iter()
+                .map(|device| device.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        for device in &channels {
+            assert!(device.supports(caps::FAN_RPM), "both remain readable");
+            assert!(
+                !device.supports(caps::FAN_SPEED_PERCENT),
+                "an unnumbered control cannot be matched to a fan, so nothing is writable"
+            );
+        }
+        // The control itself is not exposed as a device — there would be nothing
+        // to show and nothing anyone could safely write — but it is not hidden
+        // either: the adapter reports it as a limited channel.
+        assert_eq!(mapping.ambiguous_channels.len(), 1, "{:?}", mapping.ambiguous_channels);
+        assert!(
+            mapping.ambiguous_channels[0].contains("no channel number"),
+            "{:?}",
+            mapping.ambiguous_channels
+        );
+    }
+
+    /// The same channel, listed in another order, is still the same channel — and
+    /// a reconnected control keeps its pairing because the name carries it.
+    #[test]
+    fn reordering_or_reconnecting_does_not_change_the_pairing() {
+        let first = tree_with(
+            r#"
+            { "id": "/lpc/0/fan/0", "Text": "Fan #1", "Type": "Fan", "Value": "900 RPM" },
+            { "id": "/lpc/0/control/0", "Text": "Fan Control #1", "Type": "Control", "Value": "50.0 %" },
+            { "id": "/lpc/0/fan/1", "Text": "Fan #2", "Type": "Fan", "Value": "700 RPM" },
+            { "id": "/lpc/0/control/1", "Text": "Fan Control #2", "Type": "Control", "Value": "40.0 %" }
+            "#,
+        );
+        let reordered = tree_with(
+            r#"
+            { "id": "/lpc/0/control/1", "Text": "Fan Control #2", "Type": "Control", "Value": "40.0 %" },
+            { "id": "/lpc/0/fan/1", "Text": "Fan #2", "Type": "Fan", "Value": "700 RPM" },
+            { "id": "/lpc/0/control/0", "Text": "Fan Control #1", "Type": "Control", "Value": "50.0 %" },
+            { "id": "/lpc/0/fan/0", "Text": "Fan #1", "Type": "Fan", "Value": "900 RPM" }
+            "#,
+        );
+        // A reconnect that re-enumerates the control channels: same names, new paths.
+        let reconnected = tree_with(
+            r#"
+            { "id": "/lpc/0/fan/0", "Text": "Fan #1", "Type": "Fan", "Value": "900 RPM" },
+            { "id": "/lpc/0/control/7", "Text": "Fan Control #1", "Type": "Control", "Value": "50.0 %" },
+            { "id": "/lpc/0/fan/1", "Text": "Fan #2", "Type": "Fan", "Value": "700 RPM" },
+            { "id": "/lpc/0/control/9", "Text": "Fan Control #2", "Type": "Control", "Value": "40.0 %" }
+            "#,
+        );
+
+        for mapping in [&first, &reordered, &reconnected] {
+            assert!(
+                mapping.ambiguous_channels.is_empty(),
+                "{:?}",
+                mapping.ambiguous_channels
+            );
+            let channels = fans(mapping);
+            assert_eq!(channels.len(), 2);
+            for (label, rpm_id) in [("Fan #1", "/lpc/0/fan/0"), ("Fan #2", "/lpc/0/fan/1")] {
+                let device = channels
+                    .iter()
+                    .find(|device| device.name.contains(label))
+                    .unwrap_or_else(|| panic!("{label} is missing"));
+                assert_eq!(
+                    sensor_of(mapping, device, caps::FAN_RPM).as_deref(),
+                    Some(rpm_id),
+                    "{label} must keep its own tachometer"
+                );
+                assert!(
+                    device.supports(caps::FAN_SPEED_PERCENT),
+                    "{label} must stay controllable"
+                );
+                assert!(
+                    sensor_of(mapping, device, caps::FAN_SPEED_PERCENT)
+                        .is_some_and(|id| id.contains("/control/")),
+                    "{label} must be paired with a control channel"
+                );
+            }
+        }
+
+        // The control that moved is re-read from where it is now, not from where
+        // the previous session found it.
+        let moved = fans(&reconnected)
+            .into_iter()
+            .find(|device| device.name.contains("Fan #2"))
+            .unwrap();
+        assert_ne!(
+            sensor_of(&reconnected, moved, caps::FAN_SPEED_PERCENT),
+            sensor_of(&first, fans(&first).into_iter().find(|d| d.name.contains("Fan #2")).unwrap(), caps::FAN_SPEED_PERCENT)
+        );
     }
 
     #[test]
