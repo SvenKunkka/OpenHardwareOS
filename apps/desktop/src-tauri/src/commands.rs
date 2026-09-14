@@ -16,7 +16,10 @@ use std::sync::Arc;
 use ohm_adapter_api::HardwareAdapter;
 use ohm_adapter_mock::{LoadProfile, MockAdapter, MockFaults, MockStatus};
 use ohm_automation::examples::suggest_for;
-use ohm_automation::{Rule, RuleCheck, RuleConflict, RuleOutcome, RuleStore, merge_suggestions};
+use ohm_automation::{
+    HandoverReport, Rule, RuleCheck, RuleConflict, RuleFileNote, RuleOutcome, RuleStore,
+    merge_suggestions,
+};
 use ohm_core::RuleId;
 use ohm_device_model::Value;
 use ohm_runtime::{
@@ -290,6 +293,48 @@ pub fn rule_outcomes(state: State<'_, AppState>) -> CommandResult<Vec<RuleOutcom
 #[tauri::command]
 pub fn rule_conflicts(state: State<'_, AppState>) -> CommandResult<Vec<RuleConflict>> {
     Ok(state.engine.conflicts())
+}
+
+/// Rule files that loaded, but whose content had to be adjusted in memory.
+///
+/// Currently one case: a legacy `fallback: ... release`, an action this build cannot
+/// perform. The substitution happens in memory, the file on disk is left exactly as it
+/// was, and this is how the user finds out — which field, what it said, what is in
+/// force instead, and what to do about it.
+///
+/// The engine call is split out from the command so a test can exercise it without a
+/// running Tauri app: a note the user never sees is a note that does not exist.
+pub fn compatibility_notes(engine: &ohm_automation::AutomationEngine) -> Vec<RuleFileNote> {
+    engine.compatibility_notes()
+}
+
+#[tauri::command]
+pub fn rule_compatibility_notes(state: State<'_, AppState>) -> CommandResult<Vec<RuleFileNote>> {
+    Ok(compatibility_notes(&state.engine))
+}
+
+/// Channels a rule stopped driving, and whether they were made safe.
+///
+/// Unfinished handovers are included on purpose, including those whose rule has since
+/// been deleted: a channel still sitting at an abandoned duty with nobody protecting it
+/// is exactly what the user must be able to see.
+pub fn handover_report(engine: &ohm_automation::AutomationEngine) -> Vec<HandoverReport> {
+    engine.handovers()
+}
+
+#[tauri::command]
+pub fn rule_handovers(state: State<'_, AppState>) -> CommandResult<Vec<HandoverReport>> {
+    Ok(handover_report(&state.engine))
+}
+
+/// Re-arm handovers that ran out of attempts. Returns how many were re-armed.
+pub fn retry_handovers(engine: &ohm_automation::AutomationEngine) -> usize {
+    engine.retry_failed_handovers()
+}
+
+#[tauri::command]
+pub fn rule_retry_handovers(state: State<'_, AppState>) -> CommandResult<usize> {
+    Ok(retry_handovers(&state.engine))
 }
 
 #[tauri::command]
@@ -569,5 +614,232 @@ mod tests {
     fn rule_ids_are_validated() {
         assert_eq!(rule_id("gpu-cooling").unwrap().as_str(), "gpu-cooling");
         assert!(rule_id("Bad Id").is_err());
+    }
+
+    /// An engine over a temporary config directory and the simulated provider.
+    async fn engine_with_mock() -> (tempfile::TempDir, ohm_automation::AutomationEngine) {
+        use ohm_adapters::{AdapterOptions, build_adapters};
+        use ohm_core::ConfigPaths;
+        use ohm_runtime::{Runtime, Settings};
+
+        let temp = tempfile::tempdir().unwrap();
+        let paths = ConfigPaths::from_root(temp.path());
+        paths.ensure().unwrap();
+        let mut options = AdapterOptions::from_settings(&Settings::default());
+        options.mock = true;
+        let runtime =
+            Runtime::new(paths.clone(), Settings::default(), build_adapters(&options)).unwrap();
+        runtime.start().await.unwrap();
+        let engine =
+            ohm_automation::AutomationEngine::new(runtime.clone(), RuleStore::from_paths(&paths));
+        (temp, engine)
+    }
+
+    fn flat_rule(id: &str, target_device: &str) -> Rule {
+        Rule::new(
+            id,
+            "Desktop Probe",
+            ohm_automation::Source::sensor("gpu.mock.0", "temperature.core"),
+            ohm_automation::Target::new(target_device, "fan.speed_percent"),
+            ohm_automation::Curve::expect([(0.0, 55.0), (100.0, 55.0)]),
+        )
+        .unwrap()
+        .with_deadband(0.0)
+    }
+
+    /// The compatibility notes must reach the IPC contract with enough structure for a
+    /// screen to be useful: which rule, which field, what the file said, what is in
+    /// force, and what to do about it.
+    #[tokio::test]
+    async fn compatibility_notes_arrive_structured() {
+        // The temporary directory is held for the length of the test: dropping it
+        // would delete the rule file the assertion reads back.
+        let (_temp, engine) = engine_with_mock().await;
+        // A legacy rule file: `release` is an action no adapter in this build can
+        // perform, so it is substituted in memory and reported.
+        let legacy = r#"
+name: Legacy
+id: legacy-release
+source: { device: gpu.mock.0, capability: temperature.core }
+target: { device: fan.mock.0, capability: fan.speed_percent }
+curve:
+  - [0, 40]
+  - [100, 80]
+fallback:
+  on_sensor_missing: release
+  on_write_failure: safe_default
+"#;
+        let path = engine.store().directory().join("legacy-release.yaml");
+        std::fs::write(&path, legacy).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        engine.load_rules().unwrap();
+
+        let notes = compatibility_notes(&engine);
+        assert_eq!(
+            notes.len(),
+            1,
+            "the substitution must be reported: {notes:?}"
+        );
+        let note = &notes[0];
+        assert_eq!(note.rule_id.as_str(), "legacy-release");
+        assert_eq!(note.field, "fallback.on_sensor_missing");
+        assert_eq!(note.original, "release");
+        assert!(
+            note.effective.contains("safe_default"),
+            "the note must say what is actually in force: {}",
+            note.effective
+        );
+        assert!(
+            note.message.contains("not modified"),
+            "and that the file was left alone: {}",
+            note.message
+        );
+        assert!(
+            note.hint.contains("fallback.on_sensor_missing"),
+            "and how to fix it: {}",
+            note.hint
+        );
+        assert_eq!(note.path, path, "the note must name the file it is about");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before,
+            "the note is a report about the file, never a rewrite of it"
+        );
+
+        // The engine really is running the substituted policy.
+        let loaded = engine.rule("legacy-release").expect("the rule loaded");
+        assert_eq!(
+            loaded.fallback.on_sensor_missing,
+            ohm_automation::FallbackAction::SafeDefault
+        );
+    }
+
+    /// The IPC wire contract, asserted key by key.
+    ///
+    /// The TypeScript types declare the optional fields as `?`, which in JSON means
+    /// *absent*. A `null` there would be a value the frontend never expects to read,
+    /// so the shape is pinned here rather than left to a type annotation that no test
+    /// can check: the UI was the part of this contract that lied about unconfirmed
+    /// writes in the first place.
+    #[test]
+    fn the_ipc_payload_shape_matches_the_typescript_contract() {
+        use ohm_automation::{HandoverReport, HandoverState};
+
+        let owed = HandoverReport {
+            device: ohm_core::DeviceId::new("fan.mock.0").unwrap(),
+            capability: ohm_core::CapabilityId::new("fan.speed_percent").unwrap(),
+            from_rule: ohm_core::RuleId::new("gone").unwrap(),
+            reason: "rule `gone` was deleted".into(),
+            state: HandoverState::Pending,
+            attempts: 2,
+            first_error: None,
+            last_error: None,
+            queued_at_ms: 10,
+            last_attempt_ms: 20,
+            confirmed_value: None,
+            superseded_by: None,
+        };
+        let json = serde_json::to_value(&owed).unwrap();
+        // `serde_json::Value` orders keys, so compare as a set.
+        let mut keys: Vec<&str> = json.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        let mut expected = vec![
+            "attempts",
+            "capability",
+            "device",
+            "from_rule",
+            "last_attempt_ms",
+            "queued_at_ms",
+            "reason",
+            "state",
+        ];
+        expected.sort_unstable();
+        assert_eq!(
+            keys, expected,
+            "an absent optional field must be absent, not null: {json}"
+        );
+        assert_eq!(json["state"], "pending", "states are snake_case on the wire");
+
+        // With values, the optional fields appear and keep their names.
+        let failed = HandoverReport {
+            state: HandoverState::Failed,
+            first_error: Some("refused".into()),
+            last_error: Some("still refused".into()),
+            ..owed.clone()
+        };
+        let json = serde_json::to_value(&failed).unwrap();
+        assert_eq!(json["first_error"], "refused");
+        assert_eq!(json["last_error"], "still refused");
+        assert_eq!(json["state"], "failed");
+
+        // The compatibility note carries what the screen shows: which file, which
+        // field, what it said, what is in force, and what to do about it.
+        let note = RuleFileNote {
+            path: std::path::PathBuf::from(r"C:\cfg\rules\legacy.yaml"),
+            rule_id: ohm_core::RuleId::new("legacy").unwrap(),
+            field: "fallback.on_sensor_missing".into(),
+            original: "release".into(),
+            effective: "safe_default".into(),
+            message: "substituted in memory".into(),
+            hint: "edit the file".into(),
+        };
+        let json = serde_json::to_value(&note).unwrap();
+        let mut keys: Vec<&str> = json.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "effective",
+                "field",
+                "hint",
+                "message",
+                "original",
+                "path",
+                "rule_id"
+            ],
+            "the note carries exactly the fields the screen reads: {json}"
+        );
+        assert_eq!(
+            json["path"], r"C:\cfg\rules\legacy.yaml",
+            "a Windows path must reach the frontend as the path it is"
+        );
+
+    }
+
+    /// The handover contract: what the screen needs to show that a channel is still
+    /// unprotected, including after the rule that abandoned it is gone.
+    #[tokio::test]
+    async fn handovers_arrive_with_their_channel_and_state() {
+        let (_temp, engine) = engine_with_mock().await;
+        assert!(
+            handover_report(&engine).is_empty(),
+            "a fresh engine owes nothing"
+        );
+
+        engine.save_rule(flat_rule("probe", "fan.mock.0")).unwrap();
+        engine.tick_force().await;
+        // Retargeting abandons the first channel, which is now owed a handover.
+        engine.save_rule(flat_rule("probe", "fan.mock.1")).unwrap();
+
+        let owed = handover_report(&engine);
+        assert_eq!(owed.len(), 1, "the abandoned channel is reported: {owed:?}");
+        assert_eq!(owed[0].device.as_str(), "fan.mock.0");
+        assert_eq!(owed[0].capability.as_str(), "fan.speed_percent");
+        assert_eq!(owed[0].from_rule.as_str(), "probe");
+        assert_eq!(owed[0].state, ohm_automation::HandoverState::Pending);
+        assert!(owed[0].reason.contains("retargeted"), "{}", owed[0].reason);
+
+        // The simulated provider accepts writes, so one tick settles it.
+        engine.tick_force().await;
+        let settled = handover_report(&engine);
+        assert_eq!(settled[0].state, ohm_automation::HandoverState::Confirmed);
+        assert_eq!(settled[0].confirmed_value, Some(70.0));
+        assert_eq!(
+            engine.unfinished_handovers(),
+            0,
+            "nothing is left owed once the channel is made safe"
+        );
+        // Nothing to re-arm, and the call says so rather than pretending.
+        assert_eq!(retry_handovers(&engine), 0);
     }
 }

@@ -8,17 +8,21 @@
 
 import type {
   AdapterView,
+  AuditEntry,
   Capability,
   CapabilityIndex,
   CapabilityRef,
   Device,
   DeviceView,
+  HandoverReport,
   Rule,
   RuleConflict,
+  RuleFileNote,
   RuleOutcome,
   RuntimeSnapshot,
   SafetyPolicy,
   Settings,
+  WriteReport,
 } from '../types';
 
 export const GPU_ID = 'gpu.mock.0';
@@ -259,5 +263,60 @@ export function adapterFixture(over: Partial<AdapterView['info']> = {}): Adapter
       checked_at_ms: 1_700_000_000_000,
       device_count: 2,
     },
+  };
+}
+
+/** A write outcome, as the backend reports it. `applied` is absent on purpose. */
+export function writeReportFixture(over: Partial<WriteReport> = {}): WriteReport {
+  return {
+    at_ms: 1_700_000_000_000,
+    device_id: GPU_ID,
+    device_name: 'Mock GPU',
+    device_type: 'gpu',
+    capability: 'fan.speed_percent',
+    capability_name: 'Fan duty',
+    requested: 80,
+    applied: 80,
+    status: 'applied',
+    clamped: false,
+    origin: { kind: 'manual' },
+    simulated: false,
+    ...over,
+  };
+}
+
+/** One recorded write in the audit log. */
+export function writeAuditEntry(report: WriteReport): AuditEntry {
+  return { at_ms: report.at_ms, kind: 'write', action: report.status, report };
+}
+
+/** One compatibility note: a legacy `release` fallback the runtime substituted. */
+export function ruleFileNoteFixture(over: Partial<RuleFileNote> = {}): RuleFileNote {
+  return {
+    path: '/home/user/.config/openhardwareos/rules/gpu.json',
+    rule_id: 'rule-gpu-load',
+    field: 'fallback.on_sensor_missing',
+    original: 'release',
+    effective: 'safe_default (fail-safe duty 70 %)',
+    message:
+      'The file asks for “release”, which no adapter in this build can perform, so the fail-safe duty runs instead.',
+    hint: 'Edit the rule and choose “safe default” to make the file match what actually runs.',
+    ...over,
+  };
+}
+
+/** One channel handover, as the runtime reports it. */
+export function handoverFixture(over: Partial<HandoverReport> = {}): HandoverReport {
+  return {
+    device: FAN_ID,
+    capability: 'fan.speed_percent',
+    from_rule: 'rule-gpu-fan-a',
+    reason: 'The rule was disabled while it was driving this channel.',
+    state: 'pending',
+    attempts: 1,
+    first_error: 'the device did not answer within the write timeout',
+    queued_at_ms: 1_700_000_000_000,
+    last_attempt_ms: 1_700_000_000_500,
+    ...over,
   };
 }

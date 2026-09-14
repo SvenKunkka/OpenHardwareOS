@@ -12,13 +12,17 @@ import {
   unavailableReasonBadge,
   unavailableReasonLabel,
 } from '../lib/format';
+import { WRITE_STATUS_TONE, writeStatusHint, writeStatusLabel } from '../lib/writeStatus';
+import { HANDOVER_STATE_TONE, handoverStateHint, handoverStateLabel } from '../lib/handovers';
 import type {
   AdapterState,
   CapabilityValue,
   DeviceStatus,
+  HandoverState,
   RuleStatus,
   UnavailableReason,
   Unit,
+  WriteStatus,
 } from '../types';
 import { EMPTY, formatValue, formatValueParts } from '../lib/format';
 
@@ -64,6 +68,31 @@ export function RuleStatusBadge({ status }: { status: RuleStatus }) {
   return (
     <Badge tone={RULE_STATUS_TONE[status]} title={ruleStatusHint(status)}>
       {ruleStatusLabel(status)}
+    </Badge>
+  );
+}
+
+/**
+ * The badge for a write outcome. The tone comes from the shared map, so an
+ * `unconfirmed` write can never be painted as success, and the label says what
+ * is known instead of repeating the status word.
+ */
+export function WriteStatusBadge({ status }: { status: WriteStatus }) {
+  return (
+    <Badge tone={WRITE_STATUS_TONE[status]} title={writeStatusHint(status)}>
+      {writeStatusLabel(status)}
+    </Badge>
+  );
+}
+
+/**
+ * The badge for a channel handover. `pending` and `failed` are both still owed:
+ * the warning says the runtime is working on it, the danger says it stopped.
+ */
+export function HandoverStateBadge({ state }: { state: HandoverState }) {
+  return (
+    <Badge tone={HANDOVER_STATE_TONE[state]} title={handoverStateHint(state)}>
+      {handoverStateLabel(state)}
     </Badge>
   );
 }

@@ -30,3 +30,6 @@ tracing.workspace = true
 anyhow.workspace = true
 
 tauri = { version = "2", features = ["tray-icon"] }
+
+[dev-dependencies]
+tempfile.workspace = true

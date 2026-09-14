@@ -25,6 +25,8 @@ import type {
   Rule,
   RuleCheck,
   RuleConflict,
+  HandoverReport,
+  RuleFileNote,
   RuleOutcome,
   RuntimeEvent,
   RuntimeSnapshot,
@@ -117,6 +119,18 @@ export const api = {
   ruleOutcomes: () => call<RuleOutcome[]>('rule_outcomes'),
   /** Rules that fight over one output, as resolved when the rule files loaded. */
   ruleConflicts: () => call<RuleConflict[]>('rule_conflicts'),
+  /**
+   * Actions a legacy rule file asks for that this build cannot honour. The
+   * runtime substituted the fail-safe duty in memory; the files are untouched.
+   */
+  ruleCompatibilityNotes: () => call<RuleFileNote[]>('rule_compatibility_notes'),
+  /**
+   * Channels a rule left behind, including handovers the fail-safe duty has not
+   * taken over yet — the record outlives the rule that abandoned the channel.
+   */
+  ruleHandovers: () => call<HandoverReport[]>('rule_handovers'),
+  /** Re-arm every handover that ran out of attempts; returns how many. */
+  ruleRetryHandovers: () => call<number>('rule_retry_handovers'),
   checkRule: (rule: Rule) => call<RuleCheck>('check_rule', { rule }),
   saveRule: (rule: Rule) => call<Rule>('save_rule', { rule }),
   deleteRule: (id: string) => call<boolean>('delete_rule', { id }),

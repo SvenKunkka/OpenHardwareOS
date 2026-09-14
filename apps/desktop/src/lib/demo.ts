@@ -848,6 +848,13 @@ export function createDemoBackend(): DemoBackend {
     list_rules: () => rules,
     rule_outcomes: () => ruleOutcomes(),
     rule_conflicts: () => ruleConflicts(),
+    // The demo backend has no rule files on disk, so there is nothing to
+    // substitute; it answers with the empty list rather than failing loudly.
+    rule_compatibility_notes: () => [],
+    // The demo rules are driven by the demo engine, which never abandons a
+    // channel, so there is never a handover owed.
+    rule_handovers: () => [],
+    rule_retry_handovers: () => 0,
     check_rule: (a) => checkRule(a.rule as Rule),
     save_rule: (a) => {
       const rule = a.rule as Rule;

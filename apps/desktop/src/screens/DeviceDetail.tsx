@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useState } from 'react';
 import { useRuntime, toNoticeError } from '../hooks/useRuntime';
 import { useHistory } from '../hooks/useHistory';
 import { usePolled } from '../hooks/usePoll';
+import { useToast } from '../hooks/useToast';
 import { api } from '../lib/ipc';
 import { capabilityCount, primarySensor } from '../lib/devices';
 import {
@@ -25,9 +26,21 @@ import {
   KeyValue,
   Panel,
   Spinner,
+  type Tone,
 } from '../components/primitives';
-import { DeviceStatusBadge, ReadingValue, UnavailableBadge } from '../components/status';
+import {
+  DeviceStatusBadge,
+  ReadingValue,
+  UnavailableBadge,
+  WriteStatusBadge,
+} from '../components/status';
 import { LineChart } from '../components/LineChart';
+import {
+  WRITE_STATUS_TONE,
+  appliedValueText,
+  writeStatusLabel,
+  writeStatusSentence,
+} from '../lib/writeStatus';
 import type {
   Capability,
   CapabilityValue,
@@ -74,7 +87,15 @@ export function DeviceDetail({
   const audit = usePolled(() => api.listAuditLog(200), tick, { throttleMs: 3000 });
 
   const recentWrites = useMemo(() => {
-    type Row = { key: string; at_ms: number; title: string; detail: string; tone: 'ok' | 'warn' | 'danger' };
+    type Row = {
+      key: string;
+      at_ms: number;
+      title: string;
+      detail: string;
+      tone: Tone;
+      /** The feed's own text marker: colour is never the only signal. */
+      level: string;
+    };
     const rows: Row[] = [];
 
     for (const entry of audit.data ?? []) {
@@ -83,9 +104,9 @@ export function DeviceDetail({
       rows.push({
         key: `audit-${report.at_ms}-${report.capability}-${report.status}`,
         at_ms: report.at_ms,
-        title: `${report.capability_name}: ${formatValue(report.requested, 'none')} → ${
-          report.applied === undefined ? 'not applied' : formatValue(report.applied, 'none')
-        }`,
+        // An unconfirmed write has no applied value to show: the row states that
+        // the value is unknown rather than implying nothing happened.
+        title: `${report.capability_name}: ${formatValue(report.requested, 'none')} → ${appliedValueText(report, 'none')}`,
         detail: [
           report.status,
           report.clamped ? 'clamped by limits' : null,
@@ -96,7 +117,8 @@ export function DeviceDetail({
         ]
           .filter(Boolean)
           .join(' · '),
-        tone: report.status === 'rejected' ? 'danger' : report.simulated ? 'warn' : 'ok',
+        tone: WRITE_STATUS_TONE[report.status],
+        level: writeStatusLabel(report.status),
       });
     }
 
@@ -108,6 +130,7 @@ export function DeviceDetail({
         title: event.message,
         detail: event.detail ?? '',
         tone: event.level === 'warn' ? 'warn' : 'ok',
+        level: event.level === 'warn' ? 'warn' : 'write',
       });
     }
 
@@ -394,7 +417,7 @@ export function DeviceDetail({
               <li className="feed__item" key={row.key}>
                 <span className="feed__time">{formatClock(row.at_ms)}</span>
                 <span className={`feed__level feed__level--${row.tone === 'danger' ? 'error' : row.tone}`}>
-                  {row.tone === 'danger' ? 'rejected' : row.tone === 'warn' ? 'simulated' : 'applied'}
+                  {row.level}
                 </span>
                 <span className="feed__message">
                   {row.title}
@@ -448,7 +471,8 @@ function describeOrigin(report: WriteReport): string {
 
 /**
  * One writable capability: slider/number/select plus Apply, always showing what
- * was requested next to what the backend actually applied.
+ * was requested next to what the backend actually confirmed. A write the device
+ * accepted but never confirmed is reported as unknown, never as applied.
  */
 function WriteControl({
   deviceId,
@@ -473,7 +497,13 @@ function WriteControl({
   });
   const [report, setReport] = useState<WriteReport | null>(null);
   const [failure, setFailure] = useState<NoticeError | null>(null);
+  /**
+   * The device took the request but never confirmed the value. Kept apart from
+   * `failure` because a refusal is *known to have failed* while this is unknown.
+   */
+  const [unconfirmed, setUnconfirmed] = useState<WriteReport | null>(null);
   const [pending, setPending] = useState(false);
+  const toast = useToast();
 
   useEffect(() => {
     if (typeof current === 'number' || typeof current === 'boolean' || typeof current === 'string') {
@@ -484,6 +514,7 @@ function WriteControl({
   const submit = async () => {
     setPending(true);
     setFailure(null);
+    setUnconfirmed(null);
     try {
       const result = await api.writeCapability(deviceId, capability.id, draft);
       setReport(result);
@@ -492,6 +523,14 @@ function WriteControl({
           code: result.error_code ?? 'rejected',
           message: result.detail ?? 'The backend rejected this write.',
           hint: 'Check the safety policy and the device state before retrying.',
+        });
+      } else if (result.status === 'unconfirmed') {
+        setUnconfirmed(result);
+        toast.push({
+          kind: 'info',
+          title: `${capability.name} was not confirmed`,
+          message: writeStatusSentence(result, capability.unit),
+          hint: 'The runtime retries this write; after three consecutive failures the fail-safe duty is applied.',
         });
       }
     } catch (cause) {
@@ -606,25 +645,22 @@ function WriteControl({
       </div>
 
       {report ? (
-        <div className="stack stack--tight">
-          <p className="small">
-            Requested <strong>{formatValue(report.requested, capability.unit)}</strong> → applied{' '}
-            <strong>
-              {report.applied === undefined
-                ? 'nothing'
-                : formatValue(report.applied, capability.unit)}
-            </strong>
+        <div className="stack stack--tight" data-testid="write-result">
+          <p className="small" data-testid="write-result-value">
+            Requested <strong>{formatValue(report.requested, capability.unit)}</strong> →{' '}
+            <strong>{appliedValueText(report, capability.unit)}</strong>
+          </p>
+          <p className="small muted" data-testid="write-result-known">
+            {writeStatusSentence(report, capability.unit)}
           </p>
           <div className="row">
-            <Badge tone={report.status === 'rejected' ? 'danger' : report.status === 'simulated' ? 'warn' : 'ok'}>
-              {report.status}
-            </Badge>
+            <WriteStatusBadge status={report.status} />
             {report.clamped ? (
               <Badge tone="warn" title="The value was clamped to the allowed range">
                 clamped
               </Badge>
             ) : null}
-            {report.simulated ? (
+            {report.simulated && report.status !== 'simulated' ? (
               <Badge tone="warn" title="Nothing was sent to hardware: dry run or simulated device">
                 simulated
               </Badge>
@@ -636,9 +672,21 @@ function WriteControl({
         </div>
       ) : null}
 
+      {unconfirmed ? (
+        <InlineNotice tone="warn" title="The write was not confirmed">
+          <p data-testid="write-unconfirmed-message">
+            {writeStatusSentence(unconfirmed, capability.unit)}
+          </p>
+          <p className="inline-notice__hint" data-testid="write-unconfirmed-hint">
+            The runtime retries this write on its own; after three consecutive failures the
+            fail-safe duty is applied. The requested value is not known to be in force.
+          </p>
+        </InlineNotice>
+      ) : null}
+
       {failure ? (
         <InlineNotice tone="error" title={`Write refused (${failure.code})`}>
-          <p>{failure.message}</p>
+          <p data-testid="write-failure-message">{failure.message}</p>
           {failure.hint ? <p className="inline-notice__hint">{failure.hint}</p> : null}
           {failure.unsupported ? (
             <p className="inline-notice__hint">

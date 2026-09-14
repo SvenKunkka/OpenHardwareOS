@@ -101,14 +101,23 @@ pub struct HandoverReport {
     pub attempts: u32,
     /// The first failure. The cause is more useful than the latest symptom, so it is
     /// never overwritten.
+    ///
+    /// The `Option`s below are omitted from the wire when absent, rather than sent as
+    /// `null`: the TypeScript contract declares them optional, and a consumer checking
+    /// for `undefined` would otherwise be reading a value it never receives. The
+    /// repository's `WriteReport` does the same for its `applied` value.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub first_error: Option<String>,
     /// The most recent failure.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub last_error: Option<String>,
     pub queued_at_ms: i64,
     pub last_attempt_ms: i64,
     /// The confirmed fail-safe value, once the handover succeeded.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub confirmed_value: Option<f64>,
     /// The rule that took the channel over, when that is why it was superseded.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub superseded_by: Option<RuleId>,
 }
 

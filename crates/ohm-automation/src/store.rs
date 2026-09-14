@@ -21,12 +21,24 @@ pub struct RuleFileError {
 /// A rule file that loaded, but whose content had to be adjusted in memory.
 ///
 /// The file itself is never rewritten: the user decides what to do with it. This
-/// exists so that a substitution is never silent.
+/// exists so that a substitution is never silent — and it is structured rather than a
+/// single sentence, so the app can say *which field* of *which file* held what, what is
+/// actually in force, and what to do about it. A user told only "something was
+/// adjusted" has been told nothing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RuleFileNote {
     pub path: PathBuf,
     pub rule_id: RuleId,
+    /// The setting that was adjusted, e.g. `fallback.on_sensor_missing`.
+    pub field: String,
+    /// What the file on disk says.
+    pub original: String,
+    /// What is in force instead.
+    pub effective: String,
+    /// One sentence describing the substitution.
     pub message: String,
+    /// What the user can do about it.
+    pub hint: String,
 }
 
 /// Result of loading the rules directory.
@@ -167,10 +179,19 @@ impl RuleStore {
             ("on_write_failure", rule.fallback.on_write_failure),
         ] {
             if action.is_unsupported() {
+                // The duty actually applied comes from the safety settings, so the
+                // note names the policy rather than inventing a number.
+                let effective =
+                    "safe_default (the fail-safe duty from the safety settings)".to_string();
                 let message = format!(
                     "fallback.{field}: `release` is not supported — no adapter in this build can \
-                     hand a channel back while the app runs. Running with `safe_default` instead. \
+                     hand a channel back while the app runs. Running with {effective} instead. \
                      The file was not modified."
+                );
+                let hint = format!(
+                    "Edit {} and set fallback.{field} to `safe_default` to make the file match what \
+                     is running, or to a fixed duty you prefer.",
+                    path.display()
                 );
                 tracing::warn!(path = %path.display(), rule = rule.id.as_str(), "{message}");
                 match field {
@@ -184,7 +205,11 @@ impl RuleStore {
                 notes.push(RuleFileNote {
                     path: path.to_path_buf(),
                     rule_id: rule.id.clone(),
+                    field: format!("fallback.{field}"),
+                    original: "release".to_string(),
+                    effective,
                     message,
+                    hint,
                 });
             }
         }

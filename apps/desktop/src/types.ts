@@ -274,7 +274,12 @@ export type WriteOrigin =
   | { kind: 'shutdown' }
   | { kind: 'api' };
 
-export type WriteStatus = 'applied' | 'simulated' | 'rejected';
+/**
+ * `unconfirmed` means the device accepted the write but the value could not be
+ * read back and confirmed, so the backend deliberately reports no `applied`
+ * value: filling in the requested one would state something it cannot vouch for.
+ */
+export type WriteStatus = 'applied' | 'simulated' | 'unconfirmed' | 'rejected';
 
 export interface WriteReport {
   at_ms: number;
@@ -402,6 +407,65 @@ export interface RuleConflict {
   /** The contested output, e.g. `fan.mock.0/fan.speed_percent`. */
   target: string;
   resolution: string;
+}
+
+/**
+ * One substitution the runtime made while loading a legacy rule file.
+ *
+ * The file on disk is left byte-for-byte untouched: the action it asks for
+ * cannot be honoured, so the runtime swaps in the fail-safe duty **in memory**
+ * and records what it actually runs instead. The user decides what to do about
+ * the file; the machine stays protected in the meantime.
+ */
+export interface RuleFileNote {
+  /** Absolute path of the rule file. */
+  path: string;
+  rule_id: string;
+  /** e.g. `fallback.on_sensor_missing`. */
+  field: string;
+  /** e.g. `release`. */
+  original: string;
+  /** e.g. `safe_default (fail-safe duty 70 %)`. */
+  effective: string;
+  /** One human sentence describing the substitution. */
+  message: string;
+  /** What the user should do about it. */
+  hint: string;
+}
+
+/**
+ * Where a channel handover got to.
+ *
+ * `pending` and `failed` are still **owed**: the channel is running on whatever
+ * the abandoned rule last said, and the fail-safe duty is not confirmed in
+ * force. `confirmed` and `superseded` are settled.
+ */
+export type HandoverState = 'pending' | 'confirmed' | 'failed' | 'superseded';
+
+/**
+ * One channel a rule left behind, as the runtime handed (or tried to hand) it to
+ * the fail-safe duty. The record survives the rule that abandoned the channel, so
+ * an unfinished handover stays visible even when that rule no longer exists.
+ */
+export interface HandoverReport {
+  device: string;
+  capability: string;
+  /** The rule that abandoned the channel; it may no longer exist. */
+  from_rule: string;
+  /** One sentence: why the channel was abandoned. */
+  reason: string;
+  state: HandoverState;
+  attempts: number;
+  /** The cause, never overwritten by later symptoms. */
+  first_error?: string;
+  /** The most recent symptom. */
+  last_error?: string;
+  queued_at_ms: number;
+  last_attempt_ms: number;
+  /** Set once the fail-safe duty was confirmed in force. */
+  confirmed_value?: number;
+  /** The rule that owns the channel now, when that is why it was superseded. */
+  superseded_by?: string;
 }
 
 export interface CapabilityRef {

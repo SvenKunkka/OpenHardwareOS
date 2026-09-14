@@ -52,6 +52,7 @@ import type {
   NoticeError,
   Rule,
   RuleConflict,
+  RuleFileNote,
   RuleOutcome,
   RuntimeSnapshot,
   Source,
@@ -332,6 +333,7 @@ export function Automation() {
   const capabilityIndex = usePolled(() => api.capabilityIndex(), tick, { throttleMs: 8000 });
   const suggestions = usePolled(() => api.suggestRules(), tick, { throttleMs: 15000 });
   const conflicts = usePolled(() => api.ruleConflicts(), tick, { throttleMs: 4000 });
+  const compatibility = usePolled(() => api.ruleCompatibilityNotes(), tick, { throttleMs: 8000 });
 
   const [editing, setEditing] = useState<RuleDraft | null>(null);
   const [isNew, setIsNew] = useState(false);
@@ -341,8 +343,9 @@ export function Automation() {
     rules.reload();
     outcomes.reload();
     conflicts.reload();
+    compatibility.reload();
     await refresh();
-  }, [rules, outcomes, conflicts, refresh]);
+  }, [rules, outcomes, conflicts, compatibility, refresh]);
 
   /**
    * Run a rule action, keep the backend's own message (never a generic one) for
@@ -451,6 +454,12 @@ export function Automation() {
           setIsNew(false);
         }}
         rules={ruleList}
+      />
+
+      <RuleCompatibilityPanel
+        notes={compatibility.data ?? []}
+        error={compatibility.error}
+        onReload={() => compatibility.reload()}
       />
 
       {actionError ? (
@@ -696,6 +705,117 @@ function RuleConflictsPanel({
             </div>
           );
         })}
+      </div>
+    </Panel>
+  );
+}
+
+/**
+ * Actions a legacy rule file still asks for that no adapter in this build can
+ * perform. The runtime substitutes the fail-safe duty when it loads such a file
+ * and leaves the file on disk byte-for-byte as it is, so the user has to decide
+ * what to do about it — and needs to be told the machine is still protected.
+ */
+function RuleCompatibilityPanel({
+  notes,
+  error,
+  onReload,
+}: {
+  notes: RuleFileNote[];
+  error: NoticeError | null;
+  onReload: () => void;
+}) {
+  if (error) {
+    return (
+      <Panel title="Compatibility adjustments">
+        <InlineNotice tone="error" title="Could not read the compatibility notes">
+          <p>{error.message}</p>
+          <button type="button" className="btn btn--sm" onClick={onReload}>
+            Retry
+          </button>
+        </InlineNotice>
+      </Panel>
+    );
+  }
+
+  if (notes.length === 0) {
+    return (
+      <Panel
+        title="Compatibility adjustments"
+        subtitle="Legacy fallback actions the runtime had to substitute when loading rule files"
+      >
+        <p className="small muted">
+          No rule file needs a compatibility adjustment. If one still asks for a fallback no adapter
+          can perform — <span className="mono">release</span> — the runtime substitutes the fail-safe
+          duty in memory and lists it here. The file itself is never rewritten.
+        </p>
+      </Panel>
+    );
+  }
+
+  return (
+    <Panel
+      title={`Compatibility adjustments (${notes.length})`}
+      subtitle="Substituted in memory at load time — the rule files on disk were not changed"
+      actions={
+        <button type="button" className="btn btn--sm" onClick={onReload}>
+          Refresh
+        </button>
+      }
+    >
+      <InlineNotice tone="warn" title="A legacy fallback in your rule files cannot be honoured">
+        <p>
+          No adapter in this build can perform the action these files ask for, so the runtime runs
+          the fail-safe duty instead. The files on disk were left exactly as they are — nothing was
+          rewritten for you.
+        </p>
+        <p data-testid="compatibility-file-untouched">
+          The machine is still protected: while this substitution is in force the fail-safe duty is
+          what runs if the source sensor goes missing, so cooling never stops.
+        </p>
+      </InlineNotice>
+
+      <div className="stack" style={{ marginTop: 'var(--space-4)' }}>
+        {notes.map((note) => (
+          <div
+            className="stack stack--tight"
+            key={`${note.path}-${note.rule_id}-${note.field}`}
+            data-testid="rule-compatibility-note"
+            style={{ paddingBottom: 'var(--space-3)', borderBottom: '1px solid var(--border)' }}
+          >
+            <div className="row">
+              <Badge tone="warn" title="The action on disk cannot be performed by any adapter">
+                substituted
+              </Badge>
+              <p className="small">
+                <span data-testid="compatibility-rule">{note.rule_id}</span>
+                <span className="dim"> · </span>
+                <span className="mono" data-testid="compatibility-field">
+                  {note.field}
+                </span>
+              </p>
+            </div>
+            <p className="small">
+              <span className="dim">Found on disk</span>{' '}
+              <span className="mono" data-testid="compatibility-original">
+                {note.original}
+              </span>
+              <span className="dim"> → actually in force </span>
+              <span className="mono" data-testid="compatibility-effective">
+                {note.effective}
+              </span>
+            </p>
+            <p className="small muted" data-testid="compatibility-message">
+              {note.message}
+            </p>
+            <p className="small" data-testid="compatibility-hint">
+              {note.hint}
+            </p>
+            <p className="tiny dim mono" data-testid="compatibility-path">
+              {note.path}
+            </p>
+          </div>
+        ))}
       </div>
     </Panel>
   );

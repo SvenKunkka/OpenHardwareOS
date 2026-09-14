@@ -41,6 +41,10 @@ function levelFor(event: RuntimeEvent): LogLevel {
     case 'runtime_stopped':
     case 'device_removed':
       return 'warn';
+    // A write the device accepted but never confirmed is unknown, not success:
+    // the activity feed must not paint it as a confirmed write.
+    case 'write_performed':
+      return event.report.status === 'unconfirmed' ? 'warn' : 'info';
     case 'log':
       return (event.level as LogLevel) ?? 'info';
     default:

@@ -10,7 +10,14 @@
 
 import { vi } from 'vitest';
 import { capabilityIndexFixture, snapshotFixture } from './fixtures';
-import type { CapabilityIndex, RuleCheck, RuleConflict, RuntimeSnapshot } from '../types';
+import type {
+  CapabilityIndex,
+  HandoverReport,
+  RuleCheck,
+  RuleConflict,
+  RuleFileNote,
+  RuntimeSnapshot,
+} from '../types';
 
 /** Every command `api` exposes; a missing one would be a TypeError at call time. */
 const API_METHODS = [
@@ -30,6 +37,9 @@ const API_METHODS = [
   'listRules',
   'ruleOutcomes',
   'ruleConflicts',
+  'ruleCompatibilityNotes',
+  'ruleHandovers',
+  'ruleRetryHandovers',
   'checkRule',
   'saveRule',
   'deleteRule',
@@ -124,6 +134,9 @@ function applyBaseline(mock: IpcMock): void {
   mock.api.listRules.mockResolvedValue([]);
   mock.api.ruleOutcomes.mockResolvedValue([]);
   mock.api.ruleConflicts.mockResolvedValue([] as RuleConflict[]);
+  mock.api.ruleCompatibilityNotes.mockResolvedValue([] as RuleFileNote[]);
+  mock.api.ruleHandovers.mockResolvedValue([] as HandoverReport[]);
+  mock.api.ruleRetryHandovers.mockResolvedValue(0);
   mock.api.checkRule.mockResolvedValue(clean);
   mock.api.saveRule.mockImplementation(async (rule: unknown) => rule);
   mock.api.deleteRule.mockResolvedValue(true);
