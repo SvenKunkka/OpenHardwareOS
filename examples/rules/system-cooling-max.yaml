@@ -1,0 +1,65 @@
+# System Cooling (MAX) — one rule for the whole machine, the one most people
+# actually want.
+#
+# Why MAX is the safe choice: a single fan that cools both the CPU and the GPU
+# has to satisfy whichever component is hotter. `aggregate: max` takes the
+# hottest reading and drives the fan from it, so a hot GPU is never cooled by a
+# curve that is following an idle CPU. `aggregate: min` would be actively
+# dangerous here (the fan would follow the coolest sensor and under-cool the
+# hot one) and `avg` hides a single component running away. MAX is also the
+# default when the key is omitted.
+#
+# MAX is not the same as "the average": with a 45 °C CPU and an 80 °C GPU the
+# fan gets the 80 °C output, which is the point of the rule.
+#
+# Missing sensors: the aggregate drops readings it cannot get and only reports
+# "no data" when every source is gone — that is when the fallback below fires.
+# With `safe_default` the fan goes to the runtime's fail-safe duty (70 % by
+# default) rather than holding a low value, so losing a sensor can never leave
+# the machine under-cooled. That is the intended behaviour for this rule; use
+# the other actions only when you have a reason:
+#   hold         keep the last output
+#   fixed        drive to an explicit percentage, e.g. {percent: 80}
+#   release      stop controlling and hand the fan back to the firmware
+#
+# The device and capability ids below are the SIMULATED machine's
+# (adapters/mock). Replace them with the ids shown on the Devices page of your
+# own installation — the ids there are the ones this rule must reference. Add
+# more entries under `sensors:` for more temperature sources, and point
+# `target.device` at each fan header you want driven (one rule per target, or
+# several rules if the fans should run different curves).
+
+name: System Cooling (CPU + GPU MAX)
+id: system-cooling-max
+enabled: true
+description: Drives the chassis fans from whichever of the CPU or GPU is hotter.
+
+source:
+  aggregate: max
+  sensors:
+    - {device: cpu.mock.0, capability: temperature.core}
+    - {device: gpu.mock.0, capability: temperature.core}
+
+target:
+  device: fan.mock.0
+  capability: fan.speed_percent
+
+curve:
+  - [40, 25]
+  - [55, 35]
+  - [70, 55]
+  - [80, 80]
+  - [85, 100]
+
+hysteresis: 3
+deadband: 1
+update_interval_ms: 1000
+
+# A floor of 25 % keeps airflow through the case even when everything is idle.
+min_output: 25
+max_output: 100
+
+fallback:
+  on_sensor_missing: safe_default
+  on_write_failure: safe_default
+  sensor_timeout_s: 5

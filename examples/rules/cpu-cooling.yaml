@@ -1,0 +1,51 @@
+# CPU Cooling — CPU package temperature drives a second chassis fan.
+#
+# Same shape as gpu-cooling.yaml, with a curve tuned for a CPU: a modern desktop
+# CPU idles in the 30-45 °C range and reaches 85-95 °C under an all-core load, so
+# the useful part of the curve sits higher and rises later.
+#
+#   input  -> output
+#   45 °C  ->  25 %   (idle: quiet but not stopped)
+#   60 °C  ->  40 %
+#   75 °C  ->  65 %
+#   85 °C  -> 100 %   (everything above 85 °C stays at 100 %)
+#
+# hysteresis is 3 °C here rather than 2: a CPU's package temperature moves in
+# short bursts, and a wider band keeps the fan from chasing every spike.
+#
+# The device and capability ids below are the SIMULATED machine's
+# (adapters/mock). Replace them with the ids shown on the Devices page of your
+# own installation — the ids there are the ones this rule must reference.
+# This rule targets fan.mock.1 so it does not fight gpu-cooling.yaml over
+# fan.mock.0; on real hardware use two different headers for the same reason.
+
+name: CPU Cooling
+id: cpu-cooling
+enabled: true
+description: Reacts to the CPU package temperature.
+
+source:
+  device: cpu.mock.0
+  capability: temperature.core
+
+target:
+  device: fan.mock.1
+  capability: fan.speed_percent
+
+curve:
+  - [45, 25]
+  - [60, 40]
+  - [75, 65]
+  - [85, 100]
+
+hysteresis: 3
+deadband: 1
+update_interval_ms: 1000
+
+min_output: 25
+max_output: 100
+
+fallback:
+  on_sensor_missing: safe_default
+  on_write_failure: safe_default
+  sensor_timeout_s: 5

@@ -1,0 +1,59 @@
+# GPU Cooling — the documented example rule.
+#
+# GPU core temperature drives a chassis fan. The curve is deliberately
+# conservative at the bottom (20 % at 40 °C, so the fan is audible but never
+# silent) and steep at the top (80 % at 80 °C, 100 % at 85 °C) because a GPU
+# heats up faster than a chassis fan can react.
+#
+#   input  -> output
+#   40 °C  ->  20 %
+#   60 °C  ->  35 %
+#   70 °C  ->  50 %
+#   80 °C  ->  80 %
+#   85 °C  -> 100 %   (everything above 85 °C stays at 100 %)
+#
+# Between two points the output is interpolated linearly. hysteresis is the
+# asymmetry that stops the fan oscillating around a point: once the fan has been
+# set by a rising temperature, it only slows down after the temperature has
+# dropped 2 °C below that anchor. deadband is the smallest change worth writing,
+# so a 0.4 % wobble is ignored instead of being sent to the hardware.
+#
+# The device and capability ids below are the SIMULATED machine's
+# (adapters/mock). Replace them with the ids shown on the Devices page of your
+# own installation — the ids there are the ones this rule must reference.
+
+name: GPU Cooling
+id: gpu-cooling
+enabled: true
+description: Spins a chassis fan up as the GPU heats up.
+
+source:
+  device: gpu.mock.0
+  capability: temperature.core
+
+target:
+  device: fan.mock.0
+  capability: fan.speed_percent
+
+curve:
+  - [40, 20]
+  - [60, 35]
+  - [70, 50]
+  - [80, 80]
+  - [85, 100]
+
+hysteresis: 2
+deadband: 1
+update_interval_ms: 1000
+
+# Never stop the fan entirely, even if a future curve edit dips lower.
+min_output: 20
+max_output: 100
+
+fallback:
+  # If the temperature sensor disappears, drive the fan to the runtime's
+  # fail-safe duty (70 % by default) rather than leaving it where it was.
+  on_sensor_missing: safe_default
+  on_write_failure: safe_default
+  # Give the sensor 5 s of silence before treating it as gone.
+  sensor_timeout_s: 5
