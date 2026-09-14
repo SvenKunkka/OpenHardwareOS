@@ -59,15 +59,15 @@ repository, because the project was developed on macOS. Concretely:
 
 | Area | Level today | Why |
 |---|---|---|
-| `cargo test --workspace` on Windows | **Prepared** | `docs/roadmap.md` records the passing run as 368 tests, "verified on macOS aarch64 with rustc 1.98.0". No Windows run is recorded. |
+| `cargo test --workspace` on Windows | **Prepared** | `docs/verification-log.md` records the passing run as 413 tests at commit `096e13b`, on macOS aarch64 with the pinned `rustc 1.98.0`. No Windows run is recorded, and a macOS pass says nothing about the `cfg(windows)` code paths. |
 | `cargo build --workspace --all-targets` on Windows (compiles `cfg(windows)` code) | **Prepared** | `.github/workflows/ci.yml` declares a `windows-latest` job, but this repository holds no captured output from it, and a CI job definition is not a run. |
 | `adapters/system/src/windows.rs` (WMI `MSFT_StorageReliabilityCounter`) | **Prepared** | Never executed on Windows. Its `#[cfg(test)]` tests do not touch WMI; they test the variant/`temperature_for` helpers. |
 | `apps/desktop/src-tauri/src/autostart.rs` (per-user `Run` value) | **Prepared** | Never executed on Windows. The `not(windows)` test is compiled out there. |
 | NSIS bundle, install, uninstall | **Prepared** | Never built or installed on Windows. |
 | Tray, close-to-tray, minimize-to-tray | **Prepared** | Never launched on Windows. |
 | NVML telemetry and fan write (`adapters/nvidia`) | **Prepared** | Never executed on a machine with an NVIDIA driver. |
-| LibreHardwareMonitor web-server integration against a real LHM + SuperIO chip | **Prepared** | Only ever exercised against the in-process `fake_server.rs` and a synthetic `data.json` fixture. |
-| Per-device fan write / tachometer response | **Prepared** | No write has ever reached a real fan through this code. |
+| LibreHardwareMonitor web-server integration against a real LHM + SuperIO chip | **Prepared** | Only ever exercised against the in-process `fake_server.rs` and a synthetic `data.json` fixture. Since round 2 the adapter reads the channel back after a write and reports `Unconfirmed` when it cannot, so a wrong claim about a write is much harder — but a fake server is still not a SuperIO chip. |
+| Per-device fan write / tachometer response | **Prepared** | No write has ever reached a real fan through this code, and no fan's RPM response has ever been measured. This is a **separate** gap from the Windows gap: a Windows run and a tachometer measurement are two different pieces of evidence, and neither substitutes for the other. |
 
 The line above is the honest baseline. When a session finishes, the operator updates
 the status column **in the report for that session** — this file's table is a statement

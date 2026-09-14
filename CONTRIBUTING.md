@@ -14,15 +14,31 @@ dependency.
 | Node.js | `^20.19.0 \|\| >=22.12.0`, with npm | Vite 7's `engines` field, as installed by `apps/desktop/package.json` |
 | Windows SDK / MSVC | for the Windows build | the `wmi` and `nvml-wrapper` dependencies |
 
-The MSRV is set by the dependency floor (`sysinfo` 0.39 requires 1.95). Do not
-raise it casually — it is a promise to contributors, not an implementation
-detail. A `rust-toolchain.toml` is deliberately not committed; CI (when it
-exists) pins the toolchain instead.
+The MSRV is set by the dependency floor (`sysinfo` 0.39 requires 1.95, not the
+1.93 that an earlier revision of this file claimed). Do not raise it casually — it
+is a promise to contributors, not an implementation detail. A
+`rust-toolchain.toml` is deliberately not committed;
+`.github/workflows/ci.yml` installs a pinned toolchain instead.
+
+**`clippy` must come from the same release as `rustc`.** A mismatched pair does
+not lint, and it does not say so clearly: `clippy-driver 0.1.92` next to `rustc
+1.98.0` makes cargo apply the `rust-version` gate and abort with `rustc 1.92.0 is
+not supported by the following packages: … requires rustc 1.95` before it reads a
+line of code. Install a matched pair and call it explicitly, e.g.
+
+```bash
+rustup toolchain install 1.98.0 --profile minimal --component clippy,rustfmt
+rustup run 1.98.0 cargo clippy --workspace --all-targets -- -D warnings
+```
+
+Do not paper over it with `--ignore-rust-version`: that disables the very
+assertion that is failing, so the result proves nothing about the MSRV.
 
 ## Build and test
 
 ```bash
-# 1. The whole workspace: 368 tests, unit + cross-crate integration.
+# 1. The whole workspace: unit + cross-crate integration tests. 413 of them at
+#    commit 096e13b — docs/verification-log.md records the current figure.
 cargo test --workspace
 
 # 2. Lints. Must be warning-free.
@@ -64,14 +80,21 @@ cargo run -p ohm-cli -- demo && \
 cargo run -p ohm-desktop -- --selftest
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same checks: `cargo build --workspace
---all-targets` and `cargo test --workspace` on Linux, macOS and Windows, plus
-`cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, the headless
-`ohm-cli demo` and `ohm-desktop --selftest --mock`, a frontend typecheck and build job, and
-a hygiene job that fails on a crate opting out of `unsafe_code = "deny"` or on any ADL/ADLX
-reference in code. Run everything locally before you push anyway: the clippy and
-`cargo deny check licenses advisories` steps are `continue-on-error`, so CI will not stop a
-lint regression for you.
+CI (`.github/workflows/ci.yml`) runs the same checks in five jobs: `lint`
+(`cargo fmt --all -- --check`, then `cargo clippy --workspace --all-targets -- -D
+warnings`), `rust` (`cargo build --workspace --all-targets`, `cargo test
+--workspace`, the headless `ohm-cli demo` and `ohm-desktop --selftest --mock`
+normally and in `--dry-run`, on Linux, macOS and Windows), `frontend` (`npm ci`,
+typecheck, behaviour tests, build), `windows-bundle` (the NSIS installer, uploaded
+for review — never published) and `hygiene` (a crate opting out of `unsafe_code =
+"deny"` or any ADL/ADLX reference in code fails the build, and `cargo deny check`
+runs for licences, advisories and sources).
+
+There is **no `continue-on-error` anywhere** in that workflow: an earlier revision
+made the clippy and `cargo deny` steps advisory, and that is exactly how a lint
+regression or a licence violation would have reached `main` unnoticed. Note also
+that a workflow definition is not a run: nothing here has been executed by GitHub
+Actions yet, so every `windows-latest` job is *Prepared*, not verified.
 
 ## Repository layout
 
@@ -367,11 +390,15 @@ Add a row for anything new; if you remove a dependency, delete its row. If your
 change means the project now ships something it did not before, say so explicitly
 in the PR description and add the licence text to the notices.
 
-`cargo deny check licenses advisories` runs in CI, but as an advisory step
-(`continue-on-error: true`) and **without a `deny.toml`**, so it neither gates a merge nor
-covers `cargo-audit`'s advisory database. `docs/research.md` (decision 13) recommends gating
-on both and generating the notices file; adding the config and removing the
-`continue-on-error` is a welcome contribution.
+`cargo deny check` runs in CI as a **required** step in the `hygiene` job, backed
+by the committed `deny.toml`; it passes today (`advisories ok, bans ok, licenses
+ok, sources ok`). It gates a merge. Two things it still does **not** do, both
+recommended by `docs/research.md` (decision 13): it does not generate a
+third-party notices file — the `README.md` table is maintained by hand — and the
+licence decision for the project itself (ADR 0002) and for vendor SDKs (ADR 0004)
+is still **Proposed**, not accepted. Adding notices generation is a welcome
+contribution; do not treat it as permission to add a dependency whose licence the
+ADRs have not settled.
 
 ## Pull requests
 

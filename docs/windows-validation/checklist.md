@@ -538,15 +538,20 @@ cargo, then list what is there (this is the same source of truth
 ```powershell
 PS> $target = (cargo metadata --format-version 1 --no-deps | ConvertFrom-Json).target_directory
 PS> $target
-PS> Get-ChildItem "$target\release\bundle" -Recurse |
-      Select-Object FullName, Length, LastWriteTime
+PS> if (Test-Path "$target\release\bundle") {
+      Get-ChildItem "$target\release\bundle" -Recurse | Select-Object FullName, Length, LastWriteTime
+    } else {
+      Write-Warning "nothing at $target\release\bundle — the build did not bundle. Record that."
+    }
 ```
 
 Expected: `$target` ends in `\target` and is the repository's own `target` directory (record
 the exact string), and the listing contains
 `$target\release\bundle\nsis\OpenHardwareOS_0.1.0_x64-setup.exe` (the version tracks
-`tauri.conf.json`). If `$target\release\bundle` does not exist, the build did not bundle —
-record that, rather than looking for the file somewhere else.
+`tauri.conf.json`). If the warning above fires instead, the build did not bundle — record
+that, rather than looking for the file somewhere else. Do not read a missing `bundle`
+directory as "the installer is elsewhere": there is no second target directory in this
+workspace.
 
 `bundle.targets` is `["nsis"]` in `tauri.conf.json`, so no MSI is produced — that is
 deliberate (see `docs/research.md` §9.4).

@@ -398,41 +398,60 @@ elevated helper, no Windows service, no scheduled task, and no uninstall hook th
 restores firmware fan control — `relinquish_on_exit` covers the normal exit path
 only. `research.md` §9.4/§9.5 records the intended approach.
 
-**CI exists but is not yet a gate.** `.github/workflows/ci.yml` builds and tests
-the workspace on Linux, macOS and Windows, runs `cargo fmt --check` and
-`cargo clippy --workspace --all-targets -- -D warnings`, runs the headless
-`ohm-cli demo` and `ohm-desktop --selftest --mock`, typechecks and builds the
-frontend, and runs a hygiene job that fails on a crate opting out of
-`unsafe_code = "deny"` or on any ADL/ADLX reference in code. What is still
-missing: the format and clippy steps are `continue-on-error`, there is **no
-release workflow**, and the `cargo deny check licenses advisories` step is
-advisory (`continue-on-error`, and there is no `deny.toml`). No generated
-third-party notices file exists — all of which `research.md` (decision 13)
-recommends before a first release.
+**CI is a gate, as far as this machine can tell.** `.github/workflows/ci.yml`
+builds and tests the workspace on Linux, macOS and Windows, and runs five jobs:
+`lint` (required `cargo fmt --all -- --check` and
+`cargo clippy --workspace --all-targets -- -D warnings`, with the WebKitGTK
+packages the desktop crate needs), `rust` (build, test, the headless `ohm-cli
+demo`, and `ohm-desktop --selftest --mock` normally and in `--dry-run`), `frontend`
+(`npm ci`, typecheck, behaviour tests, production build), `windows-bundle` (`tauri
+build`, then the NSIS artefact is listed and uploaded for review) and `hygiene`
+(no crate may opt out of `unsafe_code = "deny"`, no ADL/ADLX reference may appear
+in code, and `cargo deny check` is **required**, backed by a `deny.toml` that has
+been run locally and passes). There is **no `continue-on-error` anywhere** in the
+workflow: a check that cannot fail is not a check.
 
-**The example rules are files, not an importer.** `examples/rules/` holds three
-ready-to-copy rules (`gpu-cooling.yaml`, `cpu-cooling.yaml`,
-`system-cooling-max.yaml`) with a `README.md`, and
+What is still missing before a first release: no release workflow, no code
+signing, and no generated third-party notices file — which `research.md`
+(decision 13) recommends. Note also that a workflow definition is not a run:
+nothing in this repository has been executed by GitHub Actions, so every
+`windows-latest` job is **Prepared**, not verified. See
+`docs/verification-log.md`.
+
+**The example rules are files, not an importer.** `examples/rules/` holds four
+ready-to-copy rules (`gpu-cooling.yaml`, `gpu-cooling-gaming-only.yaml`,
+`cpu-cooling.yaml`, `system-cooling-max.yaml`) with a `README.md`, and
 `apps/cli/tests/yaml_examples.rs` — `every_shipped_example_rule_parses_and_validates`
 parses, validates and checks each of them on every test run. What does not exist
 is an **import** path: the app has no "load a rule file" button and no
 drag-and-drop, so a user must copy the file into `<config>/rules` by hand.
 
-**Workspace test status.** `cargo test --workspace` passes: 380+ tests, exit code
-0 (verified on macOS aarch64 with rustc 1.98.0). The suite spans `ohm-core`,
-`ohm-device-model`, `ohm-adapter-api`, `ohm-runtime`, `ohm-automation`,
-`ohm-protocol`, `ohm-adapters`, all five adapter crates, `ohm-desktop`, `ohm-cli`
-and the four cross-crate integration test binaries.
+**Workspace test status.** `cargo test --workspace` passes: **413 tests, 0
+failed**, exit code 0, measured at commit `096e13b` with the pinned toolchain
+`rustc 1.98.0` / `cargo 1.98.0` (see `docs/verification-log.md`, which records the
+command, the environment and the result, and is the authority if this number ever
+disagrees with a fresh run). The suite spans `ohm-core`, `ohm-device-model`,
+`ohm-adapter-api`, `ohm-runtime`, `ohm-automation`, `ohm-protocol`, `ohm-adapters`,
+all five adapter crates, `ohm-desktop`, `ohm-cli` and the eight cross-crate
+integration test binaries (`acceptance`, `edge_cases`, `fallback_release`,
+`gate_behaviour`, `protocol_flow`, `rule_edit_state`, `rule_lifecycle`,
+`write_confirmation`).
 
-`cargo clippy --workspace --all-targets` could not be executed in this
-environment, and the failure is environmental rather than project-related: the
-installed `clippy-driver` is 0.1.92 while the toolchain `rustc` is 1.98.0, so
-clippy aborts with `rustc 1.92.0 is not supported by the following packages:
-… requires rustc 1.95` before it reads any project code. Install a clippy built
-for the same toolchain (or the MSRV toolchain, 1.95) to run it. `.github/workflows/ci.yml`
-runs formatting, clippy (`-D warnings`), the build, the full test suite, the headless
-closed-loop demo and the desktop self-test on Linux, macOS and Windows, so both checks do run
-automatically on a correct toolchain.
+**Clippy now runs over the whole workspace.** This was an environment gap, not a
+project one: the machine's `PATH` toolchain mixed `clippy-driver 0.1.92` with
+`rustc 1.98.0`, so clippy aborted with `rustc 1.92.0 is not supported by the
+following packages: … requires rustc 1.95` before reading any project code. A
+matched `1.98.0` toolchain was installed from the official channel and is
+addressed explicitly (`rustup run 1.98.0 cargo clippy --workspace --all-targets
+-- -D warnings`), leaving the owner's default toolchain, `PATH` and shell
+configuration untouched; `--ignore-rust-version` is not used. It now exits 0 with
+no warnings across all fifteen crates, including `ohm-adapter-system` and
+`ohm-desktop`, which the mismatched pair could never see. That first clean run
+found real lints — a collapsible `if` in `adapters/system`, an unused parameter in
+the automation engine, a needless lifetime, a field-reassign-on-default, a useless
+conversion, a collapsible `if` and an unused import in `apps/desktop`, and unused
+imports, a single-element loop and boolean comparisons in the test files — which
+were fixed rather than allowed.
 
 **Resolved since this roadmap was written.** Two items that were listed here as
 gaps are now implemented and tested: rules may be gated behind a numeric

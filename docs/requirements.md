@@ -10,8 +10,11 @@ still missing. The rule from here on:
 > the app or the CLI, and is covered by a test that would fail if it broke.
 > Anything else is **Partial**, **Missing**, or **Unverified on hardware**.
 
-Last reviewed: 2026-09-14, against the working tree (no release tag yet).
-Test baseline at that revision: 397 Rust tests + 22 frontend behaviour tests, all passing.
+Last reviewed: 2026-09-14 (round 2), against commit `096e13b` (no release tag yet).
+Test baseline at that revision: **413 Rust tests + 27 frontend behaviour tests, 0
+failures**, with `cargo clippy --workspace --all-targets -- -D warnings` clean.
+Commands, environment and per-command results are in `docs/verification-log.md`;
+that file is the authority for any number quoted here.
 
 ## Status vocabulary
 
@@ -69,17 +72,19 @@ Test baseline at that revision: 397 Rust tests + 22 frontend behaviour tests, al
 
 | Required | Status | Where | Notes |
 |---|---|---|---|
-| Numeric condition | **Implemented** (this round) | `crates/ohm-automation/src/rule.rs` (`Condition`, `Comparator`), `evaluator.rs` (`resolve_gate`, `evaluate_gated`) | `when {source, op, value, otherwise}`. Six operators; `eq`/`ne` use a documented tolerance and warn on analog readings. Non-finite thresholds are rejected at validation; non-finite readings never satisfy a condition |
+| Numeric condition | **Implemented** (round 1) | `crates/ohm-automation/src/rule.rs` (`Condition`, `Comparator`), `evaluator.rs` (`resolve_gate`, `evaluate_gated`) | `when {source, op, value, otherwise}`. Six operators; `eq`/`ne` use a documented tolerance and warn on analog readings. Non-finite thresholds are rejected at validation; non-finite readings never satisfy a condition |
 | Curve mapping | Implemented | `curve.rs` | Linear interpolation, clamped at both ends |
 | Min / Max | Implemented | `Rule::min_output` / `max_output` + the device range | Whichever is tighter |
 | Deadband / hysteresis | Implemented | `evaluator.rs` | Both documented and tested at their boundaries |
 | Update interval | Implemented | `update_interval_ms`, `MIN_UPDATE_INTERVAL_MS` | |
 | Emergency fallback | Implemented | `Rule::fallback` + `SafetyPolicy` + the runtime supervisor | |
 | Condition false must not hold a stale fan value | Implemented | `evaluate_gated` | Drives `otherwise` (fail-safe duty by default, or an explicit percent). Unbounded "hold" is deliberately not offered; see `OtherwiseAction` docs |
-| `release` only when the adapter can really release | Implemented by omission | `OtherwiseAction` has no `release` variant | No adapter in this build advertises a mid-run release channel, so offering one would be a promise we cannot keep. LHM's `SetDefault` release happens on shutdown |
+| `release` only when the adapter can really release | Implemented by refusal | `OtherwiseAction` has no `release` variant; `FallbackAction::Release` is rejected by `Rule::validate` and sanitised on load | No adapter in this build advertises a mid-run release channel, so offering one would be a promise we cannot keep — and a `release` fallback that silently did nothing was a real defect in this build (see the round-2 entry in `docs/verification-log.md`). `release` can no longer be saved, imported, enabled or loaded into the active set; a hand-written `release:` in an old rule file is left **untouched on disk**, replaced in memory by the fail-safe duty, and reported as a per-field compatibility note. LHM's `SetDefault` release happens on shutdown |
+| A write that was accepted but **not** confirmed must not be reported as applied | **Implemented** (round 2) | `WriteStatus::Unconfirmed` + `WriteOutcome::is_confirmed` (`crates/ohm-adapter-api`); `Runtime::write_value`; `crates/ohm-automation/src/engine.rs` | Three outcomes are now distinguishable end to end: the request was accepted, the value was **read back and confirmed**, or the result is failed/unknown. An unconfirmed write carries **no** value, so it can never become the recorded `applied_output`, never suppresses the next attempt, and the engine retries it — after `MAX_CONSECUTIVE_UNCONFIRMED` (3) consecutive unconfirmed writes the rule's write-failure policy runs the fail-safe duty. The read-back for LHM is the *channel set point*, which says nothing about airflow, and the detail says so |
+| Editing a rule must not inherit the previous target's state | **Implemented** (round 2) | `RuleChange` / `apply_rule_change` / `perform_pending_handovers` in `crates/ohm-automation/src/engine.rs`; the same reconciliation runs for `save_rule` and `load_rules` | Changing `target`, `source` or `when` (and `otherwise`, which drives the output when the gate is closed) discards the rule's applied/held state, so the new output is driven from the new target's own evidence on the first cycle instead of being skipped by "unchanged value" dedup. The abandoned output is handed to the fail-safe duty at the next cycle and the handover is audited with the reason. Metadata-only edits (name, description, interval) apply at the next cycle without interrupting control |
 | Condition source missing/stale follows the sensor policy | Implemented | `resolve_gate` | Same `fallback.sensor_timeout_s` grace period, same anchor discipline as the main source |
 | Emergency protection must not be blockable by `when` | Implemented | `crates/ohm-runtime/src/runtime.rs` (`supervise_safety`) | The supervisor is independent of rules; a gated rule's write is still clamped by `SafetyPolicy::check_duty` |
-| Extensible to WHEN/IF/AND/OR/THEN, SCENE, PROFILE, EVENT | Deferred by design | `docs/roadmap.md` (v0.6) | No event system introduced this round, per the brief's "do not over-engineer" rule |
+| Extensible to WHEN/IF/AND/OR/THEN, SCENE, PROFILE, EVENT | Deferred by design | `docs/roadmap.md` (v0.6) | No event system has been introduced, per the brief's "do not over-engineer" rule |
 
 ## 一.5 Desktop UI
 
@@ -88,7 +93,7 @@ Test baseline at that revision: 397 Rust tests + 22 frontend behaviour tests, al
 | Overview with live values | Implemented | `apps/desktop/src/screens/Overview.tsx` |
 | Devices page with device cards and capabilities | Implemented | `Devices.tsx`, `DeviceDetail.tsx` |
 | Automation page (form-based) | Implemented | `Automation.tsx` (now incl. the condition editor) |
-| Settings: start with Windows, minimize to tray, polling interval, logging level, experimental features, developer mode | Implemented | `Settings.tsx`; each switch was checked end-to-end this round (see "Settings reality check" below) |
+| Settings: start with Windows, minimize to tray, polling interval, logging level, experimental features, developer mode | Implemented | `Settings.tsx`; each switch was checked end-to-end in round 1 (see "Settings reality check" below) |
 | Not an RGB/gamer aesthetic | Implemented | `src/styles/theme.css` — one accent colour, no glows |
 
 ### Settings reality check
@@ -166,13 +171,17 @@ the `AI → structured rule → validation → engine → runtime` path, and
 | Minimum safe fan speed | Implemented | `SafetyPolicy::duty_floor` |
 | Pump never driven to 0 | Implemented | unconditional pump floor + the device's own declared range (two layers) |
 | Every write logged | Implemented | `audit.jsonl`, including refused writes |
+| A write **result** must be distinguishable from a write **request** | Implemented (round 2) | `WriteStatus::{Applied, Unconfirmed, Simulated, Rejected}`. The audit trail records which one happened; only a confirmed write is counted as an applied value, and an unconfirmed one is logged at warn level and excluded from "changed hardware" |
+| An unconfirmed write retries, then follows the write-failure policy | Implemented (round 2) | 3 consecutive unconfirmed attempts ⇒ `on_write_failure` (fail-safe duty by default). The audit reason keeps the original cause *and* names the fail-safe action, so the fail-safe is never reported as if it were the original failure |
+| A rule that changes target leaves no fan unattended | Implemented (round 2) | `perform_pending_handovers`: the abandoned output is driven to the fail-safe duty at the next tick and the handover is audited |
 
 ## 十 Testing
 
 | Required | Status | Evidence |
 |---|---|---|
-| Unit / integration / mock-hardware / automation tests | Implemented | 380+ tests across the workspace |
+| Unit / integration / mock-hardware / automation tests | Implemented | **413 tests, 0 failed** at `096e13b`, across 15 crates, 8 integration test binaries and doc-tests |
 | Temperature→fan mapping, hysteresis, sensor disconnect, actuator failure, invalid value, device hotplug | Implemented | `tests/tests/{acceptance,edge_cases,rule_lifecycle,protocol_flow}.rs` |
+| A write result that was never confirmed, a `release` fallback, and rule retargeting | Implemented (round 2) | `tests/tests/{write_confirmation,fallback_release,rule_edit_state}.rs` — 14 tests covering the three defects |
 | Passes without special hardware | Implemented | every test uses the simulated provider |
 
 ## 十一 Acceptance scenarios
@@ -182,7 +191,7 @@ the `AI → structured rule → validation → engine → runtime` path, and
 | A — start and see CPU/GPU/SSD automatically | Partial | CPU verified on real hardware; GPU/SSD need Windows + a provider. Covered by `scenario_a_the_machine_is_detected_automatically` |
 | B — devices and their capabilities | Implemented | `scenario_b_capabilities_are_complete_and_honest` |
 | C — Mock GPU temp → rule → fan RPM, dynamically | Implemented | `scenario_c_mock_gpu_temperature_drives_the_fan`, `ohm-cli demo` |
-| D — real fan control works, or refuses honestly | **Unverified on hardware** | Path implemented and tested against a fake LHM server; no real SuperIO machine has run it. Kit: `docs/windows-validation/` |
+| D — real fan control works, or refuses honestly | **Unverified on hardware** | The path is implemented and tested against a fake LHM server, and since round 2 a write is only called `Applied` when the channel reads back the value it was given; an unreadable channel yields `Unconfirmed`, which is retried and then falls back. Neither of those is hardware evidence: no real SuperIO machine has run it, and no fan has been measured responding. Kit: `docs/windows-validation/` |
 
 ## 十二 Development process (Step 1–8)
 
@@ -198,22 +207,35 @@ Ordered by what blocks a defensible Windows MVP:
 1. **Windows real-hardware validation** (scenario D, NVML, LHM, WMI storage,
    tray, autostart, NSIS install/uninstall). Everything is *Prepared*;
    `docs/windows-validation/` is the kit. Nothing has run on Windows yet.
-2. **CPU package power has no native path** — Windows relies on LHM. Either
+2. **A physical fan has never responded to a write from this code.** Scenario D
+   is unverified in two independent ways — no Windows machine has run it, and no
+   fan's **audible or tachometer response** to a commanded duty has ever been
+   measured. The read-back added in round 2 confirms only what the *provider*
+   reports as the channel's set point; it is not evidence that air moved. Both
+   need separate evidence: one Windows run, and one measurement with a real
+   tachometer.
+3. **CPU package power has no native path** — Windows relies on LHM. Either
    accept that (documented) or add a real collector later; the brief lists the
    reading as "if the system supports it".
-3. **Cross-adapter device identity.** One physical GPU can be described by both
+4. **Cross-adapter device identity.** One physical GPU can be described by both
    NVML and LHM; today NVML steps aside when LHM is enabled
    (`crates/adapters/src/lib.rs`). The general fix (a stable `physical_id` plus
    adapter priority) is planned in ADR 0005, not implemented.
-4. ~~Frontend behaviour tests for the condition editor, tray switches and
-   conflict messaging.~~ **Done this round**: 4 files / 22 tests in
+5. ~~Frontend behaviour tests for the condition editor, tray switches and
+   conflict messaging.~~ **Done in round 1**: 4 files / 22 tests in
    `apps/desktop/src/test`, with a mutation check showing they fail when the
-   behaviour they describe is broken.
-5. **Unconsumed interface surface.** `WriteOrigin::{Api, Startup}`,
-   `Response::Event`, `CapabilityKind::Event`, `Capability::poll_interval_ms`
-   are declared and unused. `AdapterCapabilities::{poll_interval_ms,
-   discovery_interval_ms}` are now honoured by the poll loop. The remainder stay
-   reserved with a documented reason rather than being deleted, because they are
-   part of the adapter and protocol contracts.
-6. **Deferred by design**: plugin loading, scenes/profiles, app and game
+   behaviour they describe is broken. Round 2 added a fifth file covering the
+   unconfirmed-write states.
+6. **Unconsumed interface surface.** `WriteOrigin::{Api, Startup}`,
+   `Response::Event`, `CapabilityKind::Event` and `Capability::poll_interval_ms`
+   (the *per-capability* hint) are declared and never read.
+   `AdapterCapabilities::poll_interval_ms` is now honoured: an adapter that asks
+   for a slower cadence is skipped until its own interval elapses, without
+   affecting other adapters. `AdapterCapabilities::discovery_interval_ms` is
+   **not** honoured — the discovery loop uses the user's
+   `settings.discovery_interval_ms` (`crates/ohm-runtime/src/runtime.rs`), so an
+   adapter asking for slower re-enumeration is currently ignored. The remainder
+   stay reserved with a documented reason rather than being deleted, because they
+   are part of the adapter and protocol contracts.
+7. **Deferred by design**: plugin loading, scenes/profiles, app and game
    detection, natural-language rules, OpenHub/OpenFan hardware, release signing.
