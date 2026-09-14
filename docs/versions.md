@@ -6,7 +6,7 @@
 
 ```text
 └─ v0.1.0 · 已发布 · 预览版 · 首个公开预览版
-   └─ v0.1.1 · 开发中 · 预览版 · 版本管理与安全修复
+   └─ v0.1.1 · 已发布 · 预览版 · 版本管理与安全修复
       └─ v0.2.0 · 计划中 · 水泵支持
 ```
 
@@ -35,8 +35,10 @@
 
 建立可追踪的版本树、同步与安装校验流程，并修复占空比渐变和热紧急控制问题。
 
-- 状态：开发中
-- 开发分支：`codex/version-tree`
+- 状态：已发布
+- [发布与下载](https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.1)
+- 源码：`b5ddc6da97c47ed1059618f4d654aeea4a92a478`
+- 发布时间：2026-09-14T09:07:24Z
 
 - 可搜索、可展开的版本树，链接源码、安装说明和验证记录
 - 版本准备、文件同步、失败恢复及真实发行记录工具
@@ -44,6 +46,13 @@
 - 渐变输出遵守最低占空比，热紧急目标不再被渐变限制
 - 无效当前占空比读数不再参与渐变计算
 - 登记 v0.2.0 单水泵支持范围与验收计划
+
+验证记录：
+
+- [GitHub 已发布版本与构建来源](https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.1)
+- [持续集成全部通过：Windows 490 项 Rust 测试、前端 42 项、版本管理 30 项](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34825301892)
+- [Windows CLI 与桌面构建、13 项安装夹具及实际安装包验证通过](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34825296140)
+- [Windows PowerShell 5.1 公开下载、校验、安装和模拟运行通过](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34826241020)
 
 ## v0.2.0 · 水泵支持
 

@@ -9,7 +9,7 @@ were capability milestones and did not mean those software versions were release
 The next product release planned for hardware work is **v0.2.0: pump support**.
 Its scope, existing foundations and acceptance criteria are in the
 [pump support plan](plans/pump-support.md). The version tree separates that plan
-from the current v0.1.1 development work and published v0.1.0 preview.
+from the published v0.1.1 and v0.1.0 previews.
 
 Legend: **implemented** = source and software tests exist · **partial** = limited
 or dependent on target hardware · **roadmap** = planned. Hardware compatibility
@@ -395,7 +395,7 @@ device today is simulated. The protocol crate's own status table says
 There is no `libloading`, no dynamic library search, no manifest and no sandbox.
 Third-party adapters require recompiling the workspace.
 
-**Windows distribution is published.** The [v0.1.0 preview](https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.0)
+**Windows distribution is published.** The [v0.1.1 preview](https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.1)
 contains a Windows x64 CLI ZIP, an unsigned NSIS desktop installer, an installation
 script, checksums, source metadata and generated dependency notices. The desktop
 uses per-machine installation. Code signing, an elevated helper and a Windows
@@ -403,13 +403,13 @@ service remain separate work. Normal runtime exit requests restoration of firmwa
 control; the result still requires target-device validation.
 
 **CI has run on Windows, Linux and macOS.** The
-[v0.1.0 source CI](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34818882884)
-passed all seven jobs: formatting/Clippy, three Rust platforms, frontend,
-Windows NSIS packaging and dependency/license checks. The
-[release workflow](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34818882887)
+[v0.1.1 source CI](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34825301892)
+passed all eight jobs: formatting/Clippy, three Rust platforms, frontend,
+Windows NSIS packaging, dependency/license checks and version lifecycle checks. The
+[release workflow](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34825296140)
 built the actual Windows CLI and installer, generated notices, and tested CLI
 installation in isolation. The
-[public Windows PowerShell 5.1 install check](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34819834091)
+[public Windows PowerShell 5.1 install check](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34826241020)
 then downloaded that release, verified checksums and the source commit, installed
 it and ran diagnostics and a simulated demo. These checks did not verify a physical
 fan or pump on the user's PC.
@@ -427,9 +427,9 @@ parses, validates and checks each of them on every test run. What does not exist
 is an **import** path: the app has no "load a rule file" button and no
 drag-and-drop, so a user must copy the file into `<config>/rules` by hand.
 
-**Verified release baseline.** The v0.1.0 Windows run recorded **487 Rust tests
+**Verified release baseline.** The v0.1.1 Windows run recorded **490 Rust tests
 passed, 0 failed, 0 ignored**, including one documentation test. Frontend testing
-recorded **42 passed** on Ubuntu/jsdom. Later changes require their own validation;
+recorded **42 passed** on Ubuntu/jsdom; the version tools passed **30 tests**. Later changes require their own validation;
 current results belong in the version tree. Earlier round-specific counts and
 local toolchain investigations in [verification-log.md](verification-log.md) are
 historical evidence, not the current release status.

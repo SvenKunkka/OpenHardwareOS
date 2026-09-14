@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "repository": "SvenKunkka/OpenHardwareOS",
-  "development": "v0.1.1",
+  "development": null,
   "versions": [
     {
       "id": "v0.1.0",
@@ -40,15 +40,15 @@
     {
       "id": "v0.1.1",
       "parent": "v0.1.0",
-      "status": "development",
+      "status": "released",
       "channel": "preview",
       "title": "版本管理与安全修复",
       "summary": "建立可追踪的版本树、同步与安装校验流程，并修复占空比渐变和热紧急控制问题。",
-      "tag": null,
-      "commit": null,
-      "branch": "codex/version-tree",
-      "release_url": null,
-      "published_at": null,
+      "tag": "v0.1.1",
+      "commit": "b5ddc6da97c47ed1059618f4d654aeea4a92a478",
+      "branch": null,
+      "release_url": "https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.1",
+      "published_at": "2026-09-14T09:07:24Z",
       "changes": [
         "可搜索、可展开的版本树，链接源码、安装说明和验证记录",
         "版本准备、文件同步、失败恢复及真实发行记录工具",
@@ -57,7 +57,24 @@
         "无效当前占空比读数不再参与渐变计算",
         "登记 v0.2.0 单水泵支持范围与验收计划"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "title": "GitHub 已发布版本与构建来源",
+          "url": "https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.1"
+        },
+        {
+          "title": "持续集成全部通过：Windows 490 项 Rust 测试、前端 42 项、版本管理 30 项",
+          "url": "https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34825301892"
+        },
+        {
+          "title": "Windows CLI 与桌面构建、13 项安装夹具及实际安装包验证通过",
+          "url": "https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34825296140"
+        },
+        {
+          "title": "Windows PowerShell 5.1 公开下载、校验、安装和模拟运行通过",
+          "url": "https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34826241020"
+        }
+      ],
       "hardware_validation": "not_verified",
       "plan": null
     },

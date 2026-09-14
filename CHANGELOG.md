@@ -3,7 +3,7 @@
 实际发行状态见 [版本树](docs/versions.md) 和 [GitHub Releases](https://github.com/SvenKunkka/OpenHardwareOS/releases)。
 应用版本、规划节点和发布证据由 [版本清单](docs/versions.json) 管理。
 
-## v0.1.1 · 开发中
+## v0.1.1 · 2026-09-14 · Windows 预览版
 
 - 新增可搜索、可展开、支持键盘操作的版本树；每个版本提供变更范围、源码、下载入口和验证记录。
 - 增加版本清单检查、版本准备和真实发行记录工具，统一同步 Rust、桌面及安装验证的版本。
@@ -12,6 +12,13 @@
 - 修复热紧急请求达到目标值时仍可能被渐变限制的问题。
 - 无效的当前占空比读数不再参与渐变计算；错误原因明确记录。
 - 为 v0.2.0 登记水泵支持工作树和验收条件。真实水泵支持尚待验证。
+
+- 验证通过：Windows 490 项 Rust 测试、前端 42 项、版本管理 30 项，以及公开 Windows PowerShell 5.1 安装验证。
+
+[发行页](https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.1) ·
+[源码提交](https://github.com/SvenKunkka/OpenHardwareOS/commit/b5ddc6da97c47ed1059618f4d654aeea4a92a478) ·
+[CI](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34825301892) ·
+[公开安装验证](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34826241020)
 
 ## v0.1.0 · 2026-09-14 · Windows 预览版
 
