@@ -1,0 +1,192 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Formatting and lints are *required*: a warning tolerated silently is a warning
+  # nobody fixes. The machine this repository was developed on has a split
+  # toolchain (Homebrew ships rustc 1.98 with clippy-driver 0.1.92), so local
+  # clippy cannot see the whole workspace; here the toolchain is installed as a
+  # matching pair, which makes CI the authoritative check.
+  lint:
+    name: Format and clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # The runtime, adapters, automation engine and CLI on every supported OS. This
+  # is the part that must pass everywhere, with no controllable hardware: the
+  # simulated provider covers the whole cooling loop.
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --workspace --all-targets
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Headless closed loop (acceptance scenario C)
+        shell: bash
+        run: |
+          export OHM_CONFIG_DIR="$RUNNER_TEMP/ohm-ci"
+          cargo run -q -p ohm-cli -- demo --steps 60 --profile gaming
+          cargo run -q -p ohm-cli -- doctor --mock
+
+      - name: Desktop self test (headless launch, simulated hardware)
+        shell: bash
+        run: |
+          export OHM_CONFIG_DIR="$RUNNER_TEMP/ohm-ci-desktop"
+          cargo run -q -p ohm-desktop -- --selftest --mock
+
+      - name: Desktop self test in dry-run (no write may reach hardware)
+        shell: bash
+        run: |
+          export OHM_CONFIG_DIR="$RUNNER_TEMP/ohm-ci-dry"
+          cargo run -q -p ohm-desktop -- --selftest --mock --dry-run
+
+  # The desktop UI: type check, behaviour tests, production build.
+  frontend:
+    name: Desktop UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Type check
+        working-directory: apps/desktop
+        run: npm run typecheck
+
+      - name: Behaviour tests
+        working-directory: apps/desktop
+        run: npm run test
+
+      - name: Build
+        working-directory: apps/desktop
+        run: npm run build
+
+  # The Windows installer. Building it is the only way to know that the bundle
+  # configuration, the icons and the NSIS packaging actually work. The artifact is
+  # kept for review and is *not* published anywhere.
+  windows-bundle:
+    name: Windows bundle (NSIS)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Build the installer
+        working-directory: apps/desktop
+        run: npx tauri build
+
+      - name: Report what was produced
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse -Path apps/desktop/src-tauri/target/release/bundle |
+            Where-Object { -not $_.PSIsContainer } |
+            Select-Object FullName, Length |
+            Format-Table -AutoSize
+
+      - name: Upload the installer for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: openhardwareos-windows-nsis
+          path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  # Licensing and dependency hygiene. The project may not ship code it cannot
+  # redistribute (see docs/decisions/0002-license.md and 0004-vendor-sdks-and-amd.md).
+  hygiene:
+    name: Licence and dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Forbid unsafe code outside the allow-list
+        shell: bash
+        run: |
+          if grep -rn '^unsafe_code = "allow"' --include=Cargo.toml .; then
+            echo "::error::a crate allows unsafe code; see CONTRIBUTING.md"
+            exit 1
+          fi
+          echo "no crate allows unsafe code"
+
+      - name: Forbid vendored vendor SDKs
+        shell: bash
+        run: |
+          # ADL/ADLX may not appear anywhere in the shipped tree; see ADR 0004.
+          if grep -rniE "adl_|adlx|atiadlxx" --include="*.rs" --include="*.toml" --include="*.json" . \
+             | grep -v "^./docs/" | grep -v "^./README.md" | grep -v "^./deny.toml"; then
+            echo "::error::AMD vendor SDK references are not allowed in code"
+            exit 1
+          fi
+          echo "no AMD vendor SDK references"
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
+      - name: Dependency licences, advisories and sources
+        run: cargo deny check

@@ -1,0 +1,83 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ohm-core",
+    "crates/ohm-device-model",
+    "crates/ohm-adapter-api",
+    "crates/ohm-runtime",
+    "crates/ohm-automation",
+    "crates/ohm-protocol",
+    "crates/adapters",
+    "adapters/mock",
+    "adapters/system",
+    "adapters/nvidia",
+    "adapters/libre-hardware-monitor",
+    "adapters/open-protocol",
+    "apps/cli",
+    "apps/desktop/src-tauri",
+    "tests",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "Apache-2.0"
+repository = "https://github.com/openhardwareos/openhardwareos"
+homepage = "https://github.com/openhardwareos/openhardwareos"
+authors = ["OpenHardwareOS Contributors"]
+description = "Open Runtime, Device Layer and Automation Engine for PC hardware"
+
+[workspace.dependencies]
+# --- internal crates -------------------------------------------------------
+ohm-core = { path = "crates/ohm-core", version = "0.1.0" }
+ohm-device-model = { path = "crates/ohm-device-model", version = "0.1.0" }
+ohm-adapter-api = { path = "crates/ohm-adapter-api", version = "0.1.0" }
+ohm-runtime = { path = "crates/ohm-runtime", version = "0.1.0" }
+ohm-automation = { path = "crates/ohm-automation", version = "0.1.0" }
+ohm-protocol = { path = "crates/ohm-protocol", version = "0.1.0" }
+ohm-adapters = { path = "crates/adapters", version = "0.1.0" }
+ohm-adapter-mock = { path = "adapters/mock", version = "0.1.0" }
+ohm-adapter-system = { path = "adapters/system", version = "0.1.0" }
+ohm-adapter-nvidia = { path = "adapters/nvidia", version = "0.1.0" }
+ohm-adapter-lhm = { path = "adapters/libre-hardware-monitor", version = "0.1.0" }
+ohm-adapter-opd = { path = "adapters/open-protocol", version = "0.1.0" }
+
+# --- third party -----------------------------------------------------------
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml_ng = "0.10"
+thiserror = "2.0"
+anyhow = "1.0"
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+parking_lot = "0.12"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "7.0"
+clap = { version = "4.5", features = ["derive", "env"] }
+ureq = { version = "3.0", features = ["json"] }
+sysinfo = "0.39"
+futures = "0.3"
+
+# Platform specific. These are cfg-gated in the adapters that use them.
+nvml-wrapper = "0.13"
+wmi = "0.18"
+
+# --- dev -------------------------------------------------------------------
+tempfile = "3"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+todo = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

@@ -1,0 +1,24 @@
+# Build output
+/target/
+**/target/
+
+# Node
+node_modules/
+apps/desktop/dist/
+apps/desktop/node_modules/
+*.tsbuildinfo
+
+# Tauri generated
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/target/
+
+# Local runtime state (never commit a user's config or audit trail)
+OpenHardwareOS/
+*.log
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp

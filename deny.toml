@@ -1,0 +1,80 @@
+# cargo-deny configuration for OpenHardwareOS.
+#
+# The project is Apache-2.0 (see docs/decisions/0002-license.md). This file is
+# the enforceable half of that decision: it fails the build when a dependency
+# brings a licence the project cannot ship, or when a known advisory affects the
+# tree.
+#
+# Run locally with:
+#   cargo install cargo-deny --locked
+#   cargo deny check
+
+[graph]
+# Only the targets this project actually ships. Keeping the list explicit stops
+# a transitive dependency's windows-only or wasm-only subtree from changing the
+# verdict on a machine that never compiles it.
+targets = [
+    { triple = "x86_64-pc-windows-msvc" },
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "aarch64-apple-darwin" },
+]
+all-features = true
+
+[advisories]
+# Vulnerabilities are errors. Unmaintained/unyanked advisories are warnings so a
+# stale transitive crate cannot block a release on its own, but it is visible.
+version = 2
+vulnerability = "deny"
+unmaintained = "warn"
+unsound = "deny"
+yanked = "warn"
+ignore = []
+
+[licenses]
+version = 2
+# Confidence threshold for licence detection from the crate contents.
+confidence-threshold = 0.9
+# Licences that are compatible with shipping an Apache-2.0 application and
+# redistributing its dependencies' binaries. Anything not listed is denied, which
+# is deliberate: a new dependency must be reviewed, not absorbed.
+#
+# Notably absent, on purpose:
+#   * GPL-2.0/3.0 and AGPL — would make the combined work GPL (docs/decisions/0002)
+#   * any proprietary or "no redistribution" terms — the AMD ADL/ADLX blocker
+#     described in docs/decisions/0004-vendor-sdks-and-amd.md
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "Unlicense",
+    "CC0-1.0",
+    "BSL-1.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+]
+# MPL-2.0 is allowed because LibreHardwareMonitor is used *out of process*
+# (its HTTP web server), so no MPL file is linked into this binary. If that ever
+# changes, this exception must be revisited.
+exceptions = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Vendored forks of core crates are a supply-chain smell in this project.
+deny = []
+# Nothing may be pulled from a git URL: every dependency must be a released
+# crate, so the build is reproducible from a lockfile.
+allow-git = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
