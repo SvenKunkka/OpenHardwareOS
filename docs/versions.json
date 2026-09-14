@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "repository": "SvenKunkka/OpenHardwareOS",
-  "development": "v0.1.2",
+  "development": null,
   "versions": [
     {
       "id": "v0.1.0",
@@ -81,15 +81,15 @@
     {
       "id": "v0.1.2",
       "parent": "v0.1.1",
-      "status": "development",
+      "status": "released",
       "channel": "preview",
       "title": "发布打包修复",
       "summary": "修复公开发布链路的行尾与可追溯性问题，固定工具链，并把硬件支持六阶段计划随源码版本化。",
-      "tag": null,
-      "commit": null,
-      "branch": "codex/v0.1.2",
-      "release_url": null,
-      "published_at": null,
+      "tag": "v0.1.2",
+      "commit": "1219457619c70d72c54ccd1c59edeb423ed5b7c8",
+      "branch": null,
+      "release_url": "https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.2",
+      "published_at": "2026-09-14T11:55:00Z",
       "changes": [
         "公开 SHA256SUMS 改用 LF；此前的 CRLF 会让 POSIX shasum -c 对每一条记录都报文件不存在",
         "公开发布的 install.ps1 与仓库提交逐字节一致，不再受 core.autocrlf 影响，并在打包时自检",
@@ -99,7 +99,20 @@
         "硬件支持六阶段计划随源码保存为 docs/plans/hardware-support/，并说明与 C1-C8、PUMP-01..04 的编号关系",
         "验证记录补记首次 Windows CI 的两次失败、根因与修复提交"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "title": "GitHub 已发布版本与构建来源",
+          "url": "https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.2"
+        },
+        {
+          "title": "持续集成全部通过：Windows 全量测试、前端、NSIS 打包与版本清单检查",
+          "url": "https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34839421686"
+        },
+        {
+          "title": "Windows CLI 与桌面安装包构建、两组夹具测试与打包验证",
+          "url": "https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34839424804"
+        }
+      ],
       "hardware_validation": "not_verified",
       "plan": null
     },

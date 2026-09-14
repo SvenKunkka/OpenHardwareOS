@@ -7,7 +7,7 @@
 ```text
 └─ v0.1.0 · 已发布 · 预览版 · 首个公开预览版
    └─ v0.1.1 · 已发布 · 预览版 · 版本管理与安全修复
-      └─ v0.1.2 · 开发中 · 预览版 · 发布打包修复
+      └─ v0.1.2 · 已发布 · 预览版 · 发布打包修复
          └─ v0.2.0 · 计划中 · 水泵支持
 ```
 
@@ -59,8 +59,10 @@
 
 修复公开发布链路的行尾与可追溯性问题，固定工具链，并把硬件支持六阶段计划随源码版本化。
 
-- 状态：开发中
-- 开发分支：`codex/v0.1.2`
+- 状态：已发布
+- [发布与下载](https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.2)
+- 源码：`1219457619c70d72c54ccd1c59edeb423ed5b7c8`
+- 发布时间：2026-09-14T11:55:00Z
 
 - 公开 SHA256SUMS 改用 LF；此前的 CRLF 会让 POSIX shasum -c 对每一条记录都报文件不存在
 - 公开发布的 install.ps1 与仓库提交逐字节一致，不再受 core.autocrlf 影响，并在打包时自检
@@ -69,6 +71,12 @@
 - 新增 rust-toolchain.toml：本地、检出与 CI 使用同一编译器 1.98.1
 - 硬件支持六阶段计划随源码保存为 docs/plans/hardware-support/，并说明与 C1-C8、PUMP-01..04 的编号关系
 - 验证记录补记首次 Windows CI 的两次失败、根因与修复提交
+
+验证记录：
+
+- [GitHub 已发布版本与构建来源](https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.2)
+- [持续集成全部通过：Windows 全量测试、前端、NSIS 打包与版本清单检查](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34839421686)
+- [Windows CLI 与桌面安装包构建、两组夹具测试与打包验证](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34839424804)
 
 ## v0.2.0 · 水泵支持
 
