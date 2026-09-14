@@ -29,24 +29,51 @@ compatibility still needs verification on each motherboard and GPU. See the
 ## Windows: install from PowerShell
 
 The prebuilt x64 release does not require Rust, Node.js or a source checkout.
-Download the versioned installer script, then run it locally:
+Paste this block into Windows PowerShell 5.1 or newer. It downloads a fixed release,
+verifies its checksum and installs to a new per-user version directory:
 
 ```powershell
-Invoke-WebRequest 'https://github.com/SvenKunkka/OpenHardwareOS/releases/download/v0.1.0/install.ps1' -OutFile "$env:TEMP\OpenHardwareOS-install.ps1"
-& "$env:TEMP\OpenHardwareOS-install.ps1" -Version v0.1.0
-& "$env:LOCALAPPDATA\OpenHardwareOS\cli\ohm-cli.exe" doctor
+& {
+    $ErrorActionPreference = 'Stop'
+    if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -and $env:PROCESSOR_ARCHITEW6432 -ne 'AMD64') { throw 'Windows x64 is required.' }
+    $ohmVersion = 'v0.1.0'
+    $ohmAsset = "ohm-cli-$ohmVersion-windows-x86_64.zip"
+    $ohmUrl = "https://github.com/SvenKunkka/OpenHardwareOS/releases/download/$ohmVersion"
+    $ohmInstall = Join-Path $env:LOCALAPPDATA "OpenHardwareOS\cli-$ohmVersion"
+    if (Test-Path -LiteralPath $ohmInstall) { throw "Already exists; preserved: $ohmInstall" }
+    $ohmDownload = Join-Path $env:TEMP ('ohm-download-' + [Guid]::NewGuid().ToString('N'))
+    New-Item $ohmDownload -ItemType Directory | Out-Null
+    $ohmZip = Join-Path $ohmDownload $ohmAsset
+    Invoke-WebRequest -UseBasicParsing "$ohmUrl/$ohmAsset" -OutFile $ohmZip
+    Invoke-WebRequest -UseBasicParsing "$ohmUrl/SHA256SUMS" -OutFile (Join-Path $ohmDownload 'SHA256SUMS')
+    $ohmMatch = @(Get-Content (Join-Path $ohmDownload 'SHA256SUMS') | Where-Object { $_ -match ('^[0-9a-fA-F]{64}  ' + [Regex]::Escape($ohmAsset) + '$') })
+    if ($ohmMatch.Count -ne 1) { throw 'Expected exactly one matching SHA256 entry.' }
+    if ((Get-FileHash $ohmZip -Algorithm SHA256).Hash -ne $ohmMatch[0].Substring(0, 64)) { throw 'SHA256 mismatch; installation stopped.' }
+    Expand-Archive -LiteralPath $ohmZip -DestinationPath $ohmInstall
+    Remove-Item -LiteralPath $ohmDownload -Recurse -Force
+    & (Join-Path $ohmInstall 'ohm-cli.exe') --version
+    if ($LASTEXITCODE -ne 0) { throw 'Installed CLI could not start.' }
+    & (Join-Path $ohmInstall 'ohm-cli.exe') doctor
+    if ($LASTEXITCODE -ne 0) { throw 'Device diagnostic failed; keep the output for diagnosis.' }
+}
 ```
 
-The script checks the downloaded CLI archive against the release's `SHA256SUMS`
-before installation. It installs into your account and prints the executable path.
-To install the desktop app as well, run the script with `-Desktop`; the desktop
-installer asks for administrator access and does not start hardware control.
+The CLI is installed at `%LOCALAPPDATA%\OpenHardwareOS\cli-v0.1.0\ohm-cli.exe`.
+An existing version directory is preserved and stops installation. These commands
+do not change PowerShell execution policy or PATH; `doctor` reads device capabilities.
+The download checksum is checked before extraction or execution.
+
+For environments whose existing policy permits local PowerShell scripts, the
+optional installer supports CLI updates in a separate managed `cli` directory and
+desktop installation with `-Desktop`:
 
 ```powershell
+Invoke-WebRequest -UseBasicParsing 'https://github.com/SvenKunkka/OpenHardwareOS/releases/download/v0.1.0/install.ps1' -OutFile "$env:TEMP\OpenHardwareOS-install.ps1"
 & "$env:TEMP\OpenHardwareOS-install.ps1" -Version v0.1.0 -Desktop
 ```
 
-The desktop installer is unsigned. Keep Windows security settings enabled; if a
+The optional script and desktop installer are unsigned. The desktop installer
+asks for administrator access and does not launch the application. Keep Windows security settings enabled; if a
 policy blocks installation, retain the error for diagnosis. Hardware access through
 LibreHardwareMonitor requires that separate application; it is not bundled.
 The CLI is also available to Rust users directly from source:

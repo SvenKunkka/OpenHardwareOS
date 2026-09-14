@@ -280,38 +280,29 @@ mod tests {
     }
 
     #[test]
-    fn saving_into_an_unwritable_place_fails_loudly() {
+    fn saving_under_a_file_fails_loudly() {
         let temp = tempfile::tempdir().unwrap();
         let blocked = temp.path().join("blocked");
-        std::fs::create_dir(&blocked).unwrap();
+        // A regular file cannot be the parent directory on any platform. A
+        // directory's read-only attribute does not reliably prevent writes.
+        std::fs::write(&blocked, "not a directory").unwrap();
         let store = RecoveryStore {
             path: blocked.join(RECOVERY_FILE),
         };
-        // Make the directory unwritable for this process.
-        let mut permissions = std::fs::metadata(&blocked).unwrap().permissions();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            permissions.set_mode(0o500);
-        }
-        #[cfg(not(unix))]
-        {
-            permissions.set_readonly(true);
-        }
-        std::fs::set_permissions(&blocked, permissions).unwrap();
-        let result = store.save(&record());
-        // Restore so the directory can be cleaned up.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut restore = std::fs::metadata(&blocked).unwrap().permissions();
-            restore.set_mode(0o700);
-            std::fs::set_permissions(&blocked, restore).unwrap();
-        }
-        let error = result.expect_err("writing into a read-only directory must fail");
+        let error = store
+            .save(&record())
+            .expect_err("writing beneath a regular file must fail");
         assert!(
             !error.to_string().is_empty(),
             "the failure must carry a reason the caller can report"
+        );
+        assert!(
+            error.to_string().contains("blocked"),
+            "the failure must identify the blocked path: {error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&blocked).unwrap(),
+            "not a directory"
         );
     }
 }

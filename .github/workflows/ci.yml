@@ -50,6 +50,8 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -92,6 +94,8 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       # Note: this works on a clean checkout. `tauri.conf.json` points
       # `frontendDist` at `../dist`, and Tauri's codegen tolerates that directory
@@ -101,7 +105,7 @@ jobs:
         run: cargo build --workspace --all-targets
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --locked --workspace --no-fail-fast
 
       - name: Headless closed loop (acceptance scenario C)
         shell: bash
@@ -179,6 +183,8 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Read the workspace target directory
         id: workspace

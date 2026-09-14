@@ -43,6 +43,8 @@ jobs:
         with:
           python-version: '3.12'
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: Verify release version and toolchain
         shell: pwsh
         run: |
@@ -65,7 +67,7 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Windows workspace tests
-        run: cargo test --locked --workspace --target x86_64-pc-windows-msvc
+        run: cargo test --locked --workspace --no-fail-fast --target x86_64-pc-windows-msvc
       - name: Windows clippy
         run: cargo clippy --locked --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
       - name: Build CLI
