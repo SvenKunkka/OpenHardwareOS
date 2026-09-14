@@ -332,9 +332,40 @@ pub fn retry_handovers(engine: &ohm_automation::AutomationEngine) -> usize {
     engine.retry_failed_handovers()
 }
 
+/// Re-arm failed handovers: one channel when named, every channel when not.
+///
+/// The global form stays available to the application and the CLI, because re-arming
+/// everything a user can see is a legitimate thing for them to ask for. A **probe** run
+/// must not be able to do it: a self-test that re-armed every failed handover would be
+/// reaching into whatever real channels that configuration had left in that state, so in
+/// a probe run the channel must be named and the re-arm is confined to it.
 #[tauri::command]
-pub fn rule_retry_handovers(state: State<'_, AppState>) -> CommandResult<usize> {
-    Ok(retry_handovers(&state.engine))
+pub fn rule_retry_handovers(
+    state: State<'_, AppState>,
+    device: Option<String>,
+    capability: Option<String>,
+) -> CommandResult<usize> {
+    match (device, capability) {
+        (Some(device), Some(capability)) => {
+            let device = ohm_core::DeviceId::new(device).map_err(CommandError::from)?;
+            let capability = ohm_core::CapabilityId::new(capability).map_err(CommandError::from)?;
+            Ok(usize::from(
+                state.engine.retry_failed_handover(&device, &capability),
+            ))
+        }
+        (None, None) if ipc_probe_armed() => Err(CommandError::new(
+            "probe_needs_a_channel",
+            "an IPC self-test may only re-arm the channel it named".to_string(),
+            "Pass the device and capability the probe created; a global re-arm could touch \
+             real pending work.",
+        )),
+        (None, None) => Ok(retry_handovers(&state.engine)),
+        _ => Err(CommandError::new(
+            "incomplete_target",
+            "give both a device and a capability, or neither".to_string(),
+            "A channel needs both halves to identify it.",
+        )),
+    }
 }
 
 #[tauri::command]
@@ -557,6 +588,31 @@ pub fn ipc_probe_armed() -> bool {
     IPC_PROBE.lock().expect("probe slot").is_some()
 }
 
+/// Disarm the self-test. Only used by tests and by a fresh run arming itself.
+pub fn disarm_ipc_probe() {
+    *IPC_PROBE.lock().expect("probe slot") = None;
+    IPC_PROBE_DONE.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Where a probe report may be written, or why it may not be.
+///
+/// Split from the command so the refusal can be tested without a running Tauri app —
+/// "an ordinary run cannot write this" is a rule worth a test, not a comment.
+fn probe_report_path() -> CommandResult<std::path::PathBuf> {
+    IPC_PROBE
+        .lock()
+        .expect("probe slot")
+        .clone()
+        .ok_or_else(|| {
+            CommandError::new(
+                "probe_not_armed",
+                "this command only works in an IPC self-test run (--ipc-selftest)".to_string(),
+                "Start the application with --ipc-selftest and an isolated configuration directory \
+             if you meant to run the self-test.",
+            )
+        })
+}
+
 /// Has the frontend reported back?
 pub fn ipc_probe_done() -> bool {
     IPC_PROBE_DONE.load(std::sync::atomic::Ordering::SeqCst)
@@ -569,12 +625,12 @@ pub fn ipc_probe_done() -> bool {
 /// *frontend* is the one that says what it saw — a claim made by the test harness
 /// about the frontend would prove nothing.
 #[tauri::command]
-pub fn ipc_probe_report(state: State<'_, AppState>, body: String) -> CommandResult<String> {
-    let path = IPC_PROBE
-        .lock()
-        .expect("probe slot")
-        .clone()
-        .unwrap_or_else(|| state.paths.root().join(IPC_PROBE_FILE));
+pub fn ipc_probe_report(_state: State<'_, AppState>, body: String) -> CommandResult<String> {
+    // Not armed means this is an ordinary run of the application, and an ordinary run
+    // must not be able to write a self-test report into its configuration directory —
+    // the command used to fall back to `state.paths.root()`, which is the user's real
+    // directory whenever the app was started normally.
+    let path = probe_report_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
             CommandError::new(
@@ -1043,6 +1099,33 @@ fallback:
             "the desktop is told where it came from: {}",
             owed[0].reason
         );
+    }
+
+    /// The report command must refuse an ordinary run, and must be able to write when a
+    /// probe run armed it.
+    #[tokio::test]
+    async fn the_probe_report_is_refused_unless_the_probe_was_armed() {
+        let (temp, engine) = engine_with_mock().await;
+        let _ = &engine;
+        let paths = ohm_core::ConfigPaths::from_root(temp.path());
+
+        disarm_ipc_probe();
+        let refused = probe_report_path().expect_err("unarmed must be refused");
+        assert_eq!(refused.code, "probe_not_armed");
+        assert!(
+            !paths.root().join(IPC_PROBE_FILE).exists(),
+            "a refused report must not leave a file in the configuration directory"
+        );
+
+        let target = paths.root().join("armed-report.json");
+        arm_ipc_probe(target.clone());
+        let written = probe_report_path().expect("armed is allowed");
+        assert_eq!(written, target);
+        assert!(
+            !target.exists(),
+            "the seam decides *where*, it does not write — writing is the command's job"
+        );
+        disarm_ipc_probe();
     }
 
     /// The handover contract: what the screen needs to show that a channel is still

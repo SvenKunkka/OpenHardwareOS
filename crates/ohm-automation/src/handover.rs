@@ -600,6 +600,34 @@ impl HandoverBook {
         rearmed
     }
 
+    /// Re-arm the failed handover for exactly one channel.
+    ///
+    /// Returns `false` when that channel has no failed handover, so a caller can tell
+    /// "there was nothing to re-arm here" from "it worked" — and cannot silently re-arm
+    /// something else by accident.
+    pub fn retry_failed_one(
+        &mut self,
+        device: &DeviceId,
+        capability: &CapabilityId,
+        tick: u64,
+    ) -> bool {
+        let Some(item) = self
+            .open
+            .iter_mut()
+            .find(|item| &item.device == device && &item.capability == capability)
+        else {
+            return false;
+        };
+        if item.state != HandoverState::Failed {
+            return false;
+        }
+        item.state = HandoverState::Pending;
+        item.attempts = 0;
+        item.next_attempt_tick = tick;
+        item.last_error = None;
+        true
+    }
+
     /// Move a resolved item out of the queue and into the bounded history.
     ///
     /// Unresolved items — pending, and parked after a spent budget — stay in the queue
@@ -701,6 +729,48 @@ mod tests {
             "a user-armed retry starts a fresh budget"
         );
         assert!(book.is_due(&device, &capability, 100));
+    }
+
+    #[test]
+    fn the_scoped_rearm_touches_one_channel_and_nothing_else() {
+        let mut book = HandoverBook::default();
+        let fan0 = DeviceId::new_unchecked("fan.mock.0");
+        let fan1 = DeviceId::new_unchecked("fan.mock.1");
+        let percent = CapabilityId::new_unchecked("fan.speed_percent");
+        for (device, rule) in [(&fan0, "r0"), (&fan1, "r1")] {
+            book.queue(
+                device.clone(),
+                percent.clone(),
+                RuleId::new_unchecked(rule),
+                "reason".into(),
+                0,
+                0,
+            );
+            for attempt in 0..MAX_HANDOVER_ATTEMPTS {
+                book.record_attempt(device, &percent, Some("refused".into()), attempt as u64, 0);
+            }
+        }
+        assert_eq!(book.reports().len(), 2, "both channels are parked");
+
+        assert!(book.retry_failed_one(&fan1, &percent, 100));
+        let rearmed: Vec<_> = book
+            .reports()
+            .iter()
+            .map(|report| (report.device.to_string(), report.state))
+            .collect();
+        assert!(
+            rearmed.contains(&("fan.mock.1".to_string(), HandoverState::Pending)),
+            "the named channel is re-armed: {rearmed:?}"
+        );
+        assert!(
+            rearmed.contains(&("fan.mock.0".to_string(), HandoverState::Failed)),
+            "and the other one is untouched: {rearmed:?}"
+        );
+
+        assert!(
+            !book.retry_failed_one(&DeviceId::new_unchecked("fan.mock.9"), &percent, 100),
+            "a channel with no failed handover reports that there was nothing to do"
+        );
     }
 
     #[test]

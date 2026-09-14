@@ -1596,6 +1596,24 @@ impl AutomationEngine {
         self.inner.handovers.lock().retry_failed(tick)
     }
 
+    /// Re-arm one channel's failed handover, and nothing else.
+    ///
+    /// The scoped form exists because a caller that means to act on one channel must
+    /// not be able to re-arm a pending responsibility somewhere else — a verification
+    /// harness that re-armed *every* failed handover would be reaching into the user's
+    /// hardware to do it. Returns `true` when that channel's handover was re-armed.
+    pub fn retry_failed_handover(
+        &self,
+        device: &ohm_core::DeviceId,
+        capability: &ohm_core::CapabilityId,
+    ) -> bool {
+        let tick = self.inner.ticks.load(Ordering::Relaxed);
+        self.inner
+            .handovers
+            .lock()
+            .retry_failed_one(device, capability, tick)
+    }
+
     pub fn compatibility_notes(&self) -> Vec<crate::store::RuleFileNote> {
         self.inner.compatibility_notes.read().clone()
     }

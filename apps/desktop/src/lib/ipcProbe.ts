@@ -20,7 +20,7 @@
 
 import { listen } from '@tauri-apps/api/event';
 import { api } from './ipc';
-import type { HandoverReport, Rule, RuleFileNote, WriteReport } from '../types';
+import type { HandoverReport, MockStatus, Rule, RuleFileNote, WriteReport } from '../types';
 
 /** One step of the self-test: what was asked, and what actually came back. */
 export interface ProbeStep {
@@ -43,11 +43,59 @@ export interface ProbeReport {
   rendered: Record<string, string>;
 }
 
-const PROBE_VERSION = 1;
+const PROBE_VERSION = 2;
 
-/** A mocking fault on one channel, injected through the simulator's own command. */
-async function injectFault(device: string, capability: string, fault: string) {
-  await api.mockSetChannelFault(device, capability, fault);
+/**
+ * Record a check that is not an API call: something the probe observed about what the
+ * backend did. Failures here are findings about the run, not about the IPC layer.
+ */
+function stepCheck(name: string, ok: boolean, detail: string): void {
+  activeChecks.push({ step: name, ok, ...(ok ? { result: detail } : { error: detail }) });
+}
+
+/** Checks recorded while a run is in flight; `execute` owns the array. */
+let activeChecks: ProbeStep[] = [];
+
+/**
+ * Inject a fault on one simulated channel, returning what the backend reported.
+ *
+ * It must return the response: this used to `await` and drop it, and the report then
+ * showed the step's result as the string `"undefined"` — which looked like an IPC defect
+ * and was nothing of the kind. The backend returns the simulator's whole status, so the
+ * probe can check that the fault it asked for is the fault in force.
+ */
+async function injectFault(
+  device: string,
+  capability: string,
+  fault: string,
+): Promise<MockStatus | null> {
+  return api.mockSetChannelFault(device, capability, fault);
+}
+
+/**
+ * Did the simulator actually take the fault we asked for?
+ *
+ * A probe that assumed it had would go on to fault the wrong thing and report a
+ * confident pass about a channel it never touched.
+ */
+function faultIsInForce(
+  status: MockStatus | null,
+  device: string,
+  capability: string,
+  fault: string,
+): boolean {
+  const faults = status?.faults;
+  if (!faults) return false;
+  const list =
+    fault === 'unconfirmed'
+      ? faults.unconfirmed_writes_on
+      : fault === 'reject'
+        ? faults.fail_writes_on
+        : [];
+  if (fault === 'none') {
+    return !faults.fail_writes_on.some(([d, c]) => d === device && c === capability);
+  }
+  return list.some(([d, c]) => d === device && c === capability);
 }
 
 /**
@@ -58,6 +106,26 @@ let running: Promise<ProbeReport> | null = null;
 export function runIpcProbe(): Promise<ProbeReport> {
   running ??= execute();
   return running;
+}
+
+type ProbeListener = (report: ProbeReport) => void;
+const listeners = new Set<ProbeListener>();
+let latest: ProbeReport | null = null;
+
+/**
+ * Subscribe to the latest self-test report. The panel uses this so the findings are
+ * rendered in the application's own window — a report file proves the IPC worked, but
+ * only a rendered window can be photographed.
+ */
+export function subscribeIpcProbe(listener: ProbeListener): () => void {
+  listeners.add(listener);
+  if (latest) listener(latest);
+  return () => listeners.delete(listener);
+}
+
+function publish(report: ProbeReport): void {
+  latest = report;
+  for (const listener of listeners) listener(report);
 }
 
 /**
@@ -96,7 +164,7 @@ async function execute(): Promise<ProbeReport> {
 }
 
 async function runSteps(): Promise<ProbeReport> {
-  const steps: ProbeStep[] = [];
+  const steps: ProbeStep[] = activeChecks = [];
   const rendered: Record<string, string> = {};
 
   const step = async <T>(name: string, run: () => Promise<T>): Promise<T | null> => {
@@ -130,42 +198,83 @@ async function runSteps(): Promise<ProbeReport> {
 
   // A real rule, driving the simulated fan, so there is a channel that can be abandoned.
   const rule = probeRule(HANDOVER_CHANNEL, FAN_CONTROL);
-  await step('save_rule_drives_the_channel', () => api.saveRule(rule));
+  const saved = await step<Rule>('save_rule_drives_the_channel', () => api.saveRule(rule));
   await delay(1500); // let the engine write and confirm its hold of the channel
 
-  // Now the channel refuses writes, so the handover that follows cannot land.
-  await step('mock_set_channel_fault_reject', () =>
+  // Now the channel refuses writes, so the handover that follows cannot land. The
+  // injected fault is checked before anything is built on it.
+  const rejectFault = await step<MockStatus | null>('mock_set_channel_fault_reject', () =>
     injectFault(HANDOVER_CHANNEL, FAN_CONTROL, 'reject'),
   );
-  await step('save_rule_retargets_away', () =>
+  stepCheck(
+    'the injected fault is in force on the handover channel',
+    faultIsInForce(rejectFault, HANDOVER_CHANNEL, FAN_CONTROL, 'reject'),
+    `simulator reported faults=${JSON.stringify(rejectFault?.faults ?? null)}`,
+  );
+
+  const retargeted = await step<Rule>('save_rule_retargets_away', () =>
     api.saveRule(probeRule(HANDOVER_MOVE_DEVICE, FAN_CONTROL)),
   );
 
   const before = await step<HandoverReport[]>('rule_handovers_owed', () => api.ruleHandovers());
   owedStates.push(stateOf(before ?? [], HANDOVER_CHANNEL));
   rendered.handoversBefore = describeHandovers(before ?? []);
+  const owed = (before ?? []).find((report) => report.device === HANDOVER_CHANNEL);
 
   // Let the attempt budget run out while the channel refuses, then clear the fault and
-  // re-arm exactly as a user would.
+  // re-arm exactly as a user would — **only** if the probe really did create this
+  // handover. A global re-arm would reach into work the probe did not create, and this
+  // probe is only allowed to touch its own channel.
   const exhausted = await waitForHandover(api, HANDOVER_CHANNEL, 'failed', 12000);
   owedStates.push(stateOf(exhausted, HANDOVER_CHANNEL));
-  await step('mock_set_channel_fault_clear_handover', () =>
+  const clearFault = await step<MockStatus | null>('mock_set_channel_fault_clear_handover', () =>
     injectFault(HANDOVER_CHANNEL, FAN_CONTROL, 'none'),
   );
-  const rearmed = await step<number>('rule_retry_handovers', () => api.ruleRetryHandovers());
+  stepCheck(
+    'the fault was cleared before retrying',
+    faultIsInForce(clearFault, HANDOVER_CHANNEL, FAN_CONTROL, 'none'),
+    `simulator reported faults=${JSON.stringify(clearFault?.faults ?? null)}`,
+  );
+
+  const canRetry = Boolean(saved && retargeted && owed);
+  rendered.retryAllowed = String(canRetry);
+  if (!canRetry) {
+    steps.push({
+      step: 'rule_retry_handovers',
+      ok: false,
+      error:
+        'the probe did not create a handover on its own channel, so it did not re-arm anything',
+    });
+  } else {
+    const rearmed = await step<number>('rule_retry_handovers', () =>
+      api.ruleRetryHandovers(HANDOVER_CHANNEL, FAN_CONTROL),
+    );
+    rendered.rearmed = String(rearmed ?? 0);
+    stepCheck(
+      'the scoped retry re-armed exactly the probe\'s own channel',
+      rearmed === 1,
+      `rule_retry_handovers(${HANDOVER_CHANNEL}, ${FAN_CONTROL}) returned ${String(rearmed)}`,
+    );
+  }
   const after = await step<HandoverReport[]>(
     'rule_handovers_after_retry',
     () => waitForHandover(api, HANDOVER_CHANNEL, 'confirmed', 12000),
   );
   owedStates.push(stateOf(after ?? [], HANDOVER_CHANNEL));
   rendered.handoversAfter = describeHandovers(after ?? []);
-  rendered.rearmed = String(rearmed ?? 0);
   rendered.handoverStates = owedStates.join(' -> ');
 
   // 4. An unconfirmed write, through the real engine: fault the simulated channel so
   //    it accepts the value and cannot be read back, then write to it through the
   //    same command the manual control uses.
-  await step('mock_set_channel_fault', () => injectFault(FAN_DEVICE, FAN_CONTROL, 'unconfirmed'));
+  const unconfirmedFault = await step<MockStatus | null>('mock_set_channel_fault', () =>
+    injectFault(FAN_DEVICE, FAN_CONTROL, 'unconfirmed'),
+  );
+  stepCheck(
+    'the unconfirmed fault is in force on the write channel',
+    faultIsInForce(unconfirmedFault, FAN_DEVICE, FAN_CONTROL, 'unconfirmed'),
+    `simulator reported faults=${JSON.stringify(unconfirmedFault?.faults ?? null)}`,
+  );
   const write = await step<WriteReport>('write_capability', () =>
     api.writeCapability(FAN_DEVICE, FAN_CONTROL, 42),
   );
@@ -179,7 +288,14 @@ async function runSteps(): Promise<ProbeReport> {
   rendered.auditWrite = describeLastWrite(audit ?? []);
 
   // Clear the fault so the run leaves the simulator as it found it.
-  await step('mock_set_channel_fault_clear', () => injectFault(FAN_DEVICE, FAN_CONTROL, 'none'));
+  const clearedFault = await step<MockStatus | null>('mock_set_channel_fault_clear', () =>
+    injectFault(FAN_DEVICE, FAN_CONTROL, 'none'),
+  );
+  stepCheck(
+    'the write channel was left with no fault',
+    faultIsInForce(clearedFault, FAN_DEVICE, FAN_CONTROL, 'none'),
+    `simulator reported faults=${JSON.stringify(clearedFault?.faults ?? null)}`,
+  );
 
   const report: ProbeReport = {
     probe_version: PROBE_VERSION,
@@ -189,8 +305,11 @@ async function runSteps(): Promise<ProbeReport> {
     rendered,
   };
 
-  // Hand the report to the backend through a real command, which writes it next to the
-  // app's log and audit trail.
+  // Render the findings in the application's own window first, then hand the report to
+  // the backend through a real command, which writes it next to the app's log and audit
+  // trail. Rendering before reporting means a photograph of the window is possible even
+  // if the report command fails — and if it fails, the panel says so.
+  publish(report);
   await api.ipcProbeReport(JSON.stringify(report, null, 2));
   return report;
 }

@@ -18,10 +18,12 @@ pub mod shell;
 pub mod state;
 pub mod tray;
 
+use std::path::{Path, PathBuf};
+
 use ohm_adapters::AdapterOptions;
 use ohm_automation::AutomationEngine;
 use ohm_core::ConfigPaths;
-use ohm_runtime::{Runtime, SettingsStore};
+use ohm_runtime::{Runtime, Settings, SettingsStore};
 use state::AppState;
 use tauri::{Emitter, Manager, WindowEvent};
 
@@ -95,15 +97,142 @@ pub fn should_hide_on_minimize(settings: &ohm_runtime::Settings, minimized: bool
 ///
 /// Returns an error only when the runtime cannot be created at all (for example
 /// when the config directory is not writable).
+/// What an `--ipc-selftest` run must have before anything is created.
+///
+/// The probe drives the command surface deliberately, including commands with side
+/// effects, so its safety cannot depend on how it was launched. It ran as
+/// `ohm-desktop --mock --ipc-selftest` and trusted the launcher: `--ipc-selftest` alone
+/// armed it against whatever config directory the app would have used — including the
+/// real per-user one — and `--mock` only *adds* the simulated provider, leaving
+/// LibreHardwareMonitor, the operating system provider and NVML switched on. A probe
+/// that calls `rule_retry_handovers` could then have re-armed a real channel's failed
+/// handover on a real machine.
+///
+/// These checks therefore run before the config directory is created, before settings
+/// are applied, before the runtime, the engine and every control loop exist, and they
+/// refuse rather than falling back to anything.
+#[derive(Debug)]
+struct ProbeIsolation {
+    paths: ConfigPaths,
+    settings: Settings,
+    /// Simulated hardware only, whatever the settings say — the refusal above means the
+    /// settings cannot disagree, but the options actually used are built here rather
+    /// than inferred later.
+    options: AdapterOptions,
+}
+
+impl ProbeIsolation {
+    /// Refuse unless the run is explicitly, verifiably isolated.
+    fn resolve(override_root: Option<PathBuf>, default_root: &Path) -> Result<Self, String> {
+        let env_name = ohm_core::paths::ENV_CONFIG_DIR;
+        let Some(root) = override_root.filter(|path| !path.as_os_str().is_empty()) else {
+            return Err(format!(
+                "refusing to run the IPC self-test without an explicit configuration directory. \
+                 The self-test exercises commands that write, so it must not be able to reach a \
+                 real installation: set {env_name} to a dedicated directory (a fresh temporary one \
+                 is ideal) and disable the real hardware providers in its settings.json. This run \
+                 would otherwise have used {}.",
+                default_root.display()
+            ));
+        };
+
+        // The real configuration directory, or anything under it, is the user's — not a
+        // place to point a probe that writes.
+        if root == default_root || root.starts_with(default_root) {
+            return Err(format!(
+                "refusing to run the IPC self-test against the real configuration directory ({}). \
+                 Point {env_name} at a directory outside it, with the real hardware providers \
+                 disabled.",
+                root.display()
+            ));
+        }
+        if !root.is_dir() {
+            return Err(format!(
+                "refusing to run the IPC self-test: the configuration directory {} does not exist. \
+                 Create it first — the self-test will not create a configuration directory it was \
+                 not explicitly given.",
+                root.display()
+            ));
+        }
+
+        let paths = ConfigPaths::from_root(&root);
+        let settings = SettingsStore::new(&paths).load().map_err(|error| {
+            format!("could not read the settings in {}: {error}", root.display())
+        })?;
+        let configured = AdapterOptions::from_settings(&settings);
+        // The names the settings file itself uses, so the refusal can tell an operator
+        // exactly which `disabled_adapters` entry to add.
+        let mut real = Vec::new();
+        if configured.system {
+            real.push("system");
+        }
+        if configured.lhm {
+            real.push("lhm");
+        }
+        if configured.nvidia {
+            real.push("nvidia");
+        }
+        if !real.is_empty() {
+            return Err(format!(
+                "refusing to run the IPC self-test: the settings in {} enable real hardware \
+                 provider(s) {real:?}. A simulated-only run must not be able to touch real \
+                 hardware: add them to `disabled_adapters` in that settings.json, or leave the \
+                 file without them enabled.",
+                root.display()
+            ));
+        }
+        if !configured.mock && !configured.protocol_device {
+            return Err(format!(
+                "refusing to run the IPC self-test: no simulated provider is enabled in {}. \
+                 Enable the simulated hardware (or the protocol device) so the probe has something \
+                 to exercise.",
+                root.display()
+            ));
+        }
+
+        Ok(Self {
+            paths,
+            settings,
+            options: AdapterOptions::simulated_only(),
+        })
+    }
+}
+
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let paths = ConfigPaths::discover()?;
+    let flags = StartupFlags::parse(&std::env::args().collect::<Vec<_>>());
+
+    // The probe's isolation is established first, before `paths.ensure()` can create a
+    // directory, before settings are applied and before any provider, runtime or engine
+    // exists. A refusal here exits non-zero and leaves the machine alone.
+    let isolation = if flags.ipc_selftest {
+        let override_root = std::env::var_os(ohm_core::paths::ENV_CONFIG_DIR).map(PathBuf::from);
+        let default_root = ConfigPaths::discover_with(None)?.root().to_path_buf();
+        // A refusal here is deliberately before logging exists: it has to be readable in
+        // the console of whoever launched it, not only in a log file inside a directory
+        // the run may not have been allowed to touch.
+        let isolation = ProbeIsolation::resolve(override_root, &default_root)?;
+        eprintln!(
+            "OpenHardwareOS: IPC self-test, isolated to {} (simulated providers only)",
+            isolation.paths.root().display()
+        );
+        Some(isolation)
+    } else {
+        None
+    };
+
+    let paths = match &isolation {
+        Some(isolation) => isolation.paths.clone(),
+        None => ConfigPaths::discover()?,
+    };
     paths.ensure()?;
 
     let store = SettingsStore::new(&paths);
-    let settings = store.load()?;
+    let settings = match &isolation {
+        Some(isolation) => isolation.settings.clone(),
+        None => store.load()?,
+    };
     let _log_guard = ohm_core::logging::init(settings.log_level, Some(&paths))?;
 
-    let flags = StartupFlags::parse(&std::env::args().collect::<Vec<_>>());
     // `--dry-run` must change what the runtime *does*, not only what it reports.
     let settings = apply_startup_overrides(settings, flags);
 
@@ -114,7 +243,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         "starting OpenHardwareOS"
     );
 
-    let mut options = AdapterOptions::from_settings(&settings);
+    let mut options = match &isolation {
+        // Simulated only, decided by `ProbeIsolation` and not by the settings file.
+        Some(isolation) => isolation.options.clone(),
+        None => AdapterOptions::from_settings(&settings),
+    };
     if flags.mock {
         options.mock = true;
         options.protocol_device = true;
@@ -380,6 +513,144 @@ mod tests {
         assert!(StartupFlags::parse(&args(&["OpenHardwareOS"])).is_empty());
         // Unknown flags are ignored rather than fatal.
         assert!(StartupFlags::parse(&args(&["OpenHardwareOS", "--nope"])).is_empty());
+    }
+
+    /// Write a settings file for a simulated-only probe run.
+    fn write_probe_settings(root: &Path, extra: &str) {
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(
+            root.join("settings.json"),
+            format!(
+                r#"{{"experimental_features": true, "disabled_adapters": ["system", "lhm", "nvidia"]{extra}}}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    fn temp_root() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
+    /// The hole that mattered most: `--ipc-selftest` on its own pointed the probe at
+    /// whatever configuration directory the app would have used.
+    #[test]
+    fn a_probe_without_an_explicit_configuration_directory_is_refused() {
+        let default = PathBuf::from("/Users/someone/Library/Application Support/OpenHardwareOS");
+        let error = ProbeIsolation::resolve(None, &default)
+            .expect_err("a probe with no explicit config directory must be refused");
+        assert!(
+            error.contains("explicit configuration directory"),
+            "{error}"
+        );
+        assert!(
+            error.contains(ohm_core::paths::ENV_CONFIG_DIR),
+            "the refusal must name the variable to set: {error}"
+        );
+        assert!(
+            error.contains(&default.display().to_string()),
+            "and the directory it would otherwise have used: {error}"
+        );
+
+        // The same for an empty value, which is not an isolation either.
+        let empty = ProbeIsolation::resolve(Some(PathBuf::new()), &default);
+        assert!(empty.is_err());
+    }
+
+    /// The real configuration directory — or anything inside it — is not a place to
+    /// point a probe that writes.
+    #[test]
+    fn a_probe_pointed_at_the_real_configuration_directory_is_refused() {
+        let temp = temp_root();
+        let default = temp.path().join("Application Support/OpenHardwareOS");
+        std::fs::create_dir_all(&default).unwrap();
+
+        let error = ProbeIsolation::resolve(Some(default.clone()), &default)
+            .expect_err("the real config directory must be refused");
+        assert!(error.contains("real configuration directory"), "{error}");
+
+        let inside = default.join("scratch");
+        std::fs::create_dir_all(&inside).unwrap();
+        let error = ProbeIsolation::resolve(Some(inside), &default)
+            .expect_err("a directory inside the real one must be refused");
+        assert!(error.contains("real configuration directory"), "{error}");
+    }
+
+    /// A directory that does not exist is not created on the probe's behalf: creating
+    /// configuration is exactly the side effect the checks exist to prevent.
+    #[test]
+    fn a_probe_with_a_missing_configuration_directory_is_refused_and_creates_nothing() {
+        let temp = temp_root();
+        let missing = temp.path().join("never-created");
+        let error = ProbeIsolation::resolve(Some(missing.clone()), &temp.path().join("real"))
+            .expect_err("a missing directory must be refused");
+        assert!(error.contains("does not exist"), "{error}");
+        assert!(
+            !missing.exists(),
+            "the refusal must not have created the directory"
+        );
+    }
+
+    /// `--mock` only *adds* the simulated provider; it never switched the real ones
+    /// off, so a probe could have run with LHM and the OS provider live.
+    #[test]
+    fn a_probe_with_a_real_provider_enabled_is_refused() {
+        let temp = temp_root();
+        let root = temp.path().join("probe");
+        std::fs::create_dir_all(&root).unwrap();
+        // The default settings enable the real providers.
+        std::fs::write(root.join("settings.json"), "{}").unwrap();
+        let error = ProbeIsolation::resolve(Some(root.clone()), &temp.path().join("real"))
+            .expect_err("default settings enable real providers and must be refused");
+        assert!(error.contains("real hardware provider"), "{error}");
+        assert!(error.contains("disabled_adapters"), "{error}");
+        // Only LHM enabled is still a refusal, and the message names it.
+        let only_lhm = temp.path().join("only-lhm");
+        write_probe_settings(&only_lhm, "");
+        std::fs::write(
+            only_lhm.join("settings.json"),
+            r#"{"disabled_adapters": ["system", "nvidia"], "experimental_features": true}"#,
+        )
+        .unwrap();
+        let error = ProbeIsolation::resolve(Some(only_lhm), &temp.path().join("real"))
+            .expect_err("a live LHM provider must be refused");
+        assert!(error.contains("lhm"), "{error}");
+    }
+
+    /// The legitimate case: a dedicated directory whose settings disable every real
+    /// provider and enable the simulator.
+    #[test]
+    fn an_isolated_probe_is_accepted_and_is_given_simulated_providers_only() {
+        let temp = temp_root();
+        let root = temp.path().join("probe");
+        write_probe_settings(&root, "");
+        let isolation = ProbeIsolation::resolve(Some(root.clone()), &temp.path().join("real"))
+            .expect("an isolated, simulated-only probe is allowed");
+        assert_eq!(isolation.paths.root(), root.as_path());
+        let mut ids = isolation.options.enabled_ids();
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            vec!["mock".to_string(), "opd".to_string()],
+            "only simulated providers are constructed, whatever the settings say"
+        );
+        assert!(!isolation.options.lhm && !isolation.options.system && !isolation.options.nvidia);
+    }
+
+    /// A configuration directory with no simulator in it at all gives the probe nothing
+    /// to exercise, which is a refusal rather than a silent no-op.
+    #[test]
+    fn a_probe_without_any_simulated_provider_is_refused() {
+        let temp = temp_root();
+        let root = temp.path().join("probe");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("settings.json"),
+            r#"{"disabled_adapters": ["system", "lhm", "nvidia", "mock", "opd"]}"#,
+        )
+        .unwrap();
+        let error = ProbeIsolation::resolve(Some(root), &temp.path().join("real"))
+            .expect_err("no simulated provider must be refused");
+        assert!(error.contains("simulated provider"), "{error}");
     }
 
     #[test]

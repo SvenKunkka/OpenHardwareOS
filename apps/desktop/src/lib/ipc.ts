@@ -130,7 +130,7 @@ export const api = {
    */
   ruleHandovers: () => call<HandoverReport[]>('rule_handovers'),
   /** Re-arm every handover that ran out of attempts; returns how many. */
-  ruleRetryHandovers: () => call<number>('rule_retry_handovers'),
+
   checkRule: (rule: Rule) => call<RuleCheck>('check_rule', { rule }),
   saveRule: (rule: Rule) => call<Rule>('save_rule', { rule }),
   deleteRule: (id: string) => call<boolean>('delete_rule', { id }),
@@ -151,6 +151,13 @@ export const api = {
   /** A fault on one simulated channel: `none`, `unconfirmed` or `reject`. */
   mockSetChannelFault: (device: string, capability: string, fault: string) =>
     call<MockStatus | null>('mock_set_channel_fault', { device, capability, fault }),
+  /**
+   * Re-arm failed handovers. With a channel named, only that channel is re-armed —
+   * which is the only form an IPC self-test may use, because re-arming everything
+   * could touch real pending work.
+   */
+  ruleRetryHandovers: (device?: string, capability?: string) =>
+    call<number>('rule_retry_handovers', { device, capability }),
   /**
    * Report the result of an IPC self-test run. Only used when the app was started with
    * `--ipc-selftest`; writes the frontend's own account of what it saw next to the

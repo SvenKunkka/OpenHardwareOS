@@ -5,6 +5,7 @@ import { api } from './lib/ipc';
 import { usePolled } from './hooks/usePoll';
 import { readStoredTheme, useTheme } from './lib/theme';
 import { Sidebar, type Route } from './components/Sidebar';
+import { IpcProbePanel, useIpcProbeReport } from './components/IpcProbePanel';
 import { Overview } from './screens/Overview';
 import { Devices } from './screens/Devices';
 import { DeviceDetail } from './screens/DeviceDetail';
@@ -33,6 +34,8 @@ function Shell() {
   const mockStatus = usePolled(() => api.mockStatus(), tick, { throttleMs: 5000 });
   const rules = usePolled(() => api.listRules(), tick, { throttleMs: 5000 });
   const appInfo = usePolled(() => api.appInfo(), undefined);
+  // Populated only by an `--ipc-selftest` run; `null` on every normal launch.
+  const probeReport = useIpcProbeReport();
 
   const settings = snapshot?.settings;
   const theme = settings?.theme ?? readStoredTheme();
@@ -98,6 +101,12 @@ function Shell() {
             </button>
           </div>
         </header>
+        {probeReport ? (
+          <div className="stack">
+            <IpcProbePanel report={probeReport} />
+          </div>
+        ) : null}
+
 
         {error && snapshot ? (
           <div style={{ padding: 'var(--space-3) var(--space-5) 0' }}>
