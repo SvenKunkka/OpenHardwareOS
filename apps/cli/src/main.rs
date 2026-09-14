@@ -243,6 +243,12 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+    /// Channels a rule left behind, and whether they were made safe.
+    Handovers {
+        /// Re-arm handovers that ran out of attempts, then report.
+        #[arg(long)]
+        retry: bool,
+    },
     /// Where OpenHardwareOS keeps its files.
     Paths,
     /// Show an Open Device Protocol exchange with the simulated OpenFan.
@@ -360,6 +366,7 @@ async fn main() -> Result<()> {
         } => demo(&cli, *profile, *step_seconds, *steps, *ambient).await,
         Command::Rules { action } => rules(&cli, action).await,
         Command::Audit { limit } => audit(&cli, *limit).await,
+        Command::Handovers { retry } => handovers(&cli, *retry).await,
         Command::Paths => paths(&cli),
         Command::Protocol => protocol().await,
     }
@@ -710,6 +717,77 @@ async fn demo(
     Ok(())
 }
 
+/// Show what happened to channels that rules stopped driving.
+///
+/// An unfinished handover is the one piece of automation state that must never be
+/// invisible: the channel is still sitting at whatever the abandoned curve last asked
+/// for, and the rule that abandoned it may itself be gone. The record names that rule
+/// as data, and `--retry` is how the user asks for another attempt once whatever was
+/// broken has been fixed.
+async fn handovers(cli: &Cli, retry: bool) -> Result<()> {
+    let session = Session::open(cli, false, None).await?;
+    session.start().await?;
+
+    print_header("Control handovers");
+    if retry {
+        let rearmed = session.engine.retry_failed_handovers();
+        println!("  re-armed {rearmed} handover(s) that had run out of attempts");
+        if rearmed > 0 {
+            // One tick performs the attempt, so the report below is not stale.
+            session.engine.tick_force().await;
+        }
+    }
+
+    let records = session.engine.handovers();
+    if records.is_empty() {
+        println!("  nothing outstanding: every channel a rule left behind was handed over");
+        return Ok(());
+    }
+    for report in &records {
+        for line in describe_handover(report) {
+            println!("{line}");
+        }
+    }
+    // The distinction matters: an unresolved handover means a channel nobody protects.
+    let owed = session.engine.unfinished_handovers();
+    if owed > 0 {
+        println!();
+        println!(
+            "  {owed} channel(s) are still not protected by any rule or by the fail-safe duty"
+        );
+    }
+    Ok(())
+}
+
+/// The lines a user sees for one handover.
+///
+/// Split out of the command so the text can be asserted on: an unfinished handover is
+/// the state that must never be invisible, and "the CLI would print something" is not
+/// evidence that it prints the reason, the channel and the way out.
+fn describe_handover(report: &ohm_automation::HandoverReport) -> Vec<String> {
+    let mut lines = vec![
+        format!("  {}", report.summary()),
+        format!("      reason : {}", report.reason),
+    ];
+    if let Some(error) = &report.first_error {
+        lines.push(format!("      error  : {error}"));
+    }
+    match report.state {
+        ohm_automation::HandoverState::Pending => lines.push(format!(
+            "      state  : attempted {} time(s), will be retried",
+            report.attempts
+        )),
+        ohm_automation::HandoverState::Failed => lines.push(format!(
+            "      action : retrying stopped after {} attempt(s); fix the channel and run \
+             `ohm-cli handovers --retry`",
+            report.attempts
+        )),
+        ohm_automation::HandoverState::Confirmed => {}
+        ohm_automation::HandoverState::Superseded => {}
+    }
+    lines
+}
+
 async fn rules(cli: &Cli, action: &RulesAction) -> Result<()> {
     let use_mock = matches!(action, RulesAction::Suggest { mock: true });
     let session = Session::open(cli, use_mock, None).await?;
@@ -926,6 +1004,59 @@ mod tests {
         assert_eq!(truncate("short", 10), "short");
         assert_eq!(truncate("abcdefghij", 5), "abcd…");
         assert_eq!(truncate("温度传感器名称很长", 4), "温度传…");
+    }
+
+    /// The failed-handover text has to carry the channel, the rule that left it, the
+    /// original error and the way out — that is the whole point of the record.
+    #[test]
+    fn an_unfinished_handover_is_described_with_a_way_out() {
+        let report = ohm_automation::HandoverReport {
+            device: ohm_core::DeviceId::new("fan.mock.0").unwrap(),
+            capability: ohm_core::CapabilityId::new("fan.speed_percent").unwrap(),
+            from_rule: ohm_core::RuleId::new("gone-rule").unwrap(),
+            reason: "rule `gone-rule` was deleted; fan.mock.0/fan.speed_percent is no longer \
+                     driven by it"
+                .into(),
+            state: ohm_automation::HandoverState::Failed,
+            attempts: 5,
+            first_error: Some("the device refused the fail-safe duty".into()),
+            last_error: Some("the device refused the fail-safe duty".into()),
+            queued_at_ms: 1,
+            last_attempt_ms: 2,
+            confirmed_value: None,
+            superseded_by: None,
+        };
+        let text = describe_handover(&report).join("\n");
+        assert!(text.contains("fan.mock.0/fan.speed_percent"), "{text}");
+        assert!(
+            text.contains("gone-rule"),
+            "the rule name survives its deletion: {text}"
+        );
+        assert!(text.contains("failed"), "{text}");
+        assert!(
+            text.contains("the device refused the fail-safe duty"),
+            "{text}"
+        );
+        assert!(
+            text.contains("--retry"),
+            "the way out must be named: {text}"
+        );
+        assert!(
+            !text.contains("applied"),
+            "an unfinished handover is not a success: {text}"
+        );
+
+        let pending = ohm_automation::HandoverReport {
+            state: ohm_automation::HandoverState::Pending,
+            attempts: 2,
+            ..report.clone()
+        };
+        let text = describe_handover(&pending).join("\n");
+        assert!(text.contains("retried"), "{text}");
+        assert!(
+            !text.contains("retrying stopped"),
+            "a pending handover is still being worked on: {text}"
+        );
     }
 
     #[test]
