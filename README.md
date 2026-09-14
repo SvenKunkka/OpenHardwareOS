@@ -444,6 +444,8 @@ project requires any of these to be present.
 | [`docs/automation.md`](docs/automation.md) | Rules, curves, hysteresis, fallbacks, validation |
 | [`docs/protocol.md`](docs/protocol.md) | Open Device Protocol: framing, messages, descriptors |
 | [`docs/roadmap.md`](docs/roadmap.md) | Capability roadmap C1–C8, with what exists today |
+| [`docs/plans/hardware-support/`](docs/plans/hardware-support/README.md) | Six-stage hardware support plan (versioned snapshot of issues #1–#7): order, substages, acceptance |
+| [`docs/plans/pump-support.md`](docs/plans/pump-support.md) | v0.2.0 single-pump scope and acceptance criteria |
 | [`docs/research.md`](docs/research.md) | Tech research with per-claim citations |
 | [`docs/decisions/`](docs/decisions/) | Architecture decision records |
 

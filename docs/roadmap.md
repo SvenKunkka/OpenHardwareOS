@@ -11,6 +11,17 @@ Its scope, existing foundations and acceptance criteria are in the
 [pump support plan](plans/pump-support.md). The version tree separates that plan
 from the published v0.1.1 and v0.1.0 previews.
 
+**This page is a capability view, not the delivery order.** The order in which
+hardware support is built — six stages and fifty substages, with the v0.2.0 pump
+work as stage one — is the [six-stage hardware support plan](plans/hardware-support/README.md),
+versioned here as a snapshot of GitHub issues #1–#7. Three sets of labels answer
+three different questions and must not be read as one sequence: **C1–C8** (this
+page) say what state each capability area is in; **stage 1–6 / S1.1–6.7** say in
+what order the work is delivered; **PUMP-01–PUMP-04** say what the v0.2.0 release
+must contain. Stage one's substages map onto the pump work packages rather than
+replacing them (S1.1–S1.3 ↔ PUMP-01, S1.4–S1.5 ↔ PUMP-02, S1.6–S1.7 ↔ PUMP-03,
+S1.8 ↔ PUMP-04).
+
 Legend: **implemented** = source and software tests exist · **partial** = limited
 or dependent on target hardware · **roadmap** = planned. Hardware compatibility
 requires target-device evidence. Technical sources are in [research.md](research.md)
