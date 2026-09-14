@@ -2,17 +2,31 @@ name: Published Windows CLI install check
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: Published vMAJOR.MINOR.PATCH to install from its tagged README
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   install:
-    name: Published v0.1.0 on Windows PowerShell 5.1
+    name: Published ${{ inputs.version }} on Windows PowerShell 5.1
     runs-on: windows-latest
     timeout-minutes: 15
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
     steps:
+      - name: Validate the requested version
+        shell: powershell
+        run: |
+          if ($env:RELEASE_VERSION -notmatch '^v\d+\.\d+\.\d+$') { throw 'Expected version vMAJOR.MINOR.PATCH' }
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.version }}
+          persist-credentials: false
       - name: Run the documented install against the published release
         shell: powershell
         run: |
@@ -21,6 +35,10 @@ jobs:
           if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1) {
             throw "Expected Windows PowerShell 5.1, got $($PSVersionTable.PSVersion)."
           }
+          $readmeCommit = (& git rev-parse HEAD | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $readmeCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'Cannot identify the checked-out README commit.' }
+          $tagCommit = Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/commits/$env:RELEASE_VERSION" -Headers @{ Accept = 'application/vnd.github+json' }
+          if ($readmeCommit -cne $tagCommit.sha) { throw 'README checkout differs from the requested release tag.' }
           $scope = Join-Path $env:RUNNER_TEMP ('ohm-published-install-' + [Guid]::NewGuid().ToString('N'))
           $env:LOCALAPPDATA = Join-Path $scope 'local-app-data'
           $env:OHM_CONFIG_DIR = Join-Path $scope 'runtime-config'
@@ -32,35 +50,37 @@ jobs:
             $pattern = '(?ms)^' + $fence + 'powershell\r?\n(.*?)^' + $fence
             $match = [Regex]::Match($readme, $pattern)
             if (-not $match.Success) { throw 'README default PowerShell install block is missing.' }
-            # Execute the checked-out repository's exact documented commands.
+            $versionAssignment = '(?m)^\s*\$ohmVersion\s*=\s*[''"]' + [Regex]::Escape($env:RELEASE_VERSION) + '[''"]\s*$'
+            if (-not [Regex]::IsMatch($match.Groups[1].Value, $versionAssignment)) { throw 'The tagged README install block does not select the requested version.' }
+            # Execute the requested tag's exact documented commands.
             # Downloads, checksum validation, ZIP extraction and CLI runs are real.
             & ([ScriptBlock]::Create($match.Groups[1].Value))
 
-            $installation = Join-Path $env:LOCALAPPDATA 'OpenHardwareOS/cli-v0.1.0'
+            $installation = Join-Path $env:LOCALAPPDATA "OpenHardwareOS/cli-$env:RELEASE_VERSION"
             $cli = Join-Path $installation 'ohm-cli.exe'
             $actualVersion = (& $cli --version | Out-String).Trim()
-            if ($LASTEXITCODE -ne 0 -or $actualVersion -cne 'ohm-cli 0.1.0') {
+            $expectedVersion = 'ohm-cli ' + $env:RELEASE_VERSION.Substring(1)
+            if ($LASTEXITCODE -ne 0 -or $actualVersion -cne $expectedVersion) {
               throw "Installed CLI version check failed: $actualVersion"
             }
             $release = Get-Content (Join-Path $installation 'release.json') -Raw | ConvertFrom-Json
-            if ($release.version -cne 'v0.1.0' -or $release.platform -cne 'windows-x86_64' -or $release.repository -cne $env:GITHUB_REPOSITORY) {
+            if ($release.version -cne $env:RELEASE_VERSION -or $release.platform -cne 'windows-x86_64' -or $release.repository -cne $env:GITHUB_REPOSITORY) {
               throw 'Installed release metadata does not match this repository and version.'
             }
             if ($release.source_commit -cnotmatch '^[0-9a-f]{40}$') { throw 'Invalid release source commit.' }
-            $tagCommit = Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/commits/v0.1.0" -Headers @{ Accept = 'application/vnd.github+json' }
-            if ($release.source_commit -cne $tagCommit.sha) { throw 'Installed source commit differs from the published v0.1.0 tag.' }
+            if ($release.source_commit -cne $tagCommit.sha) { throw 'Installed source commit differs from the requested release tag.' }
 
             # demo uses simulated adapters only, even on the real Windows runner.
             & $cli demo --steps 10
             if ($LASTEXITCODE -ne 0) { throw 'Installed CLI simulated demo failed.' }
             Write-Host "Verified $actualVersion; published source commit $($release.source_commit)"
-            Write-Host "README checkout: $env:GITHUB_SHA; PowerShell $($PSVersionTable.PSVersion)"
+            Write-Host "README tag: $env:RELEASE_VERSION ($readmeCommit); PowerShell $($PSVersionTable.PSVersion)"
             @(
               'Published Windows CLI installation passed.'
               "- Shell: Windows PowerShell $($PSVersionTable.PSVersion)"
               "- Version: $actualVersion"
               "- Published source commit: $($release.source_commit)"
-              "- README checkout: $env:GITHUB_SHA"
+              "- README tag: $env:RELEASE_VERSION ($readmeCommit)"
               '- Real GitHub download, SHA256 verification, versioned install, --version and doctor passed.'
               '- Ten-step simulated demo passed. No real fan writes or desktop installation were performed.'
             ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8

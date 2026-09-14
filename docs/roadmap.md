@@ -1,41 +1,47 @@
-# Roadmap
+# Capability roadmap
 
-This is the intended path from the current MVP to a hardware operating system.
-It is written to be checkable: every version says what already exists in this
-repository and what does not. Technical facts with sources are in
-[`research.md`](research.md); architectural decisions are in
-[`decisions/`](decisions/).
+This document groups hardware capabilities by area. **C1–C8 are capability areas,
+not software release numbers.** Actual releases, development versions and future
+plans are recorded in the [version tree](versions.md); its only data source is
+[versions.json](versions.json). Historical roadmap labels such as v0.2 and v0.4
+were capability milestones and did not mean those software versions were released.
 
-Legend: **shipped** = in this repository and covered by tests · **partial** =
-present but limited, or dependent on hardware most machines do not have ·
-**roadmap** = planned, no implementation.
+The next product release planned for hardware work is **v0.2.0: pump support**.
+Its scope, existing foundations and acceptance criteria are in the
+[pump support plan](plans/pump-support.md). The version tree separates that plan
+from the current v0.1.1 development work and published v0.1.0 preview.
+
+Legend: **implemented** = source and software tests exist · **partial** = limited
+or dependent on target hardware · **roadmap** = planned. Hardware compatibility
+requires target-device evidence. Technical sources are in [research.md](research.md)
+and architecture decisions in [decisions/](decisions/).
 
 ---
 
-## v0.1 — Hardware Monitor MVP
+## C1 — Hardware Monitor MVP
 
 **Why.** Nothing else works without it. Before automating anything, the project
 needs one model that describes a CPU, a GPU, an SSD and a fan the same way, one
 runtime that reads them safely, and one UI that shows the truth — including the
 things that cannot be read.
 
-**State: shipped.**
+**State: implemented.**
 
 What exists today:
 
 | Deliverable | State | Where |
 |---|---|---|
-| Unified device / capability / state model | shipped | `crates/ohm-device-model` |
-| Hardware runtime: probe, discover, hotplug, poll, state store, event bus | shipped | `crates/ohm-runtime` |
-| Safety policy: duty floors, fail-safe, emergency ceiling, audit log | shipped | `crates/ohm-runtime/src/{safety,audit}.rs` |
-| Simulated machine with fault injection (CPU/GPU/SSD/fans/pump) | shipped | `adapters/mock` |
-| OS sensors: CPU name/load/clock, thermal zones, Windows storage counters | shipped | `adapters/system` |
-| NVIDIA telemetry and fan control through the driver's NVML | shipped | `adapters/nvidia` |
-| Motherboard sensors **and chassis fan control** through LibreHardwareMonitor's web server | shipped | `adapters/libre-hardware-monitor` |
-| Desktop UI: Overview, Devices, Device detail, Automation, Settings, Diagnostics, simulator | shipped | `apps/desktop` |
-| Headless CLI: `doctor`, `status`, `watch`, `demo`, `rules`, `audit`, `paths`, `protocol` | shipped | `apps/cli` |
-| Cross-crate acceptance and edge-case tests | shipped | `tests/` |
-| Deterministic `--selftest` startup check | shipped | `apps/desktop/src-tauri/src/lib.rs` |
+| Unified device / capability / state model | implemented | `crates/ohm-device-model` |
+| Hardware runtime: probe, discover, hotplug, poll, state store, event bus | implemented | `crates/ohm-runtime` |
+| Safety policy: duty floors, fail-safe, emergency ceiling, audit log | implemented | `crates/ohm-runtime/src/{safety,audit}.rs` |
+| Simulated machine with fault injection (CPU/GPU/SSD/fans/pump) | implemented | `adapters/mock` |
+| OS sensors: CPU name/load/clock, thermal zones, Windows storage counters | implemented | `adapters/system` |
+| NVIDIA telemetry and fan control through the driver's NVML | implemented | `adapters/nvidia` |
+| Motherboard sensors **and chassis fan control** through LibreHardwareMonitor's web server | implemented | `adapters/libre-hardware-monitor` |
+| Desktop UI: Overview, Devices, Device detail, Automation, Settings, Diagnostics, simulator | implemented | `apps/desktop` |
+| Headless CLI: `doctor`, `status`, `watch`, `demo`, `rules`, `audit`, `paths`, `protocol` | implemented | `apps/cli` |
+| Cross-crate acceptance and edge-case tests | implemented | `tests/` |
+| Deterministic `--selftest` startup check | implemented | `apps/desktop/src-tauri/src/lib.rs` |
 
 **Dependencies and risks.**
 
@@ -43,7 +49,7 @@ What exists today:
   (`research.md` §2.3). The app therefore inherits LHM's elevation requirement
   rather than solving it: the LHM GUI runs `requireAdministrator`, and
   OpenHardwareOS talks to its HTTP server. The elevated *helper* architecture
-  (a small privileged process behind IPC) is not built — see v0.3.
+  (a small privileged process behind IPC) is not built — see C3.
 * **The kernel driver is PawnIO, not WinRing0.** LibreHardwareMonitor swapped
   WinRing0 for PawnIO in September 2025 because Microsoft classifies WinRing0 as a
   vulnerable driver (`CVE-2020-14979`, `VulnerableDriver:WinNT/Winring0`) and the
@@ -65,23 +71,23 @@ What exists today:
 
 ---
 
-## v0.2 — Cooling Automation
+## C2 — Cooling Automation
 
 **Why.** This is the reason people install the app. A monitoring dashboard is
 nice; a machine that keeps itself quiet and cool is the product.
 
-**State: the software half is shipped; the hardware half depends on the machine.**
+**State: the software half is implemented; the hardware half depends on the machine.**
 
 | Deliverable | State | Notes |
 |---|---|---|
-| Rule model, YAML storage, atomic writes, load reports | shipped | `crates/ohm-automation` |
-| Piecewise-linear curves with interpolation and end clamping | shipped | `curve.rs` |
-| Hysteresis and deadband | shipped | `evaluator.rs` |
-| Fallbacks: `hold`, `safe_default`, `fixed`, `release` | shipped | `rule.rs`, `evaluator.rs` |
-| Combined sources — `MAX` / `MIN` / `AVG` over several sensors | shipped | `rule.rs` — `Source::Combined` |
-| GPU → fan and CPU + GPU → fan example rules | shipped | `examples.rs` |
-| Validation before save, identical for hand-written and generated rules | shipped | `engine.rs` — `check_rule` |
-| Safety floor, fail-safe duty, emergency override, ramp limiting | shipped | `runtime/src/safety.rs` |
+| Rule model, YAML storage, atomic writes, load reports | implemented | `crates/ohm-automation` |
+| Piecewise-linear curves with interpolation and end clamping | implemented | `curve.rs` |
+| Hysteresis and deadband | implemented | `evaluator.rs` |
+| Fallbacks: `hold`, `safe_default`, `fixed`, `release` | implemented | `rule.rs`, `evaluator.rs` |
+| Combined sources — `MAX` / `MIN` / `AVG` over several sensors | implemented | `rule.rs` — `Source::Combined` |
+| GPU → fan and CPU + GPU → fan example rules | implemented | `examples.rs` |
+| Validation before save, identical for hand-written and generated rules | implemented | `engine.rs` — `check_rule` |
+| Safety floor, fail-safe duty, emergency override, ramp limiting | implemented | `runtime/src/safety.rs` |
 | Fan **detection** (RPM) on a desktop board | partial | requires LHM to find a SuperIO chip |
 | Fan **control** (PWM write) | partial | only where LHM exposes a writable `Control` sensor; opt-in by design |
 | GPU fan duty control (NVIDIA) | partial | NVML `nvmlDeviceSetFanSpeed_v2`, documented for Maxwell+, **requires elevation**; some SKUs refuse third-party control |
@@ -113,18 +119,18 @@ nice; a machine that keeps itself quiet and cool is the product.
 
 ---
 
-## v0.3 — Plugin SDK
+## C3 — Plugin SDK
 
 **Why.** One team cannot support every motherboard, AIO, lighting controller and
 laptop vendor. The adapter trait already exists; the SDK turns it into a
 publishable contract and the runtime into a host that loads third-party code.
 
-**State: the trait is shipped, the SDK and loading are roadmap.**
+**State: the trait is implemented, the SDK and loading are roadmap.**
 
 | Deliverable | State | Notes |
 |---|---|---|
-| `HardwareAdapter` trait (`probe`, `discover`, `read_state`, `read_all`, `write`, `shutdown`, `as_any`) | shipped | `crates/ohm-adapter-api` |
-| Adapter facade, registration order, provider enable/disable in Settings | shipped | `crates/adapters`, `Settings.tsx` |
+| `HardwareAdapter` trait (`probe`, `discover`, `read_state`, `read_all`, `write`, `shutdown`, `as_any`) | implemented | `crates/ohm-adapter-api` |
+| Adapter facade, registration order, provider enable/disable in Settings | implemented | `crates/adapters`, `Settings.tsx` |
 | A versioned, documented SDK crate with a stability promise | roadmap | today the trait can still change freely |
 | Loading third-party adapter plugins at runtime | roadmap | the adapter list is compiled in: `build_adapters(&AdapterOptions)` |
 | Third-party plugin discovery, permissions, versioning | roadmap | none |
@@ -148,18 +154,18 @@ publishable contract and the runtime into a host that loads third-party code.
 
 ---
 
-## v0.4 — OpenHub reference hardware
+## C4 — OpenHub reference hardware
 
 **Why.** Software that can only ever consume hardware somebody else made cannot
 fix the parts of the problem the industry has left broken: fan headers that
 revert, ECs that lie, no standard way to ask a device what it is.
 
-**State: the protocol is shipped, the hardware is roadmap.**
+**State: the protocol is implemented, the hardware is roadmap.**
 `crates/ohm-protocol` is the executable specification: framing (`0xAA55`, u16
 length, CRC-8, JSON payload), message set, descriptors, plus `StreamTransport`
 and `LoopbackTransport`. The Open Device Protocol table in
 `crates/ohm-protocol/src/lib.rs` marks real USB HID/CDC enumeration as
-**roadmap (v0.4)**.
+**roadmap (C4)**.
 
 **Deliverables (planned).**
 
@@ -190,7 +196,7 @@ and `LoopbackTransport`. The Open Device Protocol table in
 
 ---
 
-## v0.5 — OpenFan
+## C5 — OpenFan
 
 **Why.** The smallest useful piece of hardware: one fan, one MCU, full
 self-identification and firmware updates over the same wire. It is the platform's
@@ -224,7 +230,7 @@ firmware-update flow. `ohm-cli protocol` prints a full exchange against it.
 
 ---
 
-## v0.6 — Hardware Automation Platform
+## C6 — Hardware Automation Platform
 
 **Why.** `temperature -> fan` is one sentence of a much larger language. The
 next step is events, conditions and grouping — and a natural-language front end
@@ -261,7 +267,7 @@ that compiles to the same validated rule format.
 
 ---
 
-## v0.7 — Hardware OS SDK
+## C7 — Hardware OS SDK
 
 **Why.** If the platform is worth anything, other people should be able to build
 on every layer of it: firmware, hardware, plugins and the protocol itself.
@@ -273,7 +279,7 @@ on every layer of it: firmware, hardware, plugins and the protocol itself.
   local fallback, bootloader.
 * **Hardware SDK** — reference schematics, a device template, and the electrical
   and mechanical constraints a device must respect to be recognised.
-* **Plugin SDK, stabilised** — the v0.3 contract frozen with a compatibility
+* **Plugin SDK, stabilised** — the C3 contract frozen with a compatibility
   policy, a conformance test suite, and a registry of known adapters.
 * **Protocol certification** — a documented test sequence and a badge for devices
   that pass it, including a conformance tool built on the existing
@@ -287,7 +293,7 @@ needs a governance process before it needs code.
 
 ---
 
-## v1.0 — Open Hardware OS
+## C8 — Open Hardware OS
 
 **Why.** Cooling is the wedge, not the destination. Once the runtime can describe
 and drive hardware safely, the same model covers everything on and around a desk.
@@ -307,7 +313,7 @@ and drive hardware safely, the same model covers everything on and around a desk
 
 **Dependencies and risks.**
 
-* **Elevation, settled.** By v1.0 the elevated helper must exist in a form
+* **Elevation, settled.** By C8 the elevated helper must exist in a form
   Microsoft supports going forward: a Windows service or a scheduled task with
   `RunLevel=HighestAvailable`, plus config in a location both the user and the
   elevated context can read (`%PROGRAMDATA%`), because Windows 11's
@@ -325,27 +331,27 @@ and drive hardware safely, the same model covers everything on and around a desk
 
 ## Current state vs roadmap
 
-| Area | v0.1 | v0.2 | v0.3 | v0.4 | v0.5 | v0.6 | v0.7 | v1.0 |
+| Area | C1 | C2 | C3 | C4 | C5 | C6 | C7 | C8 |
 |---|---|---|---|---|---|---|---|---|
-| Device / capability model | shipped | | | | | | | |
-| Runtime: discovery, polling, state, events | shipped | | | | | | | |
-| Safety policy + audit log | shipped | | | | | | | |
-| Simulated hardware + fault injection | shipped | | | | | | | |
-| OS adapters (CPU, thermal, storage) | shipped | | | | | | | |
-| NVML adapter (NVIDIA) | shipped | | | | | | | |
-| LibreHardwareMonitor adapter | shipped | | | | | | | |
-| Desktop UI + headless CLI | shipped | | | | | | | |
-| Rule engine, curves, fallbacks | | shipped | | | | | | |
-| Combined `MAX`/`MIN`/`AVG` sources | | shipped | | | | | | |
-| GPU → fan / CPU+GPU → fan rules | | shipped | | | | | | |
+| Device / capability model | implemented | | | | | | | |
+| Runtime: discovery, polling, state, events | implemented | | | | | | | |
+| Safety policy + audit log | implemented | | | | | | | |
+| Simulated hardware + fault injection | implemented | | | | | | | |
+| OS adapters (CPU, thermal, storage) | implemented | | | | | | | |
+| NVML adapter (NVIDIA) | implemented | | | | | | | |
+| LibreHardwareMonitor adapter | implemented | | | | | | | |
+| Desktop UI + headless CLI | implemented | | | | | | | |
+| Rule engine, curves, fallbacks | | implemented | | | | | | |
+| Combined `MAX`/`MIN`/`AVG` sources | | implemented | | | | | | |
+| GPU → fan / CPU+GPU → fan rules | | implemented | | | | | | |
 | Controllable fans on *this* machine | | partial | | | | | | |
 | Adapter trait published and stable | | | partial | | | | | |
 | Third-party plugin loading | | | roadmap | | | | | |
 | OpenRGB adapter | | | roadmap (reference only, GPL-2.0) | | | | | |
-| Open Device Protocol | | | | shipped | | | | |
+| Open Device Protocol | | | | implemented | | | | |
 | Real USB HID/CDC enumeration | | | | roadmap | | | | |
 | OpenHub hardware | | | | roadmap | | | | |
-| OpenFan specification + simulation | | | | | shipped | | | |
+| OpenFan specification + simulation | | | | | implemented | | | |
 | OpenFan hardware | | | | | roadmap | | | |
 | WHEN/IF/THEN, scenes, profiles | | | | | | roadmap | | |
 | App/game detection | | | | | | roadmap | | |
@@ -381,7 +387,7 @@ messages, descriptors, `LoopbackTransport` and `StreamTransport`, and
 `MockOpenFan` is a working simulated device, but no manifest depends on `hidapi`
 or `serialport`, and there is no code that opens a real USB device. Every ODP
 device today is simulated. The protocol crate's own status table says
-`real USB HID / CDC enumeration | roadmap (v0.4)`.
+`real USB HID / CDC enumeration | roadmap (C4)`.
 
 **There is no plugin loading.** The adapter list is static:
 `ohm_adapters::build_adapters(&AdapterOptions)` constructs a fixed set
@@ -389,38 +395,29 @@ device today is simulated. The protocol crate's own status table says
 There is no `libloading`, no dynamic library search, no manifest and no sandbox.
 Third-party adapters require recompiling the workspace.
 
-**No packaging beyond an unsigned NSIS bundle.** `tauri.conf.json` sets
-`bundle.targets: ["nsis"]` with `installMode: "perMachine"`, and `bundle.active:
-true`, so `cargo tauri build` produces an installer. There is **no code-signing
-configuration** (no certificate, no timestamp URL) and no MSI target, so the
-resulting installer is unsigned and will trigger SmartScreen. There is no
-elevated helper, no Windows service, no scheduled task, and no uninstall hook that
-restores firmware fan control — `relinquish_on_exit` covers the normal exit path
-only. `research.md` §9.4/§9.5 records the intended approach.
+**Windows distribution is published.** The [v0.1.0 preview](https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.0)
+contains a Windows x64 CLI ZIP, an unsigned NSIS desktop installer, an installation
+script, checksums, source metadata and generated dependency notices. The desktop
+uses per-machine installation. Code signing, an elevated helper and a Windows
+service remain separate work. Normal runtime exit requests restoration of firmware
+control; the result still requires target-device validation.
 
-**CI is a gate, as far as this machine can tell.** `.github/workflows/ci.yml`
-builds and tests the workspace on Linux, macOS and Windows, and runs five jobs:
-`lint` (required `cargo fmt --all -- --check` and
-`cargo clippy --workspace --all-targets -- -D warnings`, with the WebKitGTK
-packages the desktop crate needs), `rust` (build, test, the headless `ohm-cli
-demo`, and `ohm-desktop --selftest --mock` normally and in `--dry-run`), `frontend`
-(`npm ci`, typecheck, behaviour tests, production build), `windows-bundle` (`tauri
-build`, then the NSIS artefact is listed and uploaded for review) and `hygiene`
-(no crate may opt out of `unsafe_code = "deny"`, no ADL/ADLX reference may appear
-in code, and `cargo deny check` is **required**, backed by a `deny.toml` that has
-been run locally and passes). There is **no `continue-on-error` anywhere** in the
-workflow: a check that cannot fail is not a check.
+**CI has run on Windows, Linux and macOS.** The
+[v0.1.0 source CI](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34818882884)
+passed all seven jobs: formatting/Clippy, three Rust platforms, frontend,
+Windows NSIS packaging and dependency/license checks. The
+[release workflow](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34818882887)
+built the actual Windows CLI and installer, generated notices, and tested CLI
+installation in isolation. The
+[public Windows PowerShell 5.1 install check](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34819834091)
+then downloaded that release, verified checksums and the source commit, installed
+it and ran diagnostics and a simulated demo. These checks did not verify a physical
+fan or pump on the user's PC.
 
-A **source acceptance package** for Windows is produced by
-`scripts/make-acceptance-package.sh`: the tracked tree at one commit, the pre-check /
-build / verify entry points, an evidence index and a SHA-256 manifest of every file,
-with the platform's own README stating that it contains no Windows build artefacts
-because none exist. What is still missing before a first release: no release workflow,
-no code signing, and no generated third-party notices file — which `research.md`
-(decision 13) recommends. Note also that a workflow definition is not a run:
-nothing in this repository has been executed by GitHub Actions, so every
-`windows-latest` job is **Prepared**, not verified. See
-`docs/verification-log.md`.
+Historical source acceptance ZIPs from scripts/make-acceptance-package.sh
+contain source, build entry points and evidence manifests. They remain distinct
+from the published binary packages. New source versions and their release evidence
+are tracked in [versions.md](versions.md), without rewriting previous tags.
 
 **The example rules are files, not an importer.** `examples/rules/` holds four
 ready-to-copy rules (`gpu-cooling.yaml`, `gpu-cooling-gaming-only.yaml`,
@@ -430,16 +427,12 @@ parses, validates and checks each of them on every test run. What does not exist
 is an **import** path: the app has no "load a rule file" button and no
 drag-and-drop, so a user must copy the file into `<config>/rules` by hand.
 
-**Workspace test status.** `cargo test --workspace` passes: **444 tests, 0
-failed**, exit code 0, measured at the round-3 revision with the pinned toolchain
-`rustc 1.98.0` / `cargo 1.98.0` (see `docs/verification-log.md`, which records the
-command, the environment and the result, and is the authority if this number ever
-disagrees with a fresh run). The suite spans `ohm-core`, `ohm-device-model`,
-`ohm-adapter-api`, `ohm-runtime`, `ohm-automation`, `ohm-protocol`, `ohm-adapters`,
-all five adapter crates, `ohm-desktop`, `ohm-cli` and the ten cross-crate
-integration test binaries (`acceptance`, `edge_cases`, `fallback_release`,
-`gate_behaviour`, `handover_integrity`, `handover_state`, `protocol_flow`,
-`rule_edit_state`, `rule_lifecycle`, `write_confirmation`).
+**Verified release baseline.** The v0.1.0 Windows run recorded **487 Rust tests
+passed, 0 failed, 0 ignored**, including one documentation test. Frontend testing
+recorded **42 passed** on Ubuntu/jsdom. Later changes require their own validation;
+current results belong in the version tree. Earlier round-specific counts and
+local toolchain investigations in [verification-log.md](verification-log.md) are
+historical evidence, not the current release status.
 
 **Clippy now runs over the whole workspace.** This was an environment gap, not a
 project one: the machine's `PATH` toolchain mixed `clippy-driver 0.1.92` with

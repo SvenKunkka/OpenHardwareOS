@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <title>OpenHardwareOS · 版本管理树</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f4f6fa; --surface: #ffffff; --text: #172238; --muted: #546278;
+      --border: #dce2ec; --soft: #f0f3f8; --accent: #305de1; --selected: #ebf0ff;
+      --green: #166847; --green-bg: #e8f4ec; --amber: #855316; --amber-bg: #fff3df;
+      --blue: #254dc3; --blue-bg: #eaf0ff; --shadow: 0 12px 50px #24344e08;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#111824; --surface:#192231; --text:#e8edf6; --muted:#aab7cc;
+        --border:#354257; --soft:#222e40; --accent:#9db5ff; --selected:#243858;
+        --green:#9fe2b6; --green-bg:#203e32; --amber:#f2cd8d; --amber-bg:#44351e;
+        --blue:#adc2ff; --blue-bg:#293959; --shadow:none; }
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); line-height:1.65; }
+    button, input { font:inherit; }
+    button, a { -webkit-tap-highlight-color:transparent; }
+    button { cursor:pointer; }
+    a { color:var(--accent); text-underline-offset:3px; }
+    button:focus-visible, a:focus-visible, input:focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
+    [hidden] { display:none !important; }
+    .wrap { max-width:1180px; margin:0 auto; padding:32px 28px 44px; }
+    .brand { display:flex; align-items:center; gap:12px; font-size:14px; font-weight:650; letter-spacing:.02em; }
+    .mark { display:grid; place-items:center; width:34px; height:34px; background:var(--text); color:var(--surface); border-radius:10px; font-size:12px; letter-spacing:-.03em; }
+    .brand a { margin-left:auto; font-weight:500; }
+    .hero { padding:36px 0 26px; display:flex; align-items:flex-end; gap:24px; flex-wrap:wrap; }
+    .hero h1 { font-size:32px; letter-spacing:-.045em; line-height:1.2; margin:0 0 12px; font-weight:720; }
+    .hero p { margin:0; color:var(--muted); font-size:14px; }
+    .legend { margin-left:auto; display:flex; flex-wrap:wrap; gap:15px; font-size:12px; color:var(--muted); }
+    .legend span { display:flex; align-items:center; gap:6px; }
+    .dot { width:7px; height:7px; display:inline-block; background:currentColor; border-radius:50%; flex:none; }
+    .released { color:var(--green); }
+    .development { color:var(--blue); }
+    .planned { color:var(--amber); }
+    .workspace { display:grid; grid-template-columns:minmax(270px, 340px) minmax(0, 1fr); border:1px solid var(--border); border-radius:18px; overflow:hidden; background:var(--surface); box-shadow:var(--shadow); min-height:540px; }
+    .navigation { border-right:1px solid var(--border); padding:22px 16px; }
+    .nav-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:0 6px 16px; }
+    .nav-heading h2 { font-size:13px; margin:0; font-weight:650; }
+    .text-button { background:none; border:0; padding:4px 2px; color:var(--accent); font-size:12px; }
+    .search-label { display:block; font-size:12px; color:var(--muted); margin:0 6px 6px; }
+    .search { border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); padding:9px 11px; width:100%; font-size:13px; }
+    .tree { padding:16px 0 0; margin:0; list-style:none; }
+    .tree ul { list-style:none; margin:3px 0 3px 15px; padding:0 0 0 10px; border-left:1px solid var(--border); }
+    .node-row { display:flex; align-items:stretch; position:relative; border-radius:9px; margin:3px 0; }
+    .node-row:hover { background:var(--soft); }
+    .node-row.selected { background:var(--selected); }
+    .fold { align-self:flex-start; border:0; background:none; color:var(--muted); width:25px; flex:none; padding:12px 0; font-size:13px; line-height:1.5; }
+    .fold.empty { cursor:default; visibility:hidden; }
+    .node { min-width:0; flex:1; border:0; text-align:left; background:none; color:var(--text); padding:10px 10px 10px 0; border-radius:7px; }
+    .node-top { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .node-version { font-family:ui-monospace, SFMono-Regular, Consolas, monospace; font-size:15px; font-weight:650; }
+    .node-status { font-size:10px; display:flex; align-items:center; gap:5px; }
+    .node-label { display:block; font-size:12px; color:var(--muted); margin-top:4px; overflow-wrap:anywhere; }
+    .context-node { opacity:.62; }
+    .nav-note { font-size:11px; color:var(--muted); margin:22px 6px 0; }
+    .empty-state { padding:24px 6px; font-size:13px; color:var(--muted); }
+    .detail { min-width:0; padding:30px 34px; }
+    .detail-top { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .badge { display:inline-flex; align-items:center; gap:6px; border-radius:5px; padding:3px 8px; font-size:11px; background:var(--soft); color:var(--muted); }
+    .badge.released { color:var(--green); background:var(--green-bg); }
+    .badge.development { color:var(--blue); background:var(--blue-bg); }
+    .badge.planned { color:var(--amber); background:var(--amber-bg); }
+    .version-heading { margin:18px 0 3px; display:flex; align-items:center; flex-wrap:wrap; gap:12px; }
+    .version-heading h2 { margin:0; font-size:36px; font-family:ui-monospace, SFMono-Regular, Consolas, monospace; font-weight:600; letter-spacing:-.065em; line-height:1.2; }
+    .detail h3 { margin:7px 0 10px; font-size:18px; letter-spacing:-.02em; font-weight:650; }
+    .summary { margin:0; color:var(--muted); font-size:14px; line-height:1.85; overflow-wrap:anywhere; }
+    .actions { display:flex; gap:8px; flex-wrap:wrap; margin:22px 0 27px; }
+    .action { display:inline-flex; align-items:center; min-height:36px; padding:6px 13px; border:1px solid var(--border); border-radius:7px; text-decoration:none; color:var(--text); background:var(--surface); font-size:12px; font-weight:600; }
+    .action.primary { background:var(--text); color:var(--surface); border-color:var(--text); }
+    .action:hover { filter:brightness(.94); }
+    .section { margin-top:25px; padding-top:21px; border-top:1px solid var(--border); }
+    .section h4 { margin:0 0 13px; font-size:12px; letter-spacing:.015em; color:var(--muted); font-weight:650; }
+    .change-list { margin:0; padding-left:18px; font-size:13px; }
+    .change-list li { margin:7px 0; padding-left:4px; }
+    .evidence-list { margin:0; padding:0; list-style:none; display:grid; gap:9px; font-size:13px; }
+    .metadata { display:grid; grid-template-columns:82px minmax(0,1fr); gap:8px 12px; margin:0; font-size:12px; }
+    .metadata dt { color:var(--muted); }
+    .metadata dd { margin:0; overflow-wrap:anywhere; }
+    .metadata code { font-family:ui-monospace, SFMono-Regular, Consolas, monospace; font-size:11px; }
+    .subtle { margin:0; color:var(--muted); font-size:12px; line-height:1.8; }
+    .child-links { display:flex; gap:8px; flex-wrap:wrap; }
+    .child-link { display:flex; gap:10px; align-items:center; background:var(--soft); border:1px solid transparent; border-radius:7px; padding:8px 11px; color:var(--text); font-size:12px; }
+    .footer { display:flex; flex-wrap:wrap; gap:10px 22px; justify-content:space-between; color:var(--muted); font-size:11px; margin-top:18px; }
+    #notice { min-height:20px; color:var(--muted); font-size:12px; margin:12px 0 0; }
+    .error { padding:24px; background:var(--surface); border:1px solid var(--border); border-radius:12px; }
+    @media(max-width:760px) {
+      .wrap { padding:20px 16px 28px; }
+      .hero { padding:28px 0 22px; gap:18px; }
+      .hero h1 { font-size:28px; }
+      .legend { margin-left:0; width:100%; }
+      .workspace { grid-template-columns:1fr; min-height:0; }
+      .navigation { border-right:0; border-bottom:1px solid var(--border); }
+      .detail { padding:25px 22px; }
+      .nav-note { display:none; }
+      .tree { padding-top:10px; }
+      .footer { display:block; }
+      .footer span { display:block; margin-bottom:8px; }
+    }
+    @media(prefers-reduced-motion:no-preference) {
+      .node-row, .action { transition:background-color .15s ease, color .15s ease; }
+    }
+  </style>
+</head>
+<body>
+<main class="wrap">
+  <div class="brand"><span class="mark" aria-hidden="true">OH</span><span>OpenHardwareOS</span><a id="repository-link" href="https://github.com/SvenKunkka/OpenHardwareOS" target="_blank" rel="noopener noreferrer">GitHub ↗</a></div>
+  <header class="hero">
+    <div><h1>版本管理树</h1><p>已发布什么，正在改进什么，下一步做什么。</p></div>
+    <div class="legend" aria-label="版本状态说明">
+      <span><i class="dot released" aria-hidden="true"></i>已发布</span>
+      <span><i class="dot development" aria-hidden="true"></i>开发中</span>
+      <span><i class="dot planned" aria-hidden="true"></i>计划中</span>
+    </div>
+  </header>
+  <div class="workspace" id="workspace">
+    <aside class="navigation" aria-label="选择版本">
+      <div class="nav-heading"><h2>版本关系</h2><button class="text-button" id="expand-all" type="button">展开全部</button></div>
+      <label class="search-label" for="version-search">搜索版本或功能</label>
+      <input class="search" id="version-search" type="search" placeholder="例如：水泵、v0.1.0" autocomplete="off">
+      <ul class="tree" id="version-tree" role="tree" aria-label="OpenHardwareOS 版本树"></ul>
+      <p class="empty-state" id="empty" hidden>没有匹配的版本。试试版本号或功能名称。</p>
+      <p class="nav-note">上下方向键移动，左右方向键展开或折叠，回车查看详情。</p>
+    </aside>
+    <article class="detail" id="version-detail" aria-labelledby="selected-version">
+      <div class="detail-top"><span class="badge" id="selected-status"></span><span class="badge" id="selected-channel"></span></div>
+      <div class="version-heading"><h2 id="selected-version"></h2><button class="text-button" id="copy-version" type="button">复制版本号</button></div>
+      <h3 id="selected-title"></h3>
+      <p class="summary" id="selected-summary"></p>
+      <nav class="actions" id="version-actions" aria-label="当前版本相关链接"></nav>
+      <section class="section"><h4>变更范围</h4><ul class="change-list" id="changes"></ul></section>
+      <section class="section"><h4>发布与验证</h4><dl class="metadata" id="metadata"></dl></section>
+      <section class="section"><h4>验证记录</h4><ul class="evidence-list" id="evidence"></ul><p class="subtle" id="no-evidence"></p></section>
+      <section class="section" id="next-section"><h4>后续版本</h4><div class="child-links" id="children"></div></section>
+      <p id="notice" role="status" aria-live="polite"></p>
+    </article>
+  </div>
+  <footer class="footer">
+    <span>版本清单随源码保存。计划中的功能不会显示为可下载版本。</span>
+    <span><a href="https://github.com/SvenKunkka/OpenHardwareOS/blob/main/docs/version-management.md" target="_blank" rel="noopener noreferrer">维护说明</a> · <a href="https://github.com/SvenKunkka/OpenHardwareOS/blob/main/docs/versions.json" target="_blank" rel="noopener noreferrer">版本清单</a></span>
+  </footer>
+</main>
+<script type="application/json" id="version-data">{"schema_version": 1, "repository": "SvenKunkka/OpenHardwareOS", "development": "v0.1.1", "versions": [{"id": "v0.1.0", "parent": null, "status": "released", "channel": "preview", "title": "首个公开预览版", "summary": "硬件监测、散热规则、桌面应用与 CLI 已公开发布；真实硬件兼容性仍需逐机验收。", "tag": "v0.1.0", "commit": "e64fe2204154fb83cf42f6cd1f0854bd7bd0e4b0", "branch": null, "release_url": "https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.0", "published_at": "2026-09-14T07:51:12Z", "changes": ["统一硬件模型、监测、散热规则与安全回退", "Windows x64 CLI 与桌面安装包、校验和、第三方许可声明", "Windows、macOS、Linux 持续集成与模拟设备验证"], "evidence": [{"title": "对应源码的持续集成：Windows 487 项 Rust 测试、前端 42 项测试通过", "url": "https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34818882884"}, {"title": "Windows CLI 与桌面安装包构建、安装验证通过", "url": "https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34818882887"}, {"title": "Windows PowerShell 5.1 公开下载安装验证通过", "url": "https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34819834091"}], "hardware_validation": "not_verified", "plan": null}, {"id": "v0.1.1", "parent": "v0.1.0", "status": "development", "channel": "preview", "title": "版本管理与安全修复", "summary": "建立可追踪的版本树、同步与安装校验流程，并修复占空比渐变和热紧急控制问题。", "tag": null, "commit": null, "branch": "codex/version-tree", "release_url": null, "published_at": null, "changes": ["可搜索、可展开的版本树，链接源码、安装说明和验证记录", "版本准备、文件同步、失败恢复及真实发行记录工具", "Windows 安装检查按目标版本执行，保留旧版下载", "渐变输出遵守最低占空比，热紧急目标不再被渐变限制", "无效当前占空比读数不再参与渐变计算", "登记 v0.2.0 单水泵支持范围与验收计划"], "evidence": [], "hardware_validation": "not_verified", "plan": null}, {"id": "v0.2.0", "parent": "v0.1.1", "status": "planned", "channel": "preview", "title": "水泵支持", "summary": "下一版规划：先完成一个可明确识别的 LHM 水泵通道的读取、受限控制与恢复验收。", "tag": null, "commit": null, "branch": null, "release_url": null, "published_at": null, "changes": ["LHM 单泵身份与通道映射", "RPM 读取及受限控制", "故障、回读与退出恢复验收"], "evidence": [], "hardware_validation": "not_verified", "plan": "docs/plans/pump-support.md"}]}</script>
+<script>
+'use strict';
+(function () {
+  var data;
+  try { data = JSON.parse(document.getElementById('version-data').textContent); }
+  catch (error) { document.getElementById('workspace').textContent = '无法读取版本清单，请重新生成版本树。'; return; }
+  if (!Array.isArray(data.versions) || data.versions.length === 0) {
+    document.getElementById('workspace').textContent = '尚未登记版本。'; return;
+  }
+  var base = 'https://github.com/SvenKunkka/OpenHardwareOS';
+  var labels = {released:'已发布', development:'开发中', planned:'计划中'};
+  var nodes = new Map(data.versions.map(function (node) { return [node.id, node]; }));
+  var expanded = new Set(data.versions.map(function (node) { return node.id; }));
+  var initial;
+  try { initial = decodeURIComponent(location.hash.slice(1)); } catch (error) { initial = ''; }
+  var released = data.versions.filter(function (node) { return node.status === 'released'; }).sort(function (a, b) {
+    var left = a.id.slice(1).split('.').map(Number), right = b.id.slice(1).split('.').map(Number);
+    for (var index = 0; index < 3; index += 1) { if (left[index] !== right[index]) return right[index] - left[index]; }
+    return 0;
+  });
+  var fallback = released.length ? released[0].id : data.versions[0].id;
+  var selected = nodes.has(initial) ? initial : (nodes.has(data.development) ? data.development : fallback);
+  var query = '';
+  var tree = document.getElementById('version-tree');
+  function el(tag, text, className) {
+    var element = document.createElement(tag);
+    if (text !== undefined) element.textContent = text;
+    if (className) element.className = className;
+    return element;
+  }
+  function ownUrl(value) {
+    if (typeof value !== 'string') return null;
+    try {
+      var url = new URL(value);
+      if (url.protocol === 'https:' && url.hostname === 'github.com' &&
+          (url.pathname === '/SvenKunkka/OpenHardwareOS' || url.pathname.indexOf('/SvenKunkka/OpenHardwareOS/') === 0)) return url.href;
+    } catch (error) { /* Unusable links are omitted. */ }
+    return null;
+  }
+  function sourcePath(path, ref) {
+    if (typeof path !== 'string' || path.indexOf('docs/') !== 0 || path.split('/').some(function (part) { return part === '..' || !part; })) return null;
+    return base + '/blob/' + encodeURIComponent(ref || 'main') + '/' + path.split('/').map(encodeURIComponent).join('/');
+  }
+  function link(text, url, className) {
+    var safe = ownUrl(url);
+    if (!safe) return null;
+    var anchor = el('a', text, className);
+    anchor.href = safe; anchor.target = '_blank'; anchor.rel = 'noopener noreferrer';
+    return anchor;
+  }
+  function descendants(id) { return data.versions.filter(function (node) { return node.parent === id; }); }
+  function matching(node) {
+    return (node.id + ' ' + node.title + ' ' + node.summary + ' ' + (node.changes || []).join(' ')).toLocaleLowerCase().indexOf(query) !== -1;
+  }
+  function visibleBranch(node, seen) {
+    if (seen.has(node.id)) return false;
+    var visited = new Set(seen); visited.add(node.id);
+    return matching(node) || descendants(node.id).some(function (child) { return visibleBranch(child, visited); });
+  }
+  function visibleItems() { return Array.from(tree.querySelectorAll('[role="treeitem"]')).filter(function (item) { return !item.closest('[hidden]'); }); }
+  function focusNode(id) {
+    var button = Array.from(tree.querySelectorAll('[role="treeitem"]')).find(function (item) { return item.dataset.version === id; });
+    if (button) button.focus();
+  }
+  function select(id, focus) {
+    if (!nodes.has(id)) return;
+    selected = id;
+    var parent = nodes.get(id).parent, guard = new Set();
+    while (parent && nodes.has(parent) && !guard.has(parent)) { expanded.add(parent); guard.add(parent); parent = nodes.get(parent).parent; }
+    try { history.replaceState(null, '', '#' + encodeURIComponent(id)); } catch (error) { /* The selection still works in restricted file viewers. */ }
+    renderTree(); renderDetail();
+    if (focus) focusNode(id);
+  }
+  function toggle(id) {
+    if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
+    renderTree(); focusNode(id);
+  }
+  function renderTree() {
+    tree.replaceChildren();
+    var count = 0;
+    function append(node, host, level, visited) {
+      if (visited.has(node.id) || !visibleBranch(node, new Set())) return;
+      var nextVisited = new Set(visited); nextVisited.add(node.id);
+      count += 1;
+      var item = el('li'); item.setAttribute('role', 'none');
+      var row = el('div', undefined, 'node-row' + (selected === node.id ? ' selected' : '') + (query && !matching(node) ? ' context-node' : ''));
+      var children = descendants(node.id).filter(function (child) { return visibleBranch(child, new Set()); });
+      var isExpanded = query ? true : expanded.has(node.id);
+      var fold = el('button', children.length ? (isExpanded ? '▾' : '▸') : '', 'fold' + (children.length ? '' : ' empty'));
+      fold.type = 'button'; fold.tabIndex = -1;
+      fold.setAttribute('aria-label', (isExpanded ? '折叠 ' : '展开 ') + node.id);
+      if (!children.length) { fold.disabled = true; fold.setAttribute('aria-hidden', 'true'); }
+      fold.addEventListener('click', function () { toggle(node.id); });
+      var button = el('button', undefined, 'node'); button.type = 'button';
+      button.setAttribute('role', 'treeitem'); button.setAttribute('aria-level', String(level));
+      button.setAttribute('aria-selected', String(selected === node.id));
+      if (children.length) button.setAttribute('aria-expanded', String(isExpanded));
+      button.tabIndex = selected === node.id ? 0 : -1; button.dataset.version = node.id;
+      var top = el('span', undefined, 'node-top');
+      top.append(el('span', node.id, 'node-version'));
+      var status = el('span', undefined, 'node-status ' + node.status);
+      var dot = el('i', undefined, 'dot'); dot.setAttribute('aria-hidden', 'true');
+      status.append(dot, document.createTextNode(labels[node.status] || node.status));
+      top.append(status); button.append(top, el('span', node.title, 'node-label'));
+      button.addEventListener('click', function () { select(node.id, true); });
+      button.addEventListener('focus', function () {
+        visibleItems().forEach(function (item) { item.tabIndex = item === button ? 0 : -1; });
+      });
+      button.addEventListener('keydown', function (event) {
+        var items = visibleItems(), index = items.indexOf(button), target;
+        if (event.key === 'ArrowDown') target = items[Math.min(index + 1, items.length - 1)];
+        if (event.key === 'ArrowUp') target = items[Math.max(index - 1, 0)];
+        if (event.key === 'Home') target = items[0];
+        if (event.key === 'End') target = items[items.length - 1];
+        if (target) { event.preventDefault(); target.focus(); return; }
+        if (event.key === 'ArrowRight' && children.length) {
+          event.preventDefault();
+          if (!isExpanded) toggle(node.id); else focusNode(children[0].id);
+        }
+        if (event.key === 'ArrowLeft') {
+          event.preventDefault();
+          if (children.length && isExpanded && !query) toggle(node.id); else if (node.parent) focusNode(node.parent);
+        }
+      });
+      row.append(fold, button); item.append(row); host.append(item);
+      if (children.length) {
+        var group = el('ul'); group.setAttribute('role', 'group'); group.hidden = !isExpanded;
+        item.append(group);
+        children.forEach(function (child) { append(child, group, level + 1, nextVisited); });
+      }
+    }
+    data.versions.filter(function (node) { return !node.parent || !nodes.has(node.parent); }).forEach(function (node) { append(node, tree, 1, new Set()); });
+    document.getElementById('empty').hidden = count !== 0;
+    var items = visibleItems();
+    if (items.length && !items.some(function (item) { return item.tabIndex === 0; })) items[0].tabIndex = 0;
+  }
+  function renderDetail() {
+    var node = nodes.get(selected);
+    document.getElementById('selected-version').textContent = node.id;
+    document.getElementById('selected-title').textContent = node.title;
+    document.getElementById('selected-summary').textContent = node.summary;
+    var status = document.getElementById('selected-status');
+    status.textContent = labels[node.status] || node.status; status.className = 'badge ' + node.status;
+    var channel = document.getElementById('selected-channel');
+    channel.hidden = node.status === 'planned';
+    channel.textContent = node.channel === 'preview' ? '预览版' : node.channel === 'stable' ? '正式版' : '版本准备中';
+    var actions = document.getElementById('version-actions'); actions.replaceChildren();
+    function action(text, url, primary) { var anchor = link(text, url, 'action' + (primary ? ' primary' : '')); if (anchor) actions.append(anchor); }
+    if (node.status === 'released' && node.release_url) {
+      action('下载这个版本 ↗', node.release_url, true);
+      action('Windows 安装说明', sourcePath('docs/windows-install.md', node.tag), false);
+    }
+    if (node.commit) action('查看源码', base + '/tree/' + encodeURIComponent(node.commit), false);
+    else if (node.status === 'development' && node.branch) action('查看开发分支', base + '/tree/' + encodeURIComponent(node.branch), false);
+    if (node.plan) action('查看开发计划 ↗', sourcePath(node.plan), node.status === 'planned');
+    var changes = document.getElementById('changes'); changes.replaceChildren();
+    (node.changes || []).forEach(function (change) { changes.append(el('li', change)); });
+    var metadata = document.getElementById('metadata'); metadata.replaceChildren();
+    function meta(label, text, code) {
+      var value = el('dd');
+      if (code) value.append(el('code', text)); else value.textContent = text;
+      metadata.append(el('dt', label), value);
+    }
+    meta('发布状态', node.status === 'released' ? '已在 GitHub 发布' : node.status === 'development' ? '正在开发，尚未发布安装包' : '计划中，尚未开工');
+    if (node.tag) meta('版本标签', node.tag, true);
+    if (node.commit) meta('源码提交', node.commit, true);
+    if (node.branch && node.status !== 'planned') meta('开发分支', node.branch, true);
+    if (node.published_at) meta('发布日期', String(node.published_at).slice(0, 10));
+    meta('实机验收', node.hardware_validation === 'verified' ? '已登记实机验证，请查阅下方证据范围' : node.hardware_validation === 'partial' ? '部分通过，完整范围见验证记录' : '待验证；软件测试不等于真实设备支持');
+    var evidence = document.getElementById('evidence'); evidence.replaceChildren();
+    (node.evidence || []).forEach(function (record) {
+      var anchor = link(record.title, record.url);
+      if (anchor) { var item = el('li'); item.append(anchor); evidence.append(item); }
+    });
+    var empty = document.getElementById('no-evidence');
+    empty.hidden = evidence.childElementCount > 0;
+    empty.textContent = node.status === 'planned' ? '本版本尚未进入验证阶段。' : '尚未登记此版本的验证结果。';
+    var children = document.getElementById('children'); children.replaceChildren();
+    var next = descendants(node.id);
+    document.getElementById('next-section').hidden = next.length === 0;
+    next.forEach(function (child) {
+      var button = el('button', child.id + ' · ' + child.title + ' →', 'child-link'); button.type = 'button';
+      button.addEventListener('click', function () { query = ''; document.getElementById('version-search').value = ''; select(child.id, true); });
+      children.append(button);
+    });
+    document.getElementById('notice').textContent = '';
+  }
+  document.getElementById('version-search').addEventListener('input', function (event) {
+    query = event.target.value.trim().toLocaleLowerCase(); renderTree();
+  });
+  document.getElementById('expand-all').addEventListener('click', function () {
+    data.versions.forEach(function (node) { expanded.add(node.id); }); renderTree();
+  });
+  document.getElementById('copy-version').addEventListener('click', async function () {
+    try { await navigator.clipboard.writeText(selected); document.getElementById('notice').textContent = '已复制 ' + selected; }
+    catch (error) { document.getElementById('notice').textContent = '此浏览器不允许复制，可直接选中版本号复制。'; }
+  });
+  window.addEventListener('hashchange', function () {
+    try { var id = decodeURIComponent(location.hash.slice(1)); if (nodes.has(id)) select(id, false); } catch (error) { /* Keep the current selection. */ }
+  });
+  renderTree(); renderDetail();
+}());
+</script>
+</body>
+</html>

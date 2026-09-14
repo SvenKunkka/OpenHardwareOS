@@ -12,6 +12,7 @@ $script:failAsset = ''
 $script:desktopCalls = 0
 $script:desktopFailure = $false
 $script:passed = 0
+$script:downloadCalls = 0
 $version = 'v0.1.0'
 $cliName = "ohm-cli-$version-windows-x86_64.zip"
 $desktopName = "OpenHardwareOS-$version-windows-x86_64-setup.exe"
@@ -48,7 +49,8 @@ Test-Case 'Reject non-Windows or unsupported Windows architecture' {
 }
 function Assert-WindowsX64 { }
 function Receive-ReleaseFile([string]$Uri, [string]$Destination) {
-    Require ($Uri.StartsWith('https://github.com/SvenKunkka/OpenHardwareOS/releases/download/v0.1.0/')) 'Download escaped fixed release URL.'
+    $script:downloadCalls += 1
+    Require ($Uri.StartsWith("https://github.com/SvenKunkka/OpenHardwareOS/releases/download/$script:version/", [StringComparison]::Ordinal)) 'Download escaped the requested release URL.'
     $name = $Uri.Substring($Uri.LastIndexOf('/') + 1)
     if ($name -eq $script:failAsset) { throw 'Injected download failure' }
     Copy-Item -LiteralPath (Join-Path $script:fixture $name) -Destination $Destination
@@ -64,7 +66,7 @@ function Update-Manifest {
     })
     Set-Content (Join-Path $script:fixture 'SHA256SUMS') $lines -Encoding ASCII
 }
-function Set-Fixture([string]$BinaryText = 'cli-fixture', [string]$MetadataVersion = 'v0.1.0', [bool]$Traversal = $false) {
+function Set-Fixture([string]$BinaryText = 'cli-fixture', [string]$MetadataVersion = $script:version, [bool]$Traversal = $false) {
     if (Test-Path $script:fixture) { Remove-Item $script:fixture -Recurse -Force }
     New-Item $script:fixture -ItemType Directory -Force | Out-Null
     $zip = [IO.Compression.ZipFile]::Open((Join-Path $script:fixture $cliName), [IO.Compression.ZipArchiveMode]::Create)
@@ -91,6 +93,17 @@ try {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $env:LOCALAPPDATA = Join-Path $testRoot 'local-app-data'
     New-Item $testRoot -ItemType Directory | Out-Null
+    Test-Case 'Missing version is rejected before any download or installation' {
+        Require-Failure { Install-OpenHardwareOS '' $false $false } 'requires an explicit -Version'
+        Require ($script:downloadCalls -eq 0) 'Missing version attempted a download.'
+        Require (-not (Test-Path (Join-Path $env:LOCALAPPDATA 'OpenHardwareOS/cli'))) 'Missing version created an installation.'
+    }
+    Test-Case 'Latest and prerelease suffixes are rejected' {
+        foreach ($invalidVersion in @('latest', 'v0.2.0-rc.1')) {
+            Require-Failure { Install-OpenHardwareOS $invalidVersion $false $false } 'Expected version vMAJOR.MINOR.PATCH'
+        }
+        Require ($script:downloadCalls -eq 0) 'Invalid version attempted a download.'
+    }
     Test-Case 'Verified CLI install preserves PATH and never invokes executable' {
         Set-Fixture
         Install-OpenHardwareOS $version $false $false
@@ -142,10 +155,20 @@ try {
         Require ($script:desktopCalls -eq 2) 'Unexpected desktop invocation count.'
         Require (@(Get-ChildItem (Join-Path $env:LOCALAPPDATA 'OpenHardwareOS') -Directory).Count -eq 1) 'Temporary install or backup folder remains.'
     }
+    Test-Case 'Explicit second version selects its own assets and package metadata' {
+        $script:version = 'v0.2.0'
+        $script:cliName = "ohm-cli-$script:version-windows-x86_64.zip"
+        $script:desktopName = "OpenHardwareOS-$script:version-windows-x86_64-setup.exe"
+        Set-Fixture 'second-version-fixture'
+        Install-OpenHardwareOS $version $false $false
+        Require ((Installed-Text) -eq 'second-version-fixture') 'Requested second version did not replace the CLI.'
+        $installedMetadata = Get-Content (Join-Path $env:LOCALAPPDATA 'OpenHardwareOS/cli/release.json') -Raw | ConvertFrom-Json
+        Require ($installedMetadata.version -ceq $version) 'Installed metadata does not match the explicit second version.'
+    }
     Test-Case 'Uninstall preserves unrelated configuration and rejects unmanaged directory' {
         $config = Join-Path $env:LOCALAPPDATA 'OpenHardwareOS/config.json'
         Set-Content $config 'preserve'
-        Install-OpenHardwareOS $version $false $true
+        Install-OpenHardwareOS '' $false $true
         Require (Test-Path $config) 'Uninstall deleted unrelated configuration.'
         $unmanaged = Join-Path $env:LOCALAPPDATA 'OpenHardwareOS/cli'
         New-Item $unmanaged -ItemType Directory | Out-Null

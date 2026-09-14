@@ -36,7 +36,7 @@ verifies its checksum and installs to a new per-user version directory:
 & {
     $ErrorActionPreference = 'Stop'
     if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -and $env:PROCESSOR_ARCHITEW6432 -ne 'AMD64') { throw 'Windows x64 is required.' }
-    $ohmVersion = 'v0.1.0'
+    $ohmVersion = 'v0.1.1'
     $ohmAsset = "ohm-cli-$ohmVersion-windows-x86_64.zip"
     $ohmUrl = "https://github.com/SvenKunkka/OpenHardwareOS/releases/download/$ohmVersion"
     $ohmInstall = Join-Path $env:LOCALAPPDATA "OpenHardwareOS\cli-$ohmVersion"
@@ -58,7 +58,7 @@ verifies its checksum and installs to a new per-user version directory:
 }
 ```
 
-The CLI is installed at `%LOCALAPPDATA%\OpenHardwareOS\cli-v0.1.0\ohm-cli.exe`.
+The CLI is installed at `%LOCALAPPDATA%\OpenHardwareOS\cli-v0.1.1\ohm-cli.exe`.
 An existing version directory is preserved and stops installation. These commands
 do not change PowerShell execution policy or PATH; `doctor` reads device capabilities.
 The download checksum is checked before extraction or execution.
@@ -68,8 +68,8 @@ optional installer supports CLI updates in a separate managed `cli` directory an
 desktop installation with `-Desktop`:
 
 ```powershell
-Invoke-WebRequest -UseBasicParsing 'https://github.com/SvenKunkka/OpenHardwareOS/releases/download/v0.1.0/install.ps1' -OutFile "$env:TEMP\OpenHardwareOS-install.ps1"
-& "$env:TEMP\OpenHardwareOS-install.ps1" -Version v0.1.0 -Desktop
+Invoke-WebRequest -UseBasicParsing 'https://github.com/SvenKunkka/OpenHardwareOS/releases/download/v0.1.1/install.ps1' -OutFile "$env:TEMP\OpenHardwareOS-install.ps1"
+& "$env:TEMP\OpenHardwareOS-install.ps1" -Version v0.1.1 -Desktop
 ```
 
 The optional script and desktop installer are unsigned. The desktop installer
@@ -79,11 +79,23 @@ LibreHardwareMonitor requires that separate application; it is not bundled.
 The CLI is also available to Rust users directly from source:
 
 ```powershell
-cargo install --git https://github.com/SvenKunkka/OpenHardwareOS --tag v0.1.0 --locked ohm-cli
+cargo install --git https://github.com/SvenKunkka/OpenHardwareOS --tag v0.1.1 --locked ohm-cli
 ```
 
-[Release assets and checksums](https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.0)
+[Release assets and checksums](https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.1)
 · [Windows installation details](docs/windows-install.md)
+
+## Versions and next steps
+
+[Interactive version tree](https://svenkunkka.github.io/OpenHardwareOS/) ·
+[Text version tree](docs/versions.md) · [Changelog](CHANGELOG.md) ·
+[Version management](docs/version-management.md)
+
+The tree separates published releases, current development and future plans.
+Each published node links to its exact source, Windows installation guide and
+verification evidence. Old release tags and downloads remain available.
+The next feature milestone is **v0.2.0: pump support**, beginning with one
+identified LibreHardwareMonitor pump channel; see the [pump plan](docs/plans/pump-support.md).
 
 ## Build from source
 
@@ -144,10 +156,10 @@ including hysteresis, the safety floor and the audit log.
 | Open Device Protocol + simulated OpenFan | **done** — `crates/ohm-protocol`, `adapters/open-protocol` |
 | Desktop UI (Overview, Devices, Automation, Settings, Diagnostics, simulator panel) | **done** — `apps/desktop` |
 | Headless CLI (`doctor`, `watch`, `demo`, `rules`, `audit`, `protocol`) | **done** — `apps/cli` |
-| Real USB HID / CDC enumeration for ODP devices | roadmap (v0.4) |
-| Loading third-party adapter plugins at runtime | roadmap (v0.3) |
-| Scenes, profiles, WHEN/IF/THEN, app and game detection | roadmap (v0.6) |
-| Natural language automation | roadmap (v0.6) |
+| Real USB HID / CDC enumeration for ODP devices | planned capability: physical ODP transport |
+| Loading third-party adapter plugins at runtime | planned capability: runtime plugin loading |
+| Scenes, profiles, WHEN/IF/THEN, app and game detection | planned capability: advanced automation |
+| Natural language automation | planned capability: advanced automation |
 
 Details, and the honest list of gaps, are in [`docs/roadmap.md`](docs/roadmap.md).
 
@@ -431,7 +443,7 @@ project requires any of these to be present.
 | [`docs/device-model.md`](docs/device-model.md) | Device, Capability, Value, state, units, naming rules |
 | [`docs/automation.md`](docs/automation.md) | Rules, curves, hysteresis, fallbacks, validation |
 | [`docs/protocol.md`](docs/protocol.md) | Open Device Protocol: framing, messages, descriptors |
-| [`docs/roadmap.md`](docs/roadmap.md) | v0.1 → v1.0, with what exists today |
+| [`docs/roadmap.md`](docs/roadmap.md) | Capability roadmap C1–C8, with what exists today |
 | [`docs/research.md`](docs/research.md) | Tech research with per-claim citations |
 | [`docs/decisions/`](docs/decisions/) | Architecture decision records |
 

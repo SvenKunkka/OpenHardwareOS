@@ -160,6 +160,12 @@ impl SafetyPolicy {
                     ),
                 };
             }
+            // The request already meets the emergency duty. It must still
+            // bypass ramp limiting, which could otherwise reduce it again.
+            return SafetyDecision::Allow {
+                value: requested,
+                clamped: None,
+            };
         }
 
         // 2. Duty floor (pump floor is unconditional).
@@ -181,13 +187,33 @@ impl SafetyPolicy {
 
         // 3. Optional ramp limiting.
         if let Some(current) = current.filter(|_| self.max_write_delta_percent > 0.0) {
+            if !current.is_finite() {
+                // An invalid reading is not a ramp anchor. The requested value
+                // has already passed the finite-value and safety-floor gates.
+                return SafetyDecision::Allow {
+                    value: requested,
+                    clamped: Some(format!(
+                        "ramp limiting skipped: non finite current duty ({current}); \
+                         using the validated request"
+                    )),
+                };
+            }
             let delta = requested - current;
             if delta.abs() > self.max_write_delta_percent {
                 let stepped = current + self.max_write_delta_percent * delta.signum();
+                // A low reading may reflect startup or an external controller.
+                // Recover to the floor immediately, even if this exceeds the
+                // requested ramp rate; ramp limiting must never weaken safety.
+                let allowed = stepped.max(floor).clamp(0.0, 100.0);
+                let floor_note = if stepped < floor {
+                    format!("; raised to the {floor} % safety floor")
+                } else {
+                    String::new()
+                };
                 return SafetyDecision::Allow {
-                    value: stepped.clamp(0.0, 100.0),
+                    value: allowed,
                     clamped: Some(format!(
-                        "ramp limited to {} % per write",
+                        "ramp limited to {} % per write{floor_note}",
                         self.max_write_delta_percent
                     )),
                 };
@@ -309,9 +335,13 @@ mod tests {
     }
 
     #[test]
-    fn nan_is_blocked() {
+    fn non_finite_requests_are_blocked() {
         let policy = SafetyPolicy::default();
-        assert!(policy.check_duty(Fan, f64::NAN, None, None).is_blocked());
+        for requested in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let decision = policy.check_duty(Fan, requested, None, None);
+            assert!(decision.is_blocked());
+            assert!(decision.note().unwrap().contains("non finite duty"));
+        }
     }
 
     #[test]
@@ -326,6 +356,65 @@ mod tests {
         // Downwards too, and never below the floor.
         let decision = policy.check_duty(Fan, 25.0, Some(90.0), Some(50.0));
         assert_eq!(decision.value(), Some(80.0));
+    }
+
+    #[test]
+    fn ramp_from_an_unsafe_reading_recovers_to_the_effective_floor() {
+        for enabled in [true, false] {
+            let policy = SafetyPolicy {
+                enabled,
+                require_min_duty: enabled,
+                max_write_delta_percent: 10.0,
+                ..Default::default()
+            };
+            let decision = policy.check_duty(Pump, 70.0, Some(20.0), Some(40.0));
+            assert_eq!(decision.value(), Some(60.0), "{decision:?}");
+            assert!(decision.note().unwrap().contains("floor"));
+        }
+        let policy = SafetyPolicy {
+            min_duty_percent: 80.0,
+            max_write_delta_percent: 10.0,
+            ..Default::default()
+        };
+        for device_type in [Fan, Pump] {
+            let decision = policy.check_duty(device_type, 90.0, Some(20.0), None);
+            assert_eq!(decision.value(), Some(80.0), "{decision:?}");
+        }
+    }
+
+    #[test]
+    fn emergency_bypasses_ramp_even_when_the_request_is_already_safe() {
+        let policy = SafetyPolicy {
+            max_write_delta_percent: 10.0,
+            ..Default::default()
+        };
+        for requested in [20.0, 100.0] {
+            let decision = policy.check_duty(Pump, requested, Some(20.0), Some(95.0));
+            assert_eq!(decision.value(), Some(100.0), "{decision:?}");
+        }
+        let policy = SafetyPolicy {
+            emergency_duty_percent: 80.0,
+            ..policy
+        };
+        assert_eq!(
+            policy
+                .check_duty(Pump, 90.0, Some(20.0), Some(95.0))
+                .value(),
+            Some(90.0),
+        );
+    }
+
+    #[test]
+    fn non_finite_current_is_reported_and_never_used_for_ramping() {
+        let policy = SafetyPolicy {
+            max_write_delta_percent: 10.0,
+            ..Default::default()
+        };
+        for current in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let decision = policy.check_duty(Pump, 70.0, Some(current), None);
+            assert_eq!(decision.value(), Some(70.0), "{decision:?}");
+            assert!(decision.note().unwrap().contains("non finite current"));
+        }
     }
 
     #[test]

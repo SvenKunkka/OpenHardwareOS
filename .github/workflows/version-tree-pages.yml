@@ -1,0 +1,71 @@
+name: Version tree Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/version-tree-pages.yml'
+      - 'docs/versions.json'
+      - 'docs/versions.md'
+      - 'docs/version-tree.html'
+      - 'scripts/versions.py'
+      - 'scripts/templates/version-tree.html'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'apps/desktop/package.json'
+      - 'apps/desktop/package-lock.json'
+      - 'apps/desktop/src-tauri/tauri.conf.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Let an active deployment finish; a newer queued run replaces older queued runs.
+concurrency:
+  group: version-tree-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check version catalogue and generated views
+        run: python -B scripts/versions.py check --generated
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+      - name: Stage only the version tree and catalogue
+        shell: bash
+        run: |
+          mkdir "$RUNNER_TEMP/version-tree-pages"
+          cp docs/version-tree.html "$RUNNER_TEMP/version-tree-pages/index.html"
+          cp docs/versions.json "$RUNNER_TEMP/version-tree-pages/versions.json"
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: ${{ runner.temp }}/version-tree-pages
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy version tree
+        id: deployment
+        uses: actions/deploy-pages@v4

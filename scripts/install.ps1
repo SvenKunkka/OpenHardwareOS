@@ -12,10 +12,11 @@ Requires Windows x64 and PowerShell 5.1+. CLI installation is per-user and does 
 change PATH. -Desktop also runs the NSIS installer silently (Windows may request
 administrator approval); it does not launch the application. Desktop removal is
 through Windows Settings > Apps. No execution-policy or security settings change.
+Installation requires an explicit -Version; -Uninstall does not require a version.
 #>
 [CmdletBinding()]
 param(
-    [ValidatePattern('^v\d+\.\d+\.\d+$')][string]$Version = 'v0.1.0',
+    [ValidatePattern('^v\d+\.\d+\.\d+$')][string]$Version,
     [switch]$Desktop,
     [switch]$Uninstall
 )
@@ -80,7 +81,8 @@ function Install-OpenHardwareOS([string]$ReleaseVersion, [bool]$InstallDesktop, 
         Write-Host 'OpenHardwareOS CLI removed. Application configuration and desktop installation were preserved.'
         return
     }
-    if ($ReleaseVersion -notmatch '^v\d+\.\d+\.\d+$') { throw 'Expected a version such as v0.1.0.' }
+    if ([string]::IsNullOrWhiteSpace($ReleaseVersion)) { throw 'Installation requires an explicit -Version vMAJOR.MINOR.PATCH.' }
+    if ($ReleaseVersion -notmatch '^v\d+\.\d+\.\d+$') { throw 'Expected version vMAJOR.MINOR.PATCH.' }
     if ((Test-Path -LiteralPath $destination) -and -not (Test-Path -LiteralPath (Join-Path $destination $markerName) -PathType Leaf)) {
         throw "Existing directory is not managed by this installer: $destination"
     }

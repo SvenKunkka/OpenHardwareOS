@@ -15,6 +15,19 @@ permissions:
   contents: read
 
 jobs:
+  versions:
+    name: Version catalogue and lifecycle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check catalogue and generated views
+        run: python -B scripts/versions.py check --generated
+      - name: Test version changes and publication checks
+        run: python -B -m unittest discover -s scripts/tests -p test_versions.py -v
+
   # Formatting and lints are *required*: a warning tolerated silently is a warning
   # nobody fixes. The machine this repository was developed on had a split
   # toolchain (Homebrew's clippy-driver could not build `sysinfo`), so local clippy

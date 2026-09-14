@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "OpenHardwareOS",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "org.openhardwareos.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -29,7 +29,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "category": "Utility",
     "shortDescription": "Open runtime, device layer and automation engine for PC hardware",
     "longDescription": "OpenHardwareOS reads your PC's hardware state (CPU, GPU, storage, fans) and automates cooling. Local first: no account, no cloud, no telemetry.",
