@@ -1,0 +1,25 @@
+[package]
+name = "ohm-adapter-nvidia"
+description = "NVIDIA GPU telemetry and fan control through NVML"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ohm-core.workspace = true
+ohm-device-model.workspace = true
+ohm-adapter-api.workspace = true
+serde.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+
+[dependencies.nvml-wrapper]
+workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

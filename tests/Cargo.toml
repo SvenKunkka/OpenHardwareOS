@@ -1,0 +1,34 @@
+[package]
+name = "ohm-integration-tests"
+description = "Cross-crate integration and acceptance tests for OpenHardwareOS"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+ohm-core.workspace = true
+ohm-device-model.workspace = true
+ohm-adapter-api.workspace = true
+ohm-runtime.workspace = true
+ohm-automation.workspace = true
+ohm-protocol.workspace = true
+ohm-adapters.workspace = true
+ohm-adapter-mock.workspace = true
+ohm-adapter-opd.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+
+
+
+[dependencies.tempfile]
+workspace = true
+
+[lints]
+workspace = true

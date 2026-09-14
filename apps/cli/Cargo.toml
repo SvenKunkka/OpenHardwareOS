@@ -1,0 +1,33 @@
+[package]
+name = "ohm-cli"
+description = "Headless OpenHardwareOS command line runtime (discover / watch / demo / rule simulation)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ohm-core.workspace = true
+ohm-device-model.workspace = true
+ohm-adapter-api.workspace = true
+ohm-runtime.workspace = true
+ohm-automation.workspace = true
+ohm-protocol.workspace = true
+ohm-adapters.workspace = true
+ohm-adapter-mock.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+ohm-adapters.workspace = true
+
+[lints]
+workspace = true

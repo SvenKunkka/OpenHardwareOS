@@ -1,0 +1,24 @@
+[package]
+name = "ohm-adapter-mock"
+description = "Deterministic simulated hardware provider (CPU/GPU/SSD/fans) for dev, demo and CI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ohm-core.workspace = true
+ohm-device-model.workspace = true
+ohm-adapter-api.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

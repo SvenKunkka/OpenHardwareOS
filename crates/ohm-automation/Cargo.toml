@@ -1,0 +1,28 @@
+[package]
+name = "ohm-automation"
+description = "Automation engine: sensor -> curve -> actuator rules with safety limits"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ohm-core.workspace = true
+ohm-device-model.workspace = true
+ohm-runtime.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+ohm-adapter-mock.workspace = true
+ohm-adapter-api.workspace = true
+
+[lints]
+workspace = true

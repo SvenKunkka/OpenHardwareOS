@@ -1,0 +1,206 @@
+/* ---------------------------------------------------------------------------
+   Design tokens, reset and base typography.
+   Dark is the default; [data-theme="light"] on <html> switches to light.
+   One accent colour, no glows, no animated gradients.
+--------------------------------------------------------------------------- */
+
+:root {
+  --font-sans:
+    'Segoe UI Variable Text', 'Segoe UI', Inter, system-ui, -apple-system, 'Helvetica Neue', Arial,
+    sans-serif;
+  --font-mono: 'Cascadia Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --step--2: 0.6875rem; /* 11px */
+  --step--1: 0.75rem; /* 12px */
+  --step-0: 0.8125rem; /* 13px */
+  --step-1: 0.875rem; /* 14px */
+  --step-2: 1rem; /* 16px */
+  --step-3: 1.25rem; /* 20px */
+  --step-4: 1.5rem; /* 24px */
+  --step-5: 2rem; /* 32px */
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  --radius-1: 4px;
+  --radius-2: 6px;
+  --radius-3: 10px;
+  --radius-pill: 999px;
+
+  --sidebar-width: 236px;
+  --topbar-height: 56px;
+  --transition: 120ms ease;
+}
+
+:root,
+[data-theme='dark'] {
+  --bg: #0d1117;
+  --bg-sidebar: #0b0f14;
+  --panel: #161b22;
+  --panel-alt: #1b2129;
+  --panel-hover: #1d242d;
+  --border: #262c36;
+  --border-strong: #363d47;
+  --text: #e6edf3;
+  --text-muted: #9aa4b0;
+  --text-dim: #6e7681;
+  --accent: #4c8dff;
+  --accent-hover: #6ba1ff;
+  --accent-soft: rgba(76, 141, 255, 0.14);
+  --accent-contrast: #ffffff;
+  --ok: #3fb950;
+  --ok-soft: rgba(63, 185, 80, 0.14);
+  --warn: #d29922;
+  --warn-soft: rgba(210, 153, 34, 0.15);
+  --danger: #f85149;
+  --danger-soft: rgba(248, 81, 73, 0.14);
+  --info: #58a6ff;
+  --info-soft: rgba(88, 166, 255, 0.13);
+  --muted-soft: rgba(154, 164, 176, 0.13);
+  --grid-line: #232a33;
+  --shadow: 0 1px 2px rgba(1, 4, 9, 0.5);
+  --shadow-lg: 0 8px 24px rgba(1, 4, 9, 0.55);
+  --chart-fill: rgba(76, 141, 255, 0.16);
+}
+
+[data-theme='light'] {
+  --bg: #f4f6f8;
+  --bg-sidebar: #eceff3;
+  --panel: #ffffff;
+  --panel-alt: #f8fafc;
+  --panel-hover: #f1f4f8;
+  --border: #d9dee5;
+  --border-strong: #bcc4ce;
+  --text: #1c2128;
+  --text-muted: #5a6472;
+  --text-dim: #7c8794;
+  --accent: #1f6feb;
+  --accent-hover: #1558c0;
+  --accent-soft: rgba(31, 111, 235, 0.1);
+  --accent-contrast: #ffffff;
+  --ok: #1a7f37;
+  --ok-soft: rgba(26, 127, 55, 0.12);
+  --warn: #9a6700;
+  --warn-soft: rgba(154, 103, 0, 0.12);
+  --danger: #cf222e;
+  --danger-soft: rgba(207, 34, 46, 0.1);
+  --info: #0969da;
+  --info-soft: rgba(9, 105, 218, 0.1);
+  --muted-soft: rgba(90, 100, 114, 0.1);
+  --grid-line: #e4e8ee;
+  --shadow: 0 1px 2px rgba(31, 35, 40, 0.08);
+  --shadow-lg: 0 8px 24px rgba(31, 35, 40, 0.12);
+  --chart-fill: rgba(31, 111, 235, 0.12);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--step-0);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+figure {
+  margin: 0;
+}
+
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: var(--accent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-1);
+}
+
+/* Every measurement uses tabular figures so digits do not jitter. */
+.num,
+.reading__value,
+.table td,
+.mono {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid transparent;
+  border-radius: var(--radius-pill);
+  background-clip: content-box;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,27 @@
+[package]
+name = "ohm-adapter-system"
+description = "Cross platform OS level sensors: CPU name/load, memory, disks, thermal zones"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ohm-core.workspace = true
+ohm-device-model.workspace = true
+ohm-adapter-api.workspace = true
+serde.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+sysinfo.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+wmi.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

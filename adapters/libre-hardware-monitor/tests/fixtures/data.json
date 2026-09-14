@@ -1,0 +1,76 @@
+{
+  "id": "/",
+  "Text": "Sensor",
+  "Children": [
+    {
+      "id": "/cpu/0",
+      "Text": "AMD Ryzen 9 9800X3D",
+      "HardwareId": "/cpu/0",
+      "HardwareType": "CPU",
+      "Children": [
+        { "id": "/cpu/0/temperature/0", "Text": "CPU Package", "SensorId": "/cpu/0/temperature/0", "Type": "Temperature", "Value": "68.2 °C", "Min": "41.0 °C", "Max": "82.5 °C" },
+        { "id": "/cpu/0/temperature/1", "Text": "Core (Tctl/Tdie)", "SensorId": "/cpu/0/temperature/1", "Type": "Temperature", "Value": "71.5 °C" },
+        { "id": "/cpu/0/load/0", "Text": "CPU Total", "SensorId": "/cpu/0/load/0", "Type": "Load", "Value": "32.0 %" },
+        { "id": "/cpu/0/power/0", "Text": "Package", "SensorId": "/cpu/0/power/0", "Type": "Power", "Value": "94.2 W" },
+        { "id": "/cpu/0/clock/0", "Text": "Cores (Average)", "SensorId": "/cpu/0/clock/0", "Type": "Clock", "Value": "5123 MHz" },
+        { "id": "/cpu/0/voltage/0", "Text": "CPU Core", "SensorId": "/cpu/0/voltage/0", "Type": "Voltage", "Value": "1.245 V" }
+      ]
+    },
+    {
+      "id": "/gpu/0",
+      "Text": "NVIDIA GeForce RTX 5090",
+      "HardwareId": "/gpu/0",
+      "HardwareType": "GpuNvidia",
+      "Children": [
+        { "id": "/gpu/0/temperature/0", "Text": "GPU Core", "SensorId": "/gpu/0/temperature/0", "Type": "Temperature", "Value": "76.0 °C" },
+        { "id": "/gpu/0/temperature/1", "Text": "GPU Hot Spot", "SensorId": "/gpu/0/temperature/1", "Type": "Temperature", "Value": "88.5 °C" },
+        { "id": "/gpu/0/load/0", "Text": "GPU Core", "SensorId": "/gpu/0/load/0", "Type": "Load", "Value": "91.0 %" },
+        { "id": "/gpu/0/power/0", "Text": "GPU Package", "SensorId": "/gpu/0/power/0", "Type": "Power", "Value": "405.2 W" },
+        { "id": "/gpu/0/fan/0", "Text": "GPU Fan", "SensorId": "/gpu/0/fan/0", "Type": "Fan", "Value": "N/A" },
+        { "id": "/gpu/0/control/0", "Text": "GPU Fan", "SensorId": "/gpu/0/control/0", "Type": "Control", "Value": "60.0 %" },
+        { "id": "/gpu/0/smalldata/0", "Text": "GPU Memory Used", "SensorId": "/gpu/0/smalldata/0", "Type": "SmallData", "Value": "14.5 GB" },
+        { "id": "/gpu/0/clock/0", "Text": "GPU Core", "SensorId": "/gpu/0/clock/0", "Type": "Clock", "Value": "2610 MHz" }
+      ]
+    },
+    {
+      "id": "/nvme/0",
+      "Text": "Samsung SSD 990 PRO 2TB",
+      "HardwareId": "/nvme/0",
+      "HardwareType": "Storage",
+      "Children": [
+        { "id": "/nvme/0/temperature/0", "Text": "Temperature", "SensorId": "/nvme/0/temperature/0", "Type": "Temperature", "Value": "48.0 °C" },
+        { "id": "/nvme/0/load/0", "Text": "Used Space", "SensorId": "/nvme/0/load/0", "Type": "Load", "Value": "61.3 %" },
+        { "id": "/nvme/0/data/0", "Text": "Total Activity", "SensorId": "/nvme/0/data/0", "Type": "Data", "Value": "12.5 MB" }
+      ]
+    },
+    {
+      "id": "/motherboard/0",
+      "Text": "ASUS ROG STRIX X870E-E GAMING",
+      "HardwareId": "/motherboard/0",
+      "HardwareType": "Motherboard",
+      "Children": [
+        { "id": "/motherboard/0/temperature/0", "Text": "Motherboard", "SensorId": "/motherboard/0/temperature/0", "Type": "Temperature", "Value": "33.0 °C" },
+        {
+          "id": "/lpc/nct6687d/0",
+          "Text": "Nuvoton NCT6687D",
+          "HardwareId": "/lpc/nct6687d/0",
+          "HardwareType": "SuperIO",
+          "Children": [
+            { "id": "/lpc/nct6687d/temperature/0", "Text": "System", "SensorId": "/lpc/nct6687d/temperature/0", "Type": "Temperature", "Value": "34.0 °C" },
+            { "id": "/lpc/nct6687d/fan/0", "Text": "Fan #1", "SensorId": "/lpc/nct6687d/fan/0", "Type": "Fan", "Value": "1120 RPM" },
+            { "id": "/lpc/nct6687d/fan/1", "Text": "Fan #2", "SensorId": "/lpc/nct6687d/fan/1", "Type": "Fan", "Value": "1350 RPM" },
+            { "id": "/lpc/nct6687d/fan/2", "Text": "Fan #3", "SensorId": "/lpc/nct6687d/fan/2", "Type": "Fan", "Value": "0 RPM" },
+            { "id": "/lpc/nct6687d/fan/3", "Text": "Fan #4", "SensorId": "/lpc/nct6687d/fan/3", "Type": "Fan", "Value": "N/A" },
+            { "id": "/lpc/nct6687d/fan/4", "Text": "Fan #5", "SensorId": "/lpc/nct6687d/fan/4", "Type": "Fan", "Value": "N/A" },
+            { "id": "/lpc/nct6687d/control/0", "Text": "Fan Control #1", "SensorId": "/lpc/nct6687d/control/0", "Type": "Control", "Value": "45.0 %" },
+            { "id": "/lpc/nct6687d/control/1", "Text": "Fan Control #2", "SensorId": "/lpc/nct6687d/control/1", "Type": "Control", "Value": "55.0 %" },
+            { "id": "/lpc/nct6687d/control/2", "Text": "Fan Control #3", "SensorId": "/lpc/nct6687d/control/2", "Type": "Control", "Value": "0.0 %" },
+            { "id": "/lpc/nct6687d/control/3", "Text": "Fan Control #4", "SensorId": "/lpc/nct6687d/control/3", "Type": "Control", "Value": "N/A" },
+            { "id": "/lpc/nct6687d/control/4", "Text": "Fan Control #5", "SensorId": "/lpc/nct6687d/control/4", "Type": "Control", "Value": "N/A" },
+            { "id": "/lpc/nct6687d/voltage/0", "Text": "VIN0", "SensorId": "/lpc/nct6687d/voltage/0", "Type": "Voltage", "Value": "12.05 V" }
+          ]
+        }
+      ]
+    }
+  ]
+}

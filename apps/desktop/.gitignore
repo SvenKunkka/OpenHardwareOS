@@ -1,0 +1,22 @@
+# dependencies
+node_modules/
+
+# build output (Tauri loads ../dist)
+dist/
+dist-ssr/
+
+# vite / typescript caches
+.vite/
+*.tsbuildinfo
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# editor / os
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
