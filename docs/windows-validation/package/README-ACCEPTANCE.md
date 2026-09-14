@@ -92,6 +92,10 @@ Two behaviours worth knowing before you read the output:
 
 ## Then follow the checklist
 
+A one-page Chinese entry (what evidence exists today, the package versions and hashes,
+the read-only pre-check steps, what to send back if something fails, and what each
+remaining gate still needs) is at `docs/windows-validation/ACCEPTANCE-ENTRY.md`.
+
 `docs/windows-validation/checklist.md` is the full procedure, in order, with what to
 capture at each step and what a failure means. `docs/windows-validation/result-template.md`
 is what to fill in. Do not duplicate either of them here.

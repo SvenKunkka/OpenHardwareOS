@@ -10,7 +10,7 @@ still missing. The rule from here on:
 > the app or the CLI, and is covered by a test that would fail if it broke.
 > Anything else is **Partial**, **Missing**, or **Unverified on hardware**.
 
-Last reviewed: 2026-09-14 (round 3), against the commit that contains this file
+Last reviewed: 2026-09-14 (round 5), against the commit that contains this file
 (no release tag yet). Test baseline at that revision: see the round-3 entry of
 `docs/verification-log.md`, which records the command, the environment and the
 result — that file is the authority for any number quoted here, and numbers in this
@@ -102,6 +102,7 @@ file are not carried over from an earlier round.
 | Not an RGB/gamer aesthetic | Implemented | `src/styles/theme.css` — one accent colour, no glows |
 | Every write status shown honestly, including "requested, not confirmed" | **Implemented** (round 3) | `src/lib/writeStatus.ts` (tone, label, sentence, applied-value text) consumed by `DeviceDetail.tsx` and `Diagnostics.tsx`. `unconfirmed` is warn, never success; a report with no `applied` value renders `value unknown — not confirmed` rather than the requested value, "nothing" or "not applied"; manual control raises its own notice for an unconfirmed result, distinct from a refusal — one is *known to have failed*, the other is *unknown* — and both carry the backend's reason. The maps are exhaustive over `WriteStatus`, so a new status breaks the build until it is handled (checked by compiling) |
 | Rule files adjusted in memory are visible, and never silently rewritten | **Implemented** (round 3) | `RuleFileNote` (`field`, `original`, `effective`, `message`, `hint`) → `rule_compatibility_notes` → the Automation screen's compatibility panel. The user sees which rule, which field, what the file on disk says, what is in force instead and how to fix it, and is told the file was **not** modified and the fail-safe duty still protects the machine |
+| The self-test's isolation is enforced by the application, not by its launcher | **Implemented** (round 5) | `ProbeIsolation` in `apps/desktop/src-tauri/src/lib.rs`, checked before the config directory is created and before any provider, runtime or engine exists. `--ipc-selftest` alone used to arm the probe against the real per-user config directory, `--mock` never disabled the real providers, the report command wrote into the user's config directory when unarmed, and the probe re-armed failed handovers globally. Now an explicit, existing, dedicated config directory is required; settings that enable `system`, `lhm` or `nvidia` are refused by name; a simulated provider must be enabled; the run constructs simulated providers only; the report refuses unless armed; and a probe may only re-arm the channel it named. The legitimate simulator controls are unchanged for normal users |
 | The desktop is proven to be connected to the backend | **Implemented** (round 4) | `scripts/verify-ipc-roundtrip.sh` + `apps/desktop/src/lib/ipcProbe.ts` — the **real** application (window, WebKit webview, the bundle it ships) is launched against an isolated config directory and the simulator, asked over Tauri's event channel to exercise the command surface, and the frontend's own account of what it saw is compared with the app's audit trail. It covers compatibility notes, a handover created and driven `pending → failed → confirmed` through retry, and an unconfirmed write: the check that the Rust wire test, the mocked frontend test and the headless selftest each cannot be |
 | Channels left behind by a rule are visible, with a way to act | **Implemented** (round 3) | `rule_handovers` / `rule_retry_handovers` → the Diagnostics screen's handover panel. Owed handovers (pending, failed) list channel, the rule that left them, the reason, attempts and the cause; `failed` is visually distinct and says retrying stopped and needs the user; a retry control re-arms and refreshes; resolved ones are filed as history, never as owed work |
 
@@ -194,6 +195,7 @@ the `AI → structured rule → validation → engine → runtime` path, and
 | Temperature→fan mapping, hysteresis, sensor disconnect, actuator failure, invalid value, device hotplug | Implemented | `tests/tests/{acceptance,edge_cases,rule_lifecycle,protocol_flow}.rs` |
 | A write result that was never confirmed, a `release` fallback, and rule retargeting | Implemented (round 2) | `tests/tests/{write_confirmation,fallback_release,rule_edit_state}.rs` — 14 tests covering the three defects |
 | Control handover integrity, asserted on the hardware calls | Implemented (round 3) | `tests/tests/handover_integrity.rs` (12 tests) and `tests/tests/handover_state.rs` (9 tests), on a shared fake rig whose three channels can apply, accept-without-confirming, or refuse. They assert the values asked of each channel, in order, the number of attempts, what the fake hardware is left at, and the queryable record — not log strings |
+| The self-test's refusal paths, and packaging that cannot overwrite evidence | Implemented (round 5) | `apps/desktop/src-tauri/src/lib.rs` (7 refusal-path tests), `scripts/verify-ipc-roundtrip.sh` (end-to-end refusals plus a seeded failed handover for a *real-looking* channel that must survive the run untouched), `scripts/tests/make-acceptance-package.test.sh` (4 cases / 20 checks against throwaway fixture repositories) |
 | A claimed-but-undriven channel, a recovered responsibility, and the real IPC path | Implemented (round 4) | `tests/tests/handover_owner.rs` (9), `tests/tests/control_recovery.rs` (9), `apps/cli/tests/handover_recovery.rs` (4, running the real CLI binary), `scripts/verify-ipc-roundtrip.sh` (12 command steps through the real app) |
 | The desktop's write-status and record surfaces, rendered | Implemented (round 3) | `apps/desktop/src/test/writeStates.test.tsx` — 17 tests rendering the real screens through the real providers with only the IPC module mocked. Checked by mutation: reverting the unconfirmed tone to `ok` fails two tests, reverting the failed-handover tone to `warn` fails one |
 | Passes without special hardware | Implemented | every test uses the simulated provider |
@@ -275,5 +277,14 @@ Ordered by what blocks a defensible Windows MVP:
    wait is bounded (`HANDOVER_OWNER_WAIT_TICKS`) and ends in a visible `Failed`, so a
    claimant that is merely slow — its first evaluation still pending when the wait runs
    out — parks a handover that would have resolved itself. Re-arming clears it.
-9. **Deferred by design**: plugin loading, scenes/profiles, app and game
+9. **Visual acceptance of the desktop is unverified.** The screen-capture route was
+   attempted in round 5 and abandoned: a whole-screen capture showed unrelated private
+   content and missed the application window, so the file was deleted and the approach is
+   opt-in only. Until a person looks at the window and keeps a picture, the interface rests
+   on the frontend's own account of what it rendered — which is not a substitute.
+10. **Two external dependencies, and nothing else.** Everything still open needs either a
+   Windows machine someone may use, or a person with a tachometer next to a real fan. No
+   further work on this repository moves either one, which is why the project is at a
+   deliverable stop rather than mid-task: see `docs/windows-validation/ACCEPTANCE-ENTRY.md`.
+11. **Deferred by design**: plugin loading, scenes/profiles, app and game
    detection, natural-language rules, OpenHub/OpenFan hardware, release signing.

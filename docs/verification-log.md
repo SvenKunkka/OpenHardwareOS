@@ -794,3 +794,161 @@ nothing was installed on the host. Nothing was pushed, published, tagged or trig
 no remote CI was touched. The licence decisions (ADR 0002, ADR 0004) remain **Proposed**.
 No new architecture: no CPU native collector, no cross-adapter identity work, no plugin
 loading.
+
+---
+
+## 2026-09-14 — round 5: the self-test enforces its own isolation, and packaging stops overwriting evidence
+
+**Revision: the commits `65eb335`, `f520685` and the documentation commit that contains
+this entry.** Unlike earlier rounds the code changed under the probe's own feet, so the
+numbers below are from the **targeted** runs named beside them, not from one full pass:
+the full-workspace suite was run at `65eb335` (485 passed), and the frontend, the real
+round trip and the packager harness were each run at the revision named in their row.
+
+### 1. The IPC self-test trusted its launcher, and four holes followed
+
+The probe is a tool that *drives* the command surface — including commands that write — so
+its safety cannot depend on how it was started. It did.
+
+* **`--ipc-selftest` alone was enough.** It armed the probe against whatever configuration
+  directory the app would have used: `ConfigPaths::discover()`, which is the **real
+  per-user** directory on a normal machine.
+* **`--mock` was not isolation.** It only *adds* the simulated provider; the settings still
+  decided whether LibreHardwareMonitor, the operating system provider and NVML were live.
+  The round-4 harness wrote its settings with the mock provider enabled and never
+  disabled the others, so every "isolated" probe run in round 4 had four adapters and
+  fifteen devices — real provider code paths, in a run whose whole purpose was to touch
+  nothing real.
+* **The probe re-armed handovers globally.** `rule_retry_handovers` re-arms *every* failed
+  handover in the engine, and the probe called it even when the operations meant to create
+  its handover had failed. On a real installation that would put a real channel's
+  abandoned duty back in the queue with a fresh attempt budget.
+* **`ipc_probe_report` did not check that a self-test had been asked for.** It fell back to
+  `state.paths.root()`, so an ordinary launch could write a "self-test report" into its own
+  configuration directory — the user's.
+
+**Behaviour now.** `ProbeIsolation` decides before anything exists: it runs above
+`paths.ensure()`, before settings are applied and before a runtime, an engine or any
+control loop is constructed, and it *refuses* rather than falling back to anything —
+
+* an explicit configuration directory is required; it must exist; it must be neither the
+  real per-user config directory nor anything inside it (a missing directory is refused
+  rather than created, because creating configuration is the side effect the check exists
+  to prevent);
+* the settings in it must not enable a real provider, and the refusal names the ones it
+  found and the `disabled_adapters` entry that fixes it;
+* it must enable a simulated one, or the probe has nothing to exercise;
+* the run then constructs `AdapterOptions::simulated_only()` regardless. The harness's own
+  run now reports **2 adapters / 7 devices** where round 4 reported 4 / 15.
+
+At the command layer: the report refuses unless the probe was armed; the event that asks
+the frontend to run the probe was already probe-only; and `rule_retry_handovers` takes an
+optional channel — named, it re-arms exactly that channel, which is the only form a probe
+may use, and the global form is refused inside a probe run (ordinary users keep it).
+
+The frontend probe can no longer paper over a failure: each fault injection returns the
+simulator's answer and the fault is verified in force and verified cleared, and the retry
+happens only if the steps that create the handover actually succeeded.
+
+**Correction to round 4.** That entry recorded `mock_set_channel_fault` returning
+`"undefined"` as an unexplained observation, and said the harness "asserts effects, not
+return values". The cause was in the frontend: `injectFault` awaited the response and
+dropped it, and the report rendered the absence as a string. The backend always returned
+`Option<MockStatus>`. It returns the response now, and the step is checked. The earlier
+note was wrong about where the fault was, not merely incomplete.
+
+**Evidence.** Seven new desktop tests cover the refusals (no configuration directory, the
+real one, one inside it, a missing one, a real provider enabled, no simulated provider,
+and the accepted isolated case). The harness gained the end-to-end refusals — standalone
+`--ipc-selftest` exits 1 and names `OHM_CONFIG_DIR`; a settings file that enables LHM exits
+1 and names `lhm`; neither writes a report — and a **seeded failed handover for a channel
+that looks like real hardware** (`fan.lhm.0`, `failed`, 3 attempts, in the recovery record
+before launch). After the whole run that item is still `failed` with 3 attempts, while the
+probe's scoped retry returned exactly `1` for its own channel, and the real per-user config
+directory was absent before and after.
+
+### 2. Visual acceptance: attempted, and **not** achieved
+
+This machine can capture the screen (`screencapture`, an Aqua session, a 3840×2160 PNG),
+so the harness gained an opt-in capture and the probe now renders its findings in the
+application's own window (`IpcProbePanel`) so that a picture of the window would show the
+round trip's results rather than merely that a webview exists.
+
+The capture could not be used, and this is recorded rather than dressed up: the image was
+a **whole-screen** capture, and reading it (by OCR, since this model cannot view images and
+the configured vision bridge failed on both providers, twice) showed unrelated private
+content — another application with names and conversations — while the region I cropped to
+did not contain the application window at all. The file and every copy were deleted. The
+capture is therefore opt-in, never kept unless `--keep` is passed, documented as
+potentially containing anything else on the screen, and **excluded from every package**.
+Visual acceptance remains unverified, and the probe's own account of what it rendered is
+not offered as a substitute for a picture.
+
+### 3. Packaging: evidence must not be overwritten, and must come from the commit
+
+The round-4 packager began by deleting its target and took the entry-point templates from
+the **working tree** while taking the source from the commit. A second package of the same
+commit therefore destroyed the first, and `--allow-dirty` could ship uncommitted content.
+It also declared success before verifying, so a run that failed its own checks still left a
+directory named `...-windows-acceptance`.
+
+**Behaviour now.** Staging first, delivery last: everything is assembled in
+`dist/acceptance/.staging-<sha>-XXXX/`, checked there, and promoted with one `mv` only if
+every check passed. An existing package or archive is refused, with `--build-id` offered
+for a build that needs its own name, and nothing in `dist/acceptance` is ever removed. Every
+file — source, entry-point templates and README — comes from the commit via
+`git show <sha>:<path>`, and the two copies of each entry point are asserted byte-identical
+so a future slip fails loudly. The dirty-tree rule now separates two facts that are not the
+same: a **modified tracked file** means the operator's tests ran against something other
+than the commit (refused unless `--allow-dirty`, recorded either way), while an **untracked
+file** cannot enter the package at all and is recorded rather than blocking the run.
+
+`EVIDENCE.md` no longer claims anything passed. It said "Passed on macOS at this commit",
+which was wrong twice — the count went stale, and the tests are run at the revision the log
+names, not necessarily the revision being packaged.
+
+**Correction to round 4**, in full. That entry's pass table recorded the packager step as
+"exit 0 on a clean tree". It exited **1**: the tree had one untracked directory (the
+unrelated `k10max-prospector/`, which is not mine and is still untouched), the old packager
+counted any uncommitted path as dirty and refused. The package for that round was then
+produced by a **separate** `--allow-dirty` run, which the entry did say — but the table row
+was still wrong. And the round-3 package is gone: its original archive was
+`cb6ac7fe8eeba8be7fc3bc8244dffce817c70ed43620d1366bdf4c9cd2ec3d9c`, my own
+`rm -rf dist/acceptance` during round 4 deleted it, and the same-named package that exists
+now (`53f76a4f…`) is a rebuild from the same commit `27ee667`, not the original artefact.
+The original is unrecoverable; no timestamps were faked to make a hash match; nothing was
+deleted to hide it. The packager can no longer do this to any package.
+
+### 4. What was run, and where it ran
+
+| # | Command | Revision | Result |
+|---|---|---|---|
+| 1 | `rustup run 1.98.0 cargo test --workspace` | `65eb335` | **485 passed, 0 failed** |
+| 2 | `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all -- --check` | `65eb335` | both clean |
+| 3 | `npm run typecheck` / `npm run test` / `npm run build` | `65eb335` | clean / **5 files, 42 tests** / clean |
+| 4 | `scripts/verify-ipc-roundtrip.sh` | `65eb335` | **IPC ROUND TRIP VERIFIED**, with the refusal paths, the seeded real-channel handover untouched, and the real per-user config directory absent before and after; the successful probe run reported 2 adapters / 7 devices |
+| 5 | `scripts/tests/make-acceptance-package.test.sh` | `f520685` | **4 cases, 20 checks, 0 failures** |
+| 6 | `scripts/make-acceptance-package.sh` (smoke run, `--allow-dirty`) | `65eb335` | exit 0; both pre-existing packages untouched |
+
+Writing the packager harness found two further defects in the packager, both fixed: a
+`grep` that matched nothing killed the run **silently** under `set -e` with `pipefail`
+(no message, no output — the failure looked like an empty run), and two `find … | grep -q`
+probes relied on operator precedence they should not have.
+
+### What round 5 could **not** verify
+
+* **Windows — still nothing.** No workflow was pushed or triggered; every
+  `windows-latest` job is **Prepared**.
+* **Visual acceptance of the desktop** — see §2. Attempted; the capture was unusable and
+  deleted; still unverified.
+* **A physical fan** — unchanged: no write has reached real hardware.
+* The full round-4 discrepancy list is unchanged: `mock_set_channel_fault`'s return value
+  is now explained and fixed, but the wider statement stands — nothing here has been
+  exercised on Windows.
+
+### Deliberately **not** done in round 5
+
+No hardware was written to, no autostart or device-control setting was changed, nothing was
+installed on the host, and nothing was pushed, published, tagged or triggered. The licence
+decisions (ADR 0002, ADR 0004) remain **Proposed**. The unrelated untracked directory
+`k10max-prospector/` was left exactly as found.

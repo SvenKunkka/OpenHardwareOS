@@ -69,6 +69,10 @@ repository, because the project was developed on macOS. Concretely:
 | LibreHardwareMonitor web-server integration against a real LHM + SuperIO chip | **Prepared** | Only ever exercised against the in-process `fake_server.rs` and a synthetic `data.json` fixture. Since round 2 the adapter reads the channel back after a write and reports `Unconfirmed` when it cannot, so a wrong claim about a write is much harder — but a fake server is still not a SuperIO chip. |
 | Per-device fan write / tachometer response | **Prepared** | No write has ever reached a real fan through this code, and no fan's RPM response has ever been measured. This is a **separate** gap from the Windows gap: a Windows run and a tachometer measurement are two different pieces of evidence, and neither substitutes for the other. |
 
+`ACCEPTANCE-ENTRY.md` is a one-page Chinese entry for an operator: the evidence that
+exists today, the package versions and hashes, the read-only pre-check steps, what to send
+back when something fails, and what each remaining gate still needs.
+
 A **source acceptance package** for Windows is assembled by
 `scripts/make-acceptance-package.sh`: the tracked tree at one commit, a pre-check that
 refuses to start on a machine that cannot produce trustworthy evidence, a build script
