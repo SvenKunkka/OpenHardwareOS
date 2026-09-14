@@ -32,7 +32,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use crate::evaluator::{EvaluationInput, RuleOutcome, RuleState, RuleStatus, evaluate};
+use crate::evaluator::{
+    ControlHold, EvaluationInput, RuleOutcome, RuleState, RuleStatus, evaluate,
+};
 use crate::rule::{Aggregate, FallbackAction, OtherwiseAction, Rule};
 use crate::store::{LoadReport, RuleStore};
 
@@ -111,8 +113,14 @@ impl RuleConflict {
 /// control at all.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct RuleChange {
-    /// The output the rule used to drive, when it changed.
+    /// The channel the rule used to drive, when it changed.
+    ///
+    /// The *whole* channel — device **and** capability. Comparing only the device
+    /// missed the case "same fan, different control channel", which left the old
+    /// channel unmanaged and let the new one inherit the old one's value.
     previous_target: Option<(DeviceId, CapabilityId)>,
+    /// The rule was switched on or off.
+    enabled_changed: bool,
     source_changed: bool,
     condition_changed: bool,
     /// The mapping itself changed: curve, hysteresis, deadband, limits or fallback.
@@ -121,14 +129,14 @@ struct RuleChange {
 
 impl RuleChange {
     fn between(previous: &Rule, next: &Rule) -> Self {
-        let previous_target = (previous.target.device != next.target.device).then(|| {
-            (
-                previous.target.device.clone(),
-                previous.target.capability.clone(),
-            )
-        });
+        let previous_channel = (
+            previous.target.device.clone(),
+            previous.target.capability.clone(),
+        );
+        let next_channel = (next.target.device.clone(), next.target.capability.clone());
         Self {
-            previous_target,
+            previous_target: (previous_channel != next_channel).then_some(previous_channel),
+            enabled_changed: previous.enabled != next.enabled,
             source_changed: previous.source != next.source,
             condition_changed: previous.when != next.when,
             control_changed: previous.curve != next.curve
@@ -140,9 +148,19 @@ impl RuleChange {
         }
     }
 
+    /// Is the rule giving up the channel it was driving?
+    ///
+    /// A retarget does, and so does a disable: in both cases the channel loses the
+    /// rule that was moving it, and whatever value it is left at is no longer
+    /// anyone's decision. A change to the source, the condition or the mapping does
+    /// **not**: the same rule still owns the same channel and keeps driving it.
+    fn leaves_control(&self) -> bool {
+        self.previous_target.is_some() || self.enabled_changed
+    }
+
     /// Does anything need invalidating?
     fn is_semantic(&self) -> bool {
-        self.previous_target.is_some()
+        self.leaves_control()
             || self.source_changed
             || self.condition_changed
             || self.control_changed
@@ -156,6 +174,9 @@ impl RuleChange {
         let mut parts = Vec::new();
         if let Some((device, capability)) = &self.previous_target {
             parts.push(format!("target changed from {device}/{capability}"));
+        }
+        if self.enabled_changed {
+            parts.push("enabled state changed".to_string());
         }
         if self.source_changed {
             parts.push("source changed".to_string());
@@ -204,18 +225,11 @@ struct EngineInner {
     /// Outputs a rule stopped driving and that still need handing over.
     ///
     /// `save_rule` is synchronous, so it cannot await the handover write itself;
-    /// queuing it here means every save path — the form, the CLI, a reloaded file —
-    /// gets the same treatment, performed at the start of the next tick.
-    pending_handovers: Mutex<Vec<PendingHandover>>,
-}
-
-/// An output a rule abandoned, waiting to be driven to the fail-safe duty.
-#[derive(Debug, Clone, PartialEq)]
-struct PendingHandover {
-    rule_id: RuleId,
-    device: DeviceId,
-    capability: CapabilityId,
-    reason: String,
+    /// queuing it here means every save path — the form, the CLI, a reloaded file, a
+    /// deletion — gets the same treatment, performed at the start of the next tick.
+    /// The book also keeps a bounded history, because a handover that failed is a
+    /// fact the user needs to be able to see even after its rule is gone.
+    handovers: Mutex<crate::handover::HandoverBook>,
 }
 
 /// The automation engine.
@@ -241,7 +255,7 @@ impl AutomationEngine {
                 last_tick_ms: AtomicI64::new(0),
                 conflicts: RwLock::new(Vec::new()),
                 compatibility_notes: RwLock::new(Vec::new()),
-                pending_handovers: Mutex::new(Vec::new()),
+                handovers: Mutex::new(crate::handover::HandoverBook::default()),
             }),
         }
     }
@@ -270,6 +284,21 @@ impl AutomationEngine {
         // The rules as they were, so a file that changed on disk is treated exactly
         // like an edit through the form.
         let previous: Vec<Rule> = self.rules();
+        // Second: what each of them was actually driving. Captured now because the
+        // reload below drops the state of every rule whose file is gone — and that
+        // state is the only record of the channel that now needs handing over.
+        let previous_holds: Vec<(RuleId, ControlHold)> = {
+            let states = self.inner.states.lock();
+            previous
+                .iter()
+                .filter_map(|rule| {
+                    states
+                        .get(&rule.id)
+                        .and_then(|state| state.control.clone())
+                        .map(|hold| (rule.id.clone(), hold))
+                })
+                .collect()
+        };
         {
             let mut rules = self.inner.rules.write();
             *rules = report.rules.clone();
@@ -290,8 +319,8 @@ impl AutomationEngine {
                 format!("{} rule file(s) could not be loaded", report.errors.len()),
             );
         }
-        // A rule whose file changed meaningfully gets the same treatment as an
-        // edited one: the old output is handed over and stale state is dropped.
+        // A rule whose file changed meaningfully gets the same treatment as an edited
+        // one: the old output is handed over and stale state is dropped.
         for loaded in &report.rules {
             if let Some(before) = previous.iter().find(|rule| rule.id == loaded.id) {
                 let change = RuleChange::between(before, loaded);
@@ -299,6 +328,15 @@ impl AutomationEngine {
                     self.apply_rule_change(before, &change);
                 }
             }
+        }
+        // A rule whose file is gone has left control just as surely as a deleted one.
+        // Its state was dropped above, so the hold captured before the reload is what
+        // says which channel is now unowned.
+        for (id, hold) in previous_holds {
+            if report.rules.iter().any(|rule| rule.id == id) {
+                continue;
+            }
+            self.hand_over(id, Some(hold), None, "was removed from disk");
         }
 
         *self.inner.compatibility_notes.write() = report.notes.clone();
@@ -383,19 +421,73 @@ impl AutomationEngine {
 
     /// Perform the handovers queued by rule edits.
     ///
-    /// Runs before any rule is evaluated, so an output nobody drives any more is
-    /// safe before the engine starts moving the one that replaced it.
-    async fn perform_pending_handovers(&self) {
-        let pending: Vec<PendingHandover> = {
-            let mut queue = self.inner.pending_handovers.lock();
-            std::mem::take(&mut *queue)
-        };
+    /// Runs before any rule is evaluated, so an output nobody drives any more is safe
+    /// before the engine starts moving the one that replaced it.
+    ///
+    /// Two things are re-checked *before every attempt*, not decided once at queue
+    /// time:
+    ///
+    /// * **Ownership.** A channel that an enabled rule targets again belongs to that
+    ///   rule, and driving it to the fail-safe duty would fight its real owner —
+    ///   leaving the hardware at one value while the owner displays another. Such a
+    ///   handover is superseded and nothing is written.
+    /// * **Cadence.** A failed handover is retried every
+    ///   [`crate::HANDOVER_RETRY_TICKS`] ticks and no more, so a channel that is
+    ///   simply gone cannot become a write loop. The attempt budget is bounded too;
+    ///   spending it parks the handover as `Failed` — on record, and re-armable by
+    ///   the user — instead of dropping it.
+    async fn perform_pending_handovers(&self, tick: u64, now: i64) {
+        let duty = self.inner.runtime.settings().safety.fail_safe_duty_percent;
+        let pending: Vec<crate::handover::Handover> = self
+            .inner
+            .handovers
+            .lock()
+            .open()
+            .iter()
+            .filter(|item| item.state.is_attemptable())
+            .cloned()
+            .collect();
+
         for handover in pending {
-            let duty = self.inner.runtime.settings().safety.fail_safe_duty_percent;
+            // 1. Does the channel have an owner again? Then it is not ours to touch.
+            if let Some(owner) = self.owner_of(&handover.device, &handover.capability) {
+                let superseded = self.inner.handovers.lock().supersede(
+                    &handover.device,
+                    &handover.capability,
+                    Some(owner.clone()),
+                );
+                if superseded {
+                    let message = format!(
+                        "{}/{} is driven by {owner} again; the handover queued by {} was dropped \
+                         without a write",
+                        handover.device, handover.capability, handover.from_rule
+                    );
+                    self.inner.runtime.publish_automation(
+                        Some(handover.from_rule.clone()),
+                        "rule_handover_superseded",
+                        message.clone(),
+                    );
+                    self.inner.runtime.log("info", message);
+                }
+                continue;
+            }
+
+            // 2. Is this attempt due? A retry may not happen on the very next tick.
+            if !self
+                .inner
+                .handovers
+                .lock()
+                .is_due(&handover.device, &handover.capability, tick)
+            {
+                continue;
+            }
+
+            // 3. Attempt it, and record what actually happened rather than what was
+            //    intended.
             let origin = WriteOrigin::Safety {
                 reason: handover.reason.clone(),
             };
-            match self
+            let outcome = self
                 .inner
                 .runtime
                 .write_value(
@@ -404,43 +496,99 @@ impl AutomationEngine {
                     Value::Number(duty),
                     origin,
                 )
-                .await
-            {
-                Ok(report) => {
-                    let how = match report.status {
-                        WriteStatus::Applied | WriteStatus::Simulated => {
-                            format!("set to {duty:.0} %")
-                        }
-                        WriteStatus::Unconfirmed => {
-                            format!("set to {duty:.0} %, not confirmed")
-                        }
-                        WriteStatus::Rejected => "refused".to_string(),
-                    };
-                    self.inner.runtime.publish_automation(
-                        Some(handover.rule_id.clone()),
-                        "rule_handover",
-                        format!(
-                            "{}/{} {how} after the rule stopped driving it",
-                            handover.device, handover.capability
-                        ),
+                .await;
+
+            let (confirmed, error) = match &outcome {
+                Ok(report) => match report.status {
+                    WriteStatus::Applied | WriteStatus::Simulated => {
+                        (report.applied.as_ref().and_then(Value::as_f64), None)
+                    }
+                    WriteStatus::Unconfirmed => (
+                        None,
+                        Some(format!(
+                            "accepted but not confirmed: {}",
+                            report.detail.as_deref().unwrap_or("no reason given")
+                        )),
+                    ),
+                    WriteStatus::Rejected => (
+                        None,
+                        Some(format!(
+                            "the device refused the fail-safe duty: {}",
+                            report.detail.as_deref().unwrap_or("no reason given")
+                        )),
+                    ),
+                },
+                Err(error) => (None, Some(error.to_string())),
+            };
+
+            let mut book = self.inner.handovers.lock();
+            match confirmed {
+                Some(value) => {
+                    book.confirm(&handover.device, &handover.capability, Some(value), now);
+                    drop(book);
+                    let message = format!(
+                        "{}/{} set to {value:.0} % after {} stopped driving it",
+                        handover.device, handover.capability, handover.from_rule
                     );
+                    self.inner.runtime.publish_automation(
+                        Some(handover.from_rule.clone()),
+                        "rule_handover",
+                        message.clone(),
+                    );
+                    self.inner.runtime.log("info", message);
                 }
-                Err(error) => {
-                    self.inner.runtime.log(
-                        "warn",
-                        format!(
-                            "could not hand {}/{} over to the fail-safe duty: {error}",
-                            handover.device, handover.capability
-                        ),
+                None => {
+                    // An attempt was made and did not settle the channel: the original
+                    // reason for the handover and the reason it failed are both kept.
+                    let error = error.unwrap_or_else(|| "the write was not confirmed".into());
+                    let state = book.record_attempt(
+                        &handover.device,
+                        &handover.capability,
+                        Some(error.clone()),
+                        tick,
+                        now,
+                    );
+                    drop(book);
+                    let message = format!(
+                        "could not hand {}/{} over to the {duty:.0} % fail-safe duty: {error}",
+                        handover.device, handover.capability
+                    );
+                    self.inner.runtime.log("warn", message.clone());
+                    self.inner.runtime.publish_automation(
+                        Some(handover.from_rule.clone()),
+                        if state == crate::handover::HandoverState::Failed {
+                            "rule_handover_failed"
+                        } else {
+                            "rule_handover_retry"
+                        },
+                        message,
                     );
                 }
             }
         }
     }
 
+    /// Which enabled rule drives this channel, if any?
+    ///
+    /// Ownership is *declared* ownership: an enabled rule whose target is this
+    /// channel. It is deliberately checked before the rule has had a chance to run in
+    /// this tick — a rule that was just enabled owns its channel from that moment, and
+    /// the engine must not write the fail-safe duty onto a channel that is about to be
+    /// driven by its real owner.
+    fn owner_of(&self, device: &DeviceId, capability: &CapabilityId) -> Option<RuleId> {
+        self.rules()
+            .into_iter()
+            .find(|rule| {
+                rule.enabled
+                    && &rule.target.device == device
+                    && &rule.target.capability == capability
+            })
+            .map(|rule| rule.id)
+    }
+
     async fn tick_inner(&self, force: bool) -> Vec<RuleOutcome> {
         let now = ohm_core::now_ms();
-        self.inner.ticks.fetch_add(1, Ordering::Relaxed);
+        let tick = self.inner.ticks.fetch_add(1, Ordering::Relaxed);
         self.inner.last_tick_ms.store(now, Ordering::Relaxed);
 
         let settings = self.inner.runtime.settings();
@@ -449,7 +597,7 @@ impl AutomationEngine {
         }
 
         // Outputs abandoned by a rule edit are made safe before anything else.
-        self.perform_pending_handovers().await;
+        self.perform_pending_handovers(tick, now).await;
 
         // A stalled runtime means stale sensors: fall back rather than act on
         // numbers that may be minutes old.
@@ -588,6 +736,14 @@ impl AutomationEngine {
                         // carries a confirmed value, and if it somehow does not, the
                         // honest answer is "unknown" rather than the request.
                         state.applied_output = report.applied.as_ref().and_then(Value::as_f64);
+                        // The rule owns this channel from now on, and the value is
+                        // confirmed. This is what a later handover is judged against.
+                        state.control = Some(ControlHold {
+                            device: device.id.clone(),
+                            capability: capability.id.clone(),
+                            confirmed: state.applied_output,
+                            last_write_ms: now,
+                        });
                         state.writes = state.writes.saturating_add(1);
                         state.consecutive_unconfirmed = 0;
                         state.last_write_ms = now;
@@ -618,6 +774,15 @@ impl AutomationEngine {
                         // Forget the output state: we must not dedupe against a value
                         // we never verified, and the next evaluation has to try again.
                         state.applied_output = None;
+                        // The write was issued, so the channel may have moved even
+                        // though nobody saw it move: the rule is still answerable for
+                        // it, which is what `confirmed: None` records.
+                        state.control = Some(ControlHold {
+                            device: device.id.clone(),
+                            capability: capability.id.clone(),
+                            confirmed: None,
+                            last_write_ms: now,
+                        });
                         state.last_write_ms = now;
                         state.last_status = RuleStatus::Unconfirmed;
                         state.last_message = format!(
@@ -696,6 +861,10 @@ impl AutomationEngine {
             );
         }
         if evaluation.release {
+            // Control went back to the firmware, so there is no channel to hand over
+            // — and the rule must stop claiming one it no longer drives.
+            state.control = None;
+            state.applied_output = None;
             self.inner.runtime.publish_automation(
                 Some(rule.id.clone()),
                 "rule_released",
@@ -724,6 +893,14 @@ impl AutomationEngine {
         state.last_status = RuleStatus::Error;
         state.last_message = format!("write failed: {error}");
         state.writes = state.writes.saturating_add(1);
+        // The rule tried to write this channel and the result is unknown: it may or
+        // may not have moved. It stays answerable for the channel.
+        state.control = Some(ControlHold {
+            device: device.id.clone(),
+            capability: capability.id.clone(),
+            confirmed: None,
+            last_write_ms: now,
+        });
         self.inner.runtime.publish_automation(
             Some(rule.id.clone()),
             "rule_error",
@@ -909,6 +1086,32 @@ impl AutomationEngine {
     ///
     /// The rule files are never rewritten; this is how the user finds out that the
     /// machine is running something other than what the file says.
+    /// Channels left behind by a rule edit, and what became of them.
+    ///
+    /// Unfinished handovers come first; finished ones are kept as a bounded history.
+    /// This is the only place the answer survives, because the rule that abandoned the
+    /// channel may itself be gone — and a channel still sitting at an old duty with a
+    /// failed handover is exactly the thing a user must be able to see.
+    pub fn handovers(&self) -> Vec<crate::handover::HandoverReport> {
+        self.inner.handovers.lock().reports()
+    }
+
+    /// How many handovers are still unfinished.
+    pub fn unfinished_handovers(&self) -> usize {
+        self.inner.handovers.lock().open_count()
+    }
+
+    /// Re-arm every handover that ran out of attempts, and report how many.
+    ///
+    /// The recovery action for an exhausted handover: the user fixes whatever was
+    /// wrong (starts the service, restores the connection) and asks for another go.
+    /// It is explicit on purpose — an engine that retries for ever is an engine that
+    /// writes to a broken channel for ever.
+    pub fn retry_failed_handovers(&self) -> usize {
+        let tick = self.inner.ticks.load(Ordering::Relaxed);
+        self.inner.handovers.lock().retry_failed(tick)
+    }
+
     pub fn compatibility_notes(&self) -> Vec<crate::store::RuleFileNote> {
         self.inner.compatibility_notes.read().clone()
     }
@@ -1192,6 +1395,13 @@ impl AutomationEngine {
     ///
     /// Metadata-only changes take neither step, so renaming a rule cannot interrupt
     /// control.
+    /// Reconcile the engine's memory with a rule that now means something else.
+    ///
+    /// Called from every path that can change a rule: the form, the CLI, a reloaded
+    /// file, a deletion, an enable/disable. It answers one question — *did this rule
+    /// stop driving a channel it was driving?* — and if so, queues that channel for
+    /// handover. A rule that never took control of the channel is not entitled to hand
+    /// it over, and a rule whose channel did not change keeps driving it.
     fn apply_rule_change(&self, previous: &Rule, change: &RuleChange) {
         let Some(summary) = change.summary() else {
             return;
@@ -1202,27 +1412,37 @@ impl AutomationEngine {
             "rule meaning changed, invalidating control memory"
         );
 
-        // 1. Queue the handover of the old output. It is performed at the start of
-        //    the next tick, because this path is synchronous and the write is not.
-        if let Some((device, capability)) = &change.previous_target {
-            let duty = self.inner.runtime.settings().safety.fail_safe_duty_percent;
-            let _ = duty;
-            self.inner.pending_handovers.lock().push(PendingHandover {
-                rule_id: previous.id.clone(),
-                device: device.clone(),
-                capability: capability.clone(),
-                reason: format!(
-                    "rule `{}` was retargeted; {device}/{capability} is no longer driven by any rule",
-                    previous.id
-                ),
-            });
+        // What the rule actually held, as opposed to what it declared. A disabled
+        // rule, or one whose write never landed, holds nothing.
+        let held = self
+            .inner
+            .states
+            .lock()
+            .get(&previous.id)
+            .and_then(|state| state.control.clone());
+
+        if change.leaves_control() {
+            let why = if change.previous_target.is_some() {
+                "was retargeted"
+            } else {
+                "was disabled"
+            };
+            self.hand_over(
+                previous.id.clone(),
+                held,
+                change.previous_target.as_ref(),
+                why,
+            );
         }
 
         // 2. Drop the memory that no longer describes this rule.
         if let Some(state) = self.inner.states.lock().get_mut(&previous.id) {
-            if change.previous_target.is_some() {
-                // A value written to another output is not evidence about this one.
+            if change.leaves_control() {
+                // Another channel's value is not evidence about this one, and a rule
+                // that does not drive anything must not claim ownership of what it
+                // used to drive.
                 state.applied_output = None;
+                state.control = None;
                 state.armed_input = f64::NAN;
             }
             if change.source_changed {
@@ -1244,6 +1464,39 @@ impl AutomationEngine {
             }
             state.next_due_ms = 0;
         }
+    }
+
+    /// Queue a channel for handover, if this rule was really driving one.
+    ///
+    /// `held` is what the rule's own memory says it controlled — `None` when it never
+    /// wrote, or already gave control up. `previous_target` is the channel its *config*
+    /// used to name, used to make sure the channel being handed over is the one the
+    /// rule actually drove: a target that was changed before the engine ever ran was
+    /// never controlled, and handing it over would write a channel nobody ever touched.
+    fn hand_over(
+        &self,
+        rule_id: RuleId,
+        held: Option<ControlHold>,
+        previous_target: Option<&(DeviceId, CapabilityId)>,
+        why: &str,
+    ) {
+        let Some(hold) = held.filter(|hold| {
+            previous_target.is_none_or(|(device, capability)| hold.is(device, capability))
+        }) else {
+            return;
+        };
+        let tick = self.inner.ticks.load(Ordering::Relaxed);
+        self.inner.handovers.lock().queue(
+            hold.device.clone(),
+            hold.capability.clone(),
+            rule_id.clone(),
+            format!(
+                "rule `{rule_id}` {why}; {}/{} is no longer driven by it",
+                hold.device, hold.capability
+            ),
+            tick,
+            ohm_core::now_ms(),
+        );
     }
 
     /// Validate and persist a rule, then make it live.
@@ -1303,8 +1556,20 @@ impl AutomationEngine {
     }
 
     /// Delete a rule and forget its state.
+    ///
+    /// Deleting is leaving control: whatever channel this rule was driving would
+    /// otherwise sit at the last curve value forever, with nothing left to say so.
     pub fn delete_rule(&self, id: &str) -> Result<bool> {
         let rule_id = RuleId::new(id)?;
+        // Read what the rule held *before* it is forgotten: the handover is owed by
+        // the channel, not by the rule, so the rule may disappear entirely and the
+        // handover must still happen — and stay visible if it fails.
+        let held = self
+            .inner
+            .states
+            .lock()
+            .get(&rule_id)
+            .and_then(|state| state.control.clone());
         let existed = {
             let mut rules = self.inner.rules.write();
             let before = rules.len();
@@ -1313,6 +1578,7 @@ impl AutomationEngine {
         };
         let file_removed = self.inner.store.delete(&rule_id)?;
         self.inner.states.lock().remove(&rule_id);
+        self.hand_over(rule_id.clone(), held, None, "was deleted");
         // Deleting the winner may have freed the target another rule wants.
         self.refresh_conflicts_for_active_set();
         if existed || file_removed {

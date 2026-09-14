@@ -69,6 +69,7 @@ pub mod curve;
 pub mod engine;
 pub mod evaluator;
 pub mod examples;
+pub mod handover;
 pub mod rule;
 pub mod store;
 
@@ -77,7 +78,10 @@ pub use engine::{
     AutomationEngine, AutomationStats, MAX_CONSECUTIVE_UNCONFIRMED, RuleCheck, RuleConflict,
     TICK_INTERVAL_MS, merge_suggestions,
 };
-pub use evaluator::{Evaluation, EvaluationInput, RuleOutcome, RuleState, RuleStatus, evaluate};
+pub use evaluator::{
+    ControlHold, Evaluation, EvaluationInput, RuleOutcome, RuleState, RuleStatus, evaluate,
+};
+pub use handover::{HANDOVER_RETRY_TICKS, HandoverReport, HandoverState, MAX_HANDOVER_ATTEMPTS};
 pub use rule::{
     Aggregate, Comparator, Condition, DEFAULT_DEADBAND, DEFAULT_HYSTERESIS,
     DEFAULT_UPDATE_INTERVAL_MS, Fallback, FallbackAction, MIN_UPDATE_INTERVAL_MS, OtherwiseAction,

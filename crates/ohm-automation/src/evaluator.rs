@@ -77,12 +77,46 @@ impl RuleStatus {
     }
 }
 
+/// The channel a rule is driving, and what is known about it.
+///
+/// This is what makes a handover honest. Deciding whether a rule may hand a channel
+/// over means answering *"did this rule ever take control of it?"*. `applied_output`
+/// cannot answer that: it does not say which channel it belongs to, and a write that
+/// was accepted but never confirmed leaves the value unknown while still having
+/// (possibly) moved the hardware.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ControlHold {
+    pub device: ohm_core::DeviceId,
+    pub capability: ohm_core::CapabilityId,
+    /// The value the device last confirmed. `None` means a write was issued and the
+    /// outcome is unknown: the channel may have received it without us seeing it.
+    pub confirmed: Option<f64>,
+    /// When the most recent write to this channel was issued.
+    pub last_write_ms: i64,
+}
+
+impl ControlHold {
+    /// Does this hold refer to that channel?
+    pub fn is(&self, device: &ohm_core::DeviceId, capability: &ohm_core::CapabilityId) -> bool {
+        &self.device == device && &self.capability == capability
+    }
+
+    /// `fan.mock.0/fan.speed_percent`
+    pub fn qualified_id(&self) -> String {
+        format!("{}/{}", self.device, self.capability)
+    }
+}
+
 /// Per-rule memory between evaluations.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RuleState {
     pub rule_id: RuleId,
     /// Last value that was successfully written.
     pub applied_output: Option<f64>,
+    /// The channel this rule last drove. Cleared whenever the rule gives control up
+    /// — a retarget, a disable, a release — so ownership is never inferred from
+    /// stale memory.
+    pub control: Option<ControlHold>,
     /// Source value at the moment the current output was set. Hysteresis is
     /// measured against this.
     pub armed_input: f64,
@@ -120,6 +154,7 @@ impl RuleState {
         Self {
             rule_id,
             applied_output: None,
+            control: None,
             armed_input: f64::NAN,
             last_input: None,
             last_input_ms: 0,
