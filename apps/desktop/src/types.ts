@@ -533,6 +533,8 @@ export interface AutomationStats {
 export interface MockFaults {
   fail_all_writes: boolean;
   fail_writes_on: [string, string][];
+  /** Channels whose writes are accepted but never confirmed. */
+  unconfirmed_writes_on: [string, string][];
   unavailable_readings: [string, string, UnavailableReason][];
   unplug_devices: string[];
 }

@@ -23,7 +23,7 @@ use ohm_automation::AutomationEngine;
 use ohm_core::ConfigPaths;
 use ohm_runtime::{Runtime, SettingsStore};
 use state::AppState;
-use tauri::{Manager, WindowEvent};
+use tauri::{Emitter, Manager, WindowEvent};
 
 /// Command line flags the desktop binary understands.
 ///
@@ -38,6 +38,12 @@ pub struct StartupFlags {
     pub mock: bool,
     /// `--selftest`: start headlessly, run one automation cycle and exit.
     pub selftest: bool,
+    /// `--ipc-selftest`: start the **real** application — real window, real webview,
+    /// real IPC — and ask the frontend to exercise the command surface, then exit.
+    ///
+    /// Deliberately distinct from `--selftest`, which returns before the Tauri builder
+    /// is constructed and therefore proves nothing about the desktop path.
+    pub ipc_selftest: bool,
 }
 
 impl StartupFlags {
@@ -48,12 +54,13 @@ impl StartupFlags {
             dry_run: has("--dry-run"),
             mock: has("--mock"),
             selftest: has("--selftest"),
+            ipc_selftest: has("--ipc-selftest"),
         }
     }
 
     /// `true` when any flag was given.
     pub fn is_empty(&self) -> bool {
-        !(self.dry_run || self.mock || self.selftest)
+        !(self.dry_run || self.mock || self.selftest || self.ipc_selftest)
     }
 }
 
@@ -133,6 +140,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         started_at_ms: ohm_core::now_ms(),
         dry_run_override: flags.dry_run,
     };
+    if flags.ipc_selftest {
+        let report = paths.root().join(commands::IPC_PROBE_FILE);
+        tracing::info!(
+            path = %report.display(),
+            version = ohm_core::VERSION,
+            "IPC self-test requested: the frontend will exercise the command surface"
+        );
+        commands::arm_ipc_probe(report);
+    }
 
     tauri::Builder::default()
         .manage(state)
@@ -172,6 +188,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::mock_set_ambient,
             commands::mock_force_gpu_temperature,
             commands::mock_set_faults,
+            commands::mock_set_channel_fault,
+            commands::ipc_probe_report,
             commands::open_folder,
             commands::open_config_dir,
             commands::open_log_dir,
@@ -194,6 +212,39 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             events::spawn(handle.clone(), runtime.clone());
+
+            if commands::ipc_probe_armed() {
+                // The window and its webview are real, and the frontend bundle is the
+                // one the app ships. The backend asks it — over Tauri's own event
+                // channel, the same one that carries snapshots to the UI — to exercise
+                // the command surface, and waits for it to report back through a real
+                // command. Nothing here is a stub: this is the desktop path, and if any
+                // link of it is broken the report never arrives.
+                let probe_handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+                    let mut attempts = 0usize;
+                    while std::time::Instant::now() < deadline && !commands::ipc_probe_done() {
+                        // Re-sent until the frontend answers: the listener is registered
+                        // when its bundle loads, which may be after this task starts.
+                        if let Err(error) = probe_handle.emit(commands::IPC_PROBE_EVENT, ()) {
+                            tracing::warn!(error = %error, "could not ask the frontend");
+                        }
+                        attempts += 1;
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    }
+                    let done = commands::ipc_probe_done();
+                    if done {
+                        tracing::info!(attempts, "the frontend reported the IPC self-test");
+                    } else {
+                        tracing::error!(
+                            attempts,
+                            "the IPC self-test did not report back before the deadline"
+                        );
+                    }
+                    probe_handle.exit(if done { 0 } else { 3 });
+                });
+            }
 
             let runtime = runtime.clone();
             let engine = engine.clone();

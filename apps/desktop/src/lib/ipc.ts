@@ -148,6 +148,15 @@ export const api = {
   mockSetAmbient: (celsius: number) => call<MockStatus | null>('mock_set_ambient', { celsius }),
   mockForceGpuTemperature: (celsius: number) =>
     call<MockStatus | null>('mock_force_gpu_temperature', { celsius }),
+  /** A fault on one simulated channel: `none`, `unconfirmed` or `reject`. */
+  mockSetChannelFault: (device: string, capability: string, fault: string) =>
+    call<MockStatus | null>('mock_set_channel_fault', { device, capability, fault }),
+  /**
+   * Report the result of an IPC self-test run. Only used when the app was started with
+   * `--ipc-selftest`; writes the frontend's own account of what it saw next to the
+   * app's log so the two can be compared.
+   */
+  ipcProbeReport: (body: string) => call<string>('ipc_probe_report', { body }),
   mockSetFaults: (failWrites: boolean, disconnectGpuTemperature: boolean, unplugFan: boolean) =>
     call<MockStatus | null>('mock_set_faults', {
       fail_writes: failWrites,

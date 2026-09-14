@@ -53,6 +53,8 @@ const API_METHODS = [
   'mockSetAmbient',
   'mockForceGpuTemperature',
   'mockSetFaults',
+  'mockSetChannelFault',
+  'ipcProbeReport',
   'openConfigDir',
   'openLogDir',
 ] as const;
@@ -154,6 +156,8 @@ function applyBaseline(mock: IpcMock): void {
     failures: 0,
     last_tick_ms: 0,
   });
+  mock.api.mockSetChannelFault.mockResolvedValue(null);
+  mock.api.ipcProbeReport.mockResolvedValue('');
   mock.api.mockStatus.mockResolvedValue(null);
   mock.api.openConfigDir.mockResolvedValue(null);
   mock.api.openLogDir.mockResolvedValue(null);

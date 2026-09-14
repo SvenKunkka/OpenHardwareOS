@@ -97,6 +97,13 @@ pub struct MockFaults {
     pub fail_all_writes: bool,
     /// Writes to these `(device, capability)` pairs fail.
     pub fail_writes_on: Vec<(DeviceId, CapabilityId)>,
+    /// Writes to these `(device, capability)` pairs are *accepted* and never
+    /// confirmed: the simulated device takes the request and reports no value back.
+    ///
+    /// This is the real-hardware case the project cares most about — a board that
+    /// answers `200 OK` and whose channel cannot be read back — and it is the only way
+    /// to exercise the `Unconfirmed` path end to end without a physical fan.
+    pub unconfirmed_writes_on: Vec<(DeviceId, CapabilityId)>,
     /// These `(device, capability)` pairs report as unavailable instead of a
     /// value, simulating a disconnected or unsupported sensor.
     pub unavailable_readings: Vec<(DeviceId, CapabilityId, UnavailableReason)>,
@@ -131,6 +138,24 @@ impl MockFaults {
             unplug_devices: vec![DeviceId::new_unchecked(device)],
             ..Default::default()
         }
+    }
+
+    /// A mock whose writes are accepted but never confirmed, for one channel.
+    pub fn write_unconfirmed(device: &str, capability: &str) -> Self {
+        Self {
+            unconfirmed_writes_on: vec![(
+                DeviceId::new_unchecked(device),
+                CapabilityId::new_unchecked(capability),
+            )],
+            ..Default::default()
+        }
+    }
+
+    /// Is this channel's write to be accepted without confirmation?
+    pub fn write_unconfirmed_on(&self, device: &DeviceId, capability: &CapabilityId) -> bool {
+        self.unconfirmed_writes_on
+            .iter()
+            .any(|(d, c)| d == device && c == capability)
     }
 
     pub fn write_blocked(&self, device: &DeviceId, capability: &CapabilityId) -> bool {

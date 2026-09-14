@@ -532,6 +532,170 @@ pub fn mock_set_faults(
 }
 
 // ---------------------------------------------------------------------------
+// IPC self-test
+// ---------------------------------------------------------------------------
+
+/// Where the frontend's self-test report is written, inside the config directory.
+pub const IPC_PROBE_FILE: &str = "ipc-probe.json";
+
+/// Set when the app was started with `--ipc-selftest`.
+///
+/// A process-wide slot rather than application state on purpose: it exists only for
+/// one automated run of the real app, and the command that fills it is the one thing
+/// that closes the loop.
+static IPC_PROBE: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+static IPC_PROBE_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Arm the self-test and record where the report must go.
+pub fn arm_ipc_probe(path: std::path::PathBuf) {
+    *IPC_PROBE.lock().expect("probe slot") = Some(path);
+    IPC_PROBE_DONE.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Was this run started as an IPC self-test?
+pub fn ipc_probe_armed() -> bool {
+    IPC_PROBE.lock().expect("probe slot").is_some()
+}
+
+/// Has the frontend reported back?
+pub fn ipc_probe_done() -> bool {
+    IPC_PROBE_DONE.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// The frontend's report of an IPC self-test run, written verbatim.
+///
+/// The body is whatever the frontend sends; it is stored as-is, next to the app's own
+/// log and the audit trail, so the two can be compared. The command exists so that the
+/// *frontend* is the one that says what it saw — a claim made by the test harness
+/// about the frontend would prove nothing.
+#[tauri::command]
+pub fn ipc_probe_report(state: State<'_, AppState>, body: String) -> CommandResult<String> {
+    let path = IPC_PROBE
+        .lock()
+        .expect("probe slot")
+        .clone()
+        .unwrap_or_else(|| state.paths.root().join(IPC_PROBE_FILE));
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            CommandError::new(
+                "io_error",
+                format!("could not create {}: {error}", parent.display()),
+                "Check that the configuration directory is writable.",
+            )
+        })?;
+    }
+    std::fs::write(&path, &body).map_err(|error| {
+        CommandError::new(
+            "io_error",
+            format!("could not write {}: {error}", path.display()),
+            "Check that the configuration directory is writable.",
+        )
+    })?;
+    IPC_PROBE_DONE.store(true, std::sync::atomic::Ordering::SeqCst);
+    tracing::info!(
+        path = %path.display(),
+        bytes = body.len(),
+        "the frontend reported the result of its IPC self-test"
+    );
+    Ok(path.display().to_string())
+}
+
+/// The event the backend emits to ask the frontend to run the self-test.
+///
+/// An event rather than `eval`: the frontend listens on the same channel that carries
+/// its snapshots, so the request arrives through the app's own wiring. A probe driven
+/// by injected script could pass while the event path — the one the UI actually depends
+/// on — was broken.
+pub const IPC_PROBE_EVENT: &str = "ipc-selftest";
+
+/// What the backend asks the webview to run.
+///
+/// The canary matters as much as the probe: if `window.__ohmIpcProbe` is missing — a
+/// stale bundle, a build that did not include it, a webview that never ran the script —
+/// the frontend reports *that*, through the same command, instead of the run looking
+/// like a desktop that simply never answered.
+pub const IPC_PROBE_JS: &str = r#"
+(function () {
+  var report = function (body) {
+    return window.__TAURI_INTERNALS__.invoke('ipc_probe_report', { body: JSON.stringify(body) });
+  };
+  try {
+    if (typeof window.__ohmIpcProbe === 'function') {
+      return window.__ohmIpcProbe();
+    }
+    return report({
+      probe_version: 0,
+      location: window.location.href,
+      user_agent: navigator.userAgent,
+      steps: [{
+        step: 'probe_missing',
+        ok: false,
+        error: 'window.__ohmIpcProbe is ' + typeof window.__ohmIpcProbe
+      }],
+      rendered: {}
+    });
+  } catch (error) {
+    return report({
+      probe_version: 0,
+      location: window.location.href,
+      user_agent: navigator.userAgent,
+      steps: [{ step: 'probe_threw', ok: false, error: String(error) }],
+      rendered: {}
+    });
+  }
+})();
+"#;
+
+/// Inject a fault on one simulated channel: `none`, `unconfirmed` or `reject`.
+///
+/// `mock_set_faults` covers the whole-provider switches the Mock Hardware screen
+/// offers. This is the per-channel version, and it exists because the most important
+/// real-hardware case has no whole-provider equivalent: a board that *accepts* a write
+/// and cannot be read back, so the resulting value is unknown. Being able to produce
+/// that on demand is what makes the `Unconfirmed` path testable end to end — through
+/// the real IPC, the real engine and the real adapter — without a physical fan.
+#[tauri::command]
+pub fn mock_set_channel_fault(
+    state: State<'_, AppState>,
+    device: String,
+    capability: String,
+    fault: String,
+) -> CommandResult<Option<MockStatus>> {
+    let Some(adapter) = state.mock_adapter() else {
+        return Ok(None);
+    };
+    let mock = mock_ref(&adapter)?;
+    let device = ohm_core::DeviceId::new(device).map_err(CommandError::from)?;
+    let capability = ohm_core::CapabilityId::new(capability).map_err(CommandError::from)?;
+
+    // Merge into whatever is already injected, so setting one channel's fault does not
+    // silently clear another.
+    let mut faults = mock.status().faults;
+    faults
+        .fail_writes_on
+        .retain(|(d, c)| d != &device || c != &capability);
+    faults
+        .unconfirmed_writes_on
+        .retain(|(d, c)| d != &device || c != &capability);
+    match fault.as_str() {
+        "none" => {}
+        "unconfirmed" => faults
+            .unconfirmed_writes_on
+            .push((device.clone(), capability.clone())),
+        "reject" => faults.fail_writes_on.push((device, capability)),
+        other => {
+            return Err(CommandError::new(
+                "invalid_fault",
+                format!("unknown fault `{other}`; expected `none`, `unconfirmed` or `reject`"),
+                "Choose one of the documented simulator faults.",
+            ));
+        }
+    }
+    mock.set_faults(faults);
+    Ok(Some(mock.status()))
+}
+
+// ---------------------------------------------------------------------------
 // Shell helpers
 // ---------------------------------------------------------------------------
 

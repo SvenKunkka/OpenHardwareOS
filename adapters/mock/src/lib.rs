@@ -630,6 +630,22 @@ impl HardwareAdapter for MockAdapter {
             }
         }
 
+        // A channel that is accepted but never confirmed: the simulated device takes
+        // the value (so the hardware *has* moved) and reports nothing back. Callers
+        // must treat the resulting value as unknown, which is exactly what the real
+        // board does when a channel cannot be read back.
+        if self
+            .config
+            .read()
+            .faults
+            .write_unconfirmed_on(&device.id, &capability.id)
+        {
+            return Ok(WriteOutcome::unconfirmed(format!(
+                "the simulated device accepted {requested:.1} but does not report the channel \
+                 back, so the value is unknown (injected mock fault)"
+            )));
+        }
+
         if (applied - requested).abs() > f64::EPSILON {
             return Ok(WriteOutcome {
                 status: WriteStatus::Simulated,
@@ -743,6 +759,38 @@ mod tests {
         );
         assert_eq!(cool.number(caps::FAN_RPM), Some(2000.0));
         assert_eq!(hot.number(caps::FAN_RPM), Some(0.0));
+    }
+
+    #[tokio::test]
+    async fn an_injected_unconfirmed_write_reports_no_value() {
+        let adapter = MockAdapter::new(MockConfig {
+            faults: MockFaults::write_unconfirmed("fan.mock.0", caps::FAN_SPEED_PERCENT),
+            ..MockConfig::deterministic()
+        });
+        let devices = adapter.discover().await.unwrap();
+        let fan = device_by_id(&devices, "fan.mock.0");
+        let control = fan.capability_str(caps::FAN_SPEED_PERCENT).unwrap();
+
+        let outcome = adapter
+            .write(&fan, control, &Value::Number(42.0))
+            .await
+            .expect("accepted");
+        assert_eq!(outcome.status, WriteStatus::Unconfirmed);
+        assert_eq!(
+            outcome.applied, None,
+            "an unconfirmed write must not carry a value: nobody read one back"
+        );
+        assert!(
+            outcome
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("unknown")),
+            "the detail must say the value is unknown: {:?}",
+            outcome.detail
+        );
+        // The simulated hardware did take the value, which is what makes this
+        // dangerous rather than merely untidy.
+        assert_eq!(adapter.status().fan_duties[0], 42.0);
     }
 
     #[tokio::test]

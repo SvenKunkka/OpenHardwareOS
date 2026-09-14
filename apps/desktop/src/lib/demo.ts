@@ -62,6 +62,7 @@ export function createDemoBackend(): DemoBackend {
   let faults: MockStatus['faults'] = {
     fail_all_writes: false,
     fail_writes_on: [],
+    unconfirmed_writes_on: [],
     unavailable_readings: [],
     unplug_devices: [],
   };
@@ -618,6 +619,9 @@ export function createDemoBackend(): DemoBackend {
     faults: {
       fail_all_writes: faults.fail_all_writes,
       fail_writes_on: faults.fail_writes_on.map((p) => [p[0], p[1]] as [string, string]),
+      unconfirmed_writes_on: faults.unconfirmed_writes_on.map(
+        (p) => [p[0], p[1]] as [string, string],
+      ),
       unavailable_readings: faults.unavailable_readings.map(
         (r) => [r[0], r[1], r[2]] as [string, string, (typeof faults.unavailable_readings)[number][2]],
       ),
@@ -950,10 +954,26 @@ export function createDemoBackend(): DemoBackend {
       gpuTemp = Number(a.celsius);
       return mockStatus();
     },
+    mock_set_channel_fault: (a) => {
+      const pair: [string, string] = [String(a.device), String(a.capability)];
+      const without = (list: [string, string][]) =>
+        list.filter(([d, c]) => d !== pair[0] || c !== pair[1]);
+      faults = {
+        ...faults,
+        fail_writes_on: a.fault === 'reject' ? [...without(faults.fail_writes_on), pair] : without(faults.fail_writes_on),
+        unconfirmed_writes_on:
+          a.fault === 'unconfirmed'
+            ? [...without(faults.unconfirmed_writes_on), pair]
+            : without(faults.unconfirmed_writes_on),
+      };
+      return mockStatus();
+    },
+    ipc_probe_report: () => 'the browser demo does not run the IPC self-test',
     mock_set_faults: (a) => {
       faults = {
         fail_all_writes: Boolean(a.fail_writes),
         fail_writes_on: faults.fail_writes_on,
+        unconfirmed_writes_on: faults.unconfirmed_writes_on,
         unavailable_readings:
           Boolean(a.disconnect_gpu_temperature) && !faults.unavailable_readings.some((r) => r[0] === gpu.id)
             ? [...faults.unavailable_readings, [gpu.id, 'temperature.core', 'timeout']]
