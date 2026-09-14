@@ -2,6 +2,9 @@
 /target/
 **/target/
 
+# Local delivery artefacts — built from a revision, never committed
+/dist/
+
 # Node
 node_modules/
 apps/desktop/dist/
