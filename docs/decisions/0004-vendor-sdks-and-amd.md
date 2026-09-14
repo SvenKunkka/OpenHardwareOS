@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted
+Proposed — awaiting maintainer sign-off
+
+The AMD ADL/ADLX restriction is a legal reading of those SDK licences (sources in
+`docs/research.md` §7). It blocks a vendor integration path, so it needs the owner's
+decision even though the code already avoids every SDK it names.
 
 ## Date
 

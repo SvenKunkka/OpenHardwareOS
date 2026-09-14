@@ -8,9 +8,9 @@ negative ones — and the alternatives that were rejected with the reason.
 | ADR | Title | Status | One-line summary |
 |---|---|---|---|
 | [0001](0001-ui-and-runtime-stack.md) | UI and runtime stack | Accepted | Rust workspace + Tauri v2 + React 19/TypeScript, with the UI never touching hardware, over .NET 8 + WinUI 3. |
-| [0002](0002-license.md) | License | Accepted | Apache-2.0 for its patent grant and explicit contributor terms, with a dependency allow-list and a README third-party table. |
+| [0002](0002-license.md) | License | **Proposed** | Apache-2.0 for its patent grant and explicit contributor terms, with a dependency allow-list and a README third-party table. |
 | [0003](0003-libre-hardware-monitor-integration.md) | LibreHardwareMonitor integration | Accepted | LHM (MPL-2.0) over its HTTP JSON web server as the real-hardware provider, with a sidecar as the planned v0.2+ transport. |
-| [0004](0004-vendor-sdks-and-amd.md) | Vendor SDKs and AMD | Accepted | No ADL/ADLX code, headers or bindings may enter the repository; AMD comes from the LHM host, NVIDIA telemetry from NVML. |
+| [0004](0004-vendor-sdks-and-amd.md) | Vendor SDKs and AMD | **Proposed** | No ADL/ADLX code, headers or bindings may enter the repository; AMD comes from the LHM host, NVIDIA telemetry from NVML. |
 | [0005](0005-nvml-precedence-and-device-identity.md) | NVML precedence and device identity | Accepted | NVML is registered only when LHM is off, because both would show one GPU twice and LHM reports more. |
 | [0006](0006-windows-privileges-and-autostart.md) | Windows privileges and autostart | Accepted | The app runs unprivileged and autostart is a per-user `HKCU\...\Run` entry that can never start an elevated process. |
 
@@ -21,7 +21,11 @@ negative ones — and the alternatives that were rejected with the reason.
 - **Proposed** — written down, not yet in force.
 - **Deprecated** — no longer relevant, kept for history.
 
-All six records are currently **Accepted**. Where a record describes something
+Four records are **Accepted** (they describe technical decisions the code already
+follows) and two are **Proposed**: 0002 (the Apache-2.0 choice and the dependency
+allow-list) and 0004 (the AMD ADL/ADLX restriction). Both are legal decisions for the
+project owner; the code follows them so the workspace stays buildable and auditable,
+but neither is in force and neither may be cited as approved. Where a record describes something
 that is *not* implemented yet, it says so explicitly and names the plan — the
 `physical_id`/adapter-priority change in 0005 and the Task Scheduler/service
 helper in 0006 are the two examples.

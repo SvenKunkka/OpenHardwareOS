@@ -39,6 +39,20 @@ This is an environment defect, not a project defect. It is why CI installs
 **required** rather than `continue-on-error`: a check that cannot fail is not a
 check.
 
+**To run clippy on this machine**, install a matching toolchain rather than a
+second one alongside Homebrew's Rust, and put it first on `PATH`:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+~/.cargo/bin/rustup component add clippy rustfmt
+~/.cargo/bin/cargo clippy --workspace --all-targets -- -D warnings
+```
+
+That was **not** done here: it restructures the machine owner's toolchain
+(`~/.cargo/bin` would take precedence over Homebrew), which is their decision, not
+an agent's. Until then the authoritative clippy run is CI, and the local run covers
+the ten crates the installed clippy can see.
+
 ### Changes verified in this round
 
 | # | Change | Verification |

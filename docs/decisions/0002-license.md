@@ -2,7 +2,13 @@
 
 ## Status
 
-Accepted
+Proposed — awaiting maintainer sign-off
+
+The licence choice and the dependency allow-list are a legal decision for the
+project owner, not for the agent that wrote this record. The code and `deny.toml`
+currently follow this proposal so the workspace is buildable and auditable, but it
+is **not** in force until the owner accepts it. Nothing here may be cited as
+"approved".
 
 ## Date
 
