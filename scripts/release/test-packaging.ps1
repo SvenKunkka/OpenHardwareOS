@@ -148,10 +148,20 @@ function Get-BlobPath([string]$Repo, [string]$Relative) {
     return $blob
 }
 
+# `--no-filters` matters: without it git applies the end-of-line conversion to a
+# file argument, so a CRLF file would hash to the same value as its LF blob and a
+# guard could pass on bytes it never checked.
 function Get-FileBlobHash([string]$Path) {
-    $hash = (& git hash-object -- $Path).Trim()
+    $hash = (& git hash-object --no-filters -- $Path).Trim()
     if ($LASTEXITCODE -ne 0) { throw "cannot hash $Path" }
     return $hash
+}
+
+# Size of the committed blob, which needs no text round-trip to compare.
+function Get-BlobSize([string]$Repo, [string]$Relative) {
+    $size = (& git -C $Repo cat-file -s "HEAD:$Relative").Trim()
+    if ($LASTEXITCODE -ne 0 -or $size -notmatch '^[0-9]+$') { throw "cannot read the blob size of $Relative" }
+    return [int64]$size
 }
 
 function Assert-NoCarriageReturn([string]$Path) {
@@ -229,6 +239,7 @@ try {
         # The published script must be the committed script.
         $blob = Get-BlobPath $repo 'scripts/install.ps1'
         Require ((Get-FileBlobHash (Join-Path $output 'install.ps1')) -ceq $blob) 'published install.ps1 is not the committed blob'
+        Require ((Get-Item -LiteralPath (Join-Path $output 'install.ps1')).Length -eq (Get-BlobSize $repo 'scripts/install.ps1')) 'published install.ps1 is not the committed size'
         Require-Contains $run.Output 'SHA256SUMS uses LF'
     }
 
@@ -240,8 +251,13 @@ try {
         [IO.File]::WriteAllText($path, ([IO.File]::ReadAllText($path) -replace "`n", "`r`n"), [Text.UTF8Encoding]::new($false))
         Require ([IO.File]::ReadAllText($path).Contains("`r")) 'the fixture did not get a CRLF working tree'
         Require ((& git -C $repo status --porcelain).Trim() -cne '') 'the CRLF worktree should differ from the commit'
-        $committed = (& git -C $repo cat-file blob 'HEAD:scripts/install.ps1' | Out-String)
-        Require (-not $committed.Contains("`r")) 'the committed blob should still be LF'
+        # The commit still holds the LF script, which is checked by size rather
+        # than by text: PowerShell joins a native command's output with the host
+        # newline, so reading the blob as text reports CRLF on Windows whatever the
+        # blob contains — that mistake failed the Windows release build once. A
+        # CRLF blob would be exactly as long as the CRLF worktree file and fail
+        # here, which is the property being checked.
+        Require ((Get-Item -LiteralPath $path).Length -gt (Get-BlobSize $repo 'scripts/install.ps1')) 'the committed blob must be shorter than the CRLF worktree file, i.e. still LF'
         $run = Invoke-Packaging $repo
         Require ($run.ExitCode -eq 0) "packaging failed:`n$($run.Output)"
         $published = Join-Path $repo 'artifacts/release/install.ps1'

@@ -58,7 +58,9 @@ try {
     [IO.File]::WriteAllText($scriptTarget, $scriptText, [Text.UTF8Encoding]::new($false))
     $blob = (& git rev-parse 'HEAD:scripts/install.ps1').Trim()
     if ($LASTEXITCODE -ne 0 -or $blob -notmatch '^[0-9a-f]{40}$') { throw 'Cannot read the committed install.ps1 blob.' }
-    $published = (& git hash-object -- $scriptTarget).Trim()
+    # `--no-filters`: git would otherwise apply the end-of-line conversion to the
+    # file argument and report the LF blob's hash for a CRLF file.
+    $published = (& git hash-object --no-filters -- $scriptTarget).Trim()
     if ($LASTEXITCODE -ne 0 -or $published -notmatch '^[0-9a-f]{40}$') { throw 'Cannot hash the published install.ps1.' }
     if ($published -cne $blob) { throw "Published install.ps1 ($published) is not the committed script ($blob)." }
 
