@@ -612,11 +612,23 @@ power stays at the LHM support boundary.
 
 ## 2026-09-14 — round 4: who really owns a channel, responsibility that outlives the process, and a proven desktop
 
-**Revision: the commits `17ed274`, `067a2a4`, `9f993f4`, `2756ca3`, `82f687e`, `0f162e5`
-and the documentation commit that contains this entry.** The pass below was executed with
-a clean worktree, and the environment block it printed (`HEAD 0f162e5`, 477 Rust tests,
-42 frontend tests) is the authority for its own numbers; the documentation and harness
-fixes that followed change no code the pass exercised.
+**Revision: the commits `17ed274`, `067a2a4`, `9f993f4`, `2756ca3`, `82f687e`, `0f162e5`,
+`0ce5f0b` and the documentation commit that contains this entry.** The pass was executed
+twice at this revision: once with the test code still carrying an unused import (clippy
+failed, and the import was removed), and once with **every tracked file committed and no
+modification outstanding** — that second run is the one recorded in the table below, and
+its environment block (`HEAD 0ce5f0b`, 477 Rust tests, 42 frontend tests) is the authority
+for its own numbers.
+
+One caveat, because it is visible in that run: the packager refused to run, because an
+untracked directory `k10max-prospector/` sits in the repository root. It is **not** part of
+any work in this repository — it contains a Keychron keyboard firmware image, a ZMK patch
+and a reconnaissance log, appeared mid-round, and was left exactly as it was found. Since
+the package is assembled with `git archive HEAD`, that directory cannot enter it; the
+package for this round was therefore built with `--allow-dirty`, which records the
+deviation in the package itself rather than hiding it. The only other untracked path at the
+end of the pass was that same directory: `git status --porcelain` shows no modification to
+any tracked file.
 
 Round 3 made the engine hand a channel over to the fail-safe duty. Round 4 is about the
 three ways that was still not true: a rule could *look* like it had taken the channel
