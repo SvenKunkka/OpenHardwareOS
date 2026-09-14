@@ -1,7 +1,7 @@
 # Windows 命令行安装
 
 公开源码：<https://github.com/SvenKunkka/OpenHardwareOS>。
-本页安装 Windows x64 预览版本 `v0.1.1`。预编译安装无需 Rust 或 Node.js。
+本页安装 Windows x64 预览版本 `v0.1.2`。预编译安装无需 Rust 或 Node.js。
 
 [查看全部版本](versions.md) · [交互版本树](https://svenkunkka.github.io/OpenHardwareOS/)
 
@@ -14,7 +14,7 @@
 & {
     $ErrorActionPreference = 'Stop'
     if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -and $env:PROCESSOR_ARCHITEW6432 -ne 'AMD64') { throw 'Windows x64 is required.' }
-    $ohmVersion = 'v0.1.1'
+    $ohmVersion = 'v0.1.2'
     $ohmAsset = "ohm-cli-$ohmVersion-windows-x86_64.zip"
     $ohmUrl = "https://github.com/SvenKunkka/OpenHardwareOS/releases/download/$ohmVersion"
     $ohmInstall = Join-Path $env:LOCALAPPDATA "OpenHardwareOS\cli-$ohmVersion"
@@ -37,14 +37,17 @@
 ```
 
 命令精确匹配 `SHA256SUMS` 中的压缩包文件名，要求仅有一条记录，并在摘要一致后才解压。
-CLI 安装在当前账户的 `%LOCALAPPDATA%\OpenHardwareOS\cli-v0.1.1`，不需要管理员权限，
+从 `v0.1.2` 起，公开的 `SHA256SUMS` 使用 LF 行尾，因此在 macOS/Linux 上
+`shasum -a 256 -c SHA256SUMS` 也能直接校验（`v0.1.0`、`v0.1.1` 的该文件是 CRLF：
+哈希值本身正确，但 POSIX 工具会把每一条记录都报成找不到文件，需要先 `tr -d '\r'`）。
+CLI 安装在当前账户的 `%LOCALAPPDATA%\OpenHardwareOS\cli-v0.1.2`，不需要管理员权限，
 不修改 PATH，不启动硬件控制。目标目录已存在时会停止，保留原有文件。
 `--version` 显示安装版本，`doctor` 查看设备和能力；安装成功不代表硬件兼容已经验证。
 
 如需在当前 PowerShell 窗口直接输入 `ohm-cli`：
 
 ```powershell
-$env:Path = "$env:LOCALAPPDATA\OpenHardwareOS\cli-v0.1.1;$env:Path"
+$env:Path = "$env:LOCALAPPDATA\OpenHardwareOS\cli-v0.1.2;$env:Path"
 ohm-cli demo --steps 60
 ```
 
@@ -57,8 +60,8 @@ ohm-cli demo --steps 60
 加上 `-Desktop` 可同时安装桌面应用；仅需 CLI 自动安装时省略这个参数。
 
 ```powershell
-Invoke-WebRequest -UseBasicParsing 'https://github.com/SvenKunkka/OpenHardwareOS/releases/download/v0.1.1/install.ps1' -OutFile "$env:TEMP\OpenHardwareOS-install.ps1"
-& "$env:TEMP\OpenHardwareOS-install.ps1" -Version v0.1.1 -Desktop
+Invoke-WebRequest -UseBasicParsing 'https://github.com/SvenKunkka/OpenHardwareOS/releases/download/v0.1.2/install.ps1' -OutFile "$env:TEMP\OpenHardwareOS-install.ps1"
+& "$env:TEMP\OpenHardwareOS-install.ps1" -Version v0.1.2 -Desktop
 ```
 
 桌面安装包也会先核对 SHA-256。安装到所有用户时会请求管理员权限，安装后不会自动启动应用。
@@ -74,7 +77,7 @@ GitHub 构建通过不等于真实风扇已通过验收。按
 已具备 Rust 1.95+ 和 Windows MSVC 构建环境的开发者，也可以执行：
 
 ```powershell
-cargo install --git https://github.com/SvenKunkka/OpenHardwareOS --tag v0.1.1 --locked ohm-cli
+cargo install --git https://github.com/SvenKunkka/OpenHardwareOS --tag v0.1.2 --locked ohm-cli
 ohm-cli --version
 ```
 
@@ -83,7 +86,7 @@ ohm-cli --version
 ## 更新、卸载和排错
 
 按默认方式更新时，把命令块中的 `$ohmVersion` 改为目标版本的完整 tag，安装到新的版本目录。
-CLI 可通过删除对应的 `%LOCALAPPDATA%\OpenHardwareOS\cli-v0.1.1` 目录卸载。
+CLI 可通过删除对应的 `%LOCALAPPDATA%\OpenHardwareOS\cli-v0.1.2` 目录卸载。
 如使用可选脚本安装，则用该脚本的 `-Uninstall` 删除其管理的 `cli` 目录。
 桌面使用 Windows 的“已安装的应用”卸载。
 运行配置和审计记录位于另一个目录，卸载 CLI 不会删除它们。

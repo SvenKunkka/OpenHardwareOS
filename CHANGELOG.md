@@ -3,6 +3,29 @@
 实际发行状态见 [版本树](docs/versions.md) 和 [GitHub Releases](https://github.com/SvenKunkka/OpenHardwareOS/releases)。
 应用版本、规划节点和发布证据由 [版本清单](docs/versions.json) 管理。
 
+## v0.1.2 · 2026-09-14 · Windows 预览版
+
+修复公开发布链路的行尾与可追溯性问题，固定工具链，并把硬件支持计划随源码版本化。
+**尚未发布**：条目先写在此处，公开发布后由版本工具登记版本树。
+
+- 公开的 `SHA256SUMS` 改用 LF 行尾。此前它是 CRLF，`shasum -a 256 -c SHA256SUMS`
+  在 macOS/Linux 上会把每一条记录都报成文件不存在（哈希值本身一直是对的）。
+- 公开发布的 `install.ps1` 与仓库提交逐字节一致。此前它取自 Windows 检出，
+  `core.autocrlf` 让它变成 CRLF，发布的摘要无法从仓库复现。打包脚本现在会
+  归一化行尾、与提交内的 blob 比对，并在不一致时**拒绝出包**。
+- 新增发布打包夹具测试 `scripts/release/test-packaging.ps1`（6 例）：资产集合、
+  摘要逐条复核、CRLF 工作区、真正 CRLF 的提交、以及两个守卫本身是否有效；
+  已接入 Windows 发布工作流。
+- 新增 `.gitattributes`（`* text=auto eol=lf`），让检出内容等于提交内容。
+- 新增 `rust-toolchain.toml` 固定 `1.98.1`，使检出处、本地与 CI 使用同一编译器；
+  `rust-version = "1.95"` 仍是允许的最低版本。
+- 硬件支持六阶段计划落成为 `docs/plans/hardware-support/`，并写明它与
+  `C1–C8` 能力域、阶段小阶段编号、`PUMP-01–04` 工作包三套编号的关系。
+- 文档订正：roadmap 不再声称"Windows 上什么都没跑过"（CI 自 v0.1.0 起在
+  `windows-latest` 上构建、测试并安装）；Windows 验收文档区分"CI 已跑"
+  与"真实机器已验收"；requirements 与验证记录补记首次 Windows CI 的两次失败
+  （`wmi` 0.18 编译错误、只在 Windows 上失效的只读目录测试）及其根因。
+
 ## v0.1.1 · 2026-09-14 · Windows 预览版
 
 - 新增可搜索、可展开、支持键盘操作的版本树；每个版本提供变更范围、源码、下载入口和验证记录。

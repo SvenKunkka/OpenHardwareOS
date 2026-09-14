@@ -7,7 +7,8 @@
 ```text
 └─ v0.1.0 · 已发布 · 预览版 · 首个公开预览版
    └─ v0.1.1 · 已发布 · 预览版 · 版本管理与安全修复
-      └─ v0.2.0 · 计划中 · 水泵支持
+      └─ v0.1.2 · 开发中 · 预览版 · 发布打包修复
+         └─ v0.2.0 · 计划中 · 水泵支持
 ```
 
 预览版已发布不代表真实硬件兼容性已完成验收。
@@ -53,6 +54,21 @@
 - [持续集成全部通过：Windows 490 项 Rust 测试、前端 42 项、版本管理 30 项](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34825301892)
 - [Windows CLI 与桌面构建、13 项安装夹具及实际安装包验证通过](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34825296140)
 - [Windows PowerShell 5.1 公开下载、校验、安装和模拟运行通过](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34826241020)
+
+## v0.1.2 · 发布打包修复
+
+修复公开发布链路的行尾与可追溯性问题，固定工具链，并把硬件支持六阶段计划随源码版本化。
+
+- 状态：开发中
+- 开发分支：`codex/v0.1.2`
+
+- 公开 SHA256SUMS 改用 LF；此前的 CRLF 会让 POSIX shasum -c 对每一条记录都报文件不存在
+- 公开发布的 install.ps1 与仓库提交逐字节一致，不再受 core.autocrlf 影响，并在打包时自检
+- 新增发布打包夹具测试（6 例）并接入 Windows 发布工作流：行尾、资产集合、摘要与两个守卫
+- 新增 .gitattributes（eol=lf），让检出内容等于提交内容
+- 新增 rust-toolchain.toml：本地、检出与 CI 使用同一编译器 1.98.1
+- 硬件支持六阶段计划随源码保存为 docs/plans/hardware-support/，并说明与 C1-C8、PUMP-01..04 的编号关系
+- 验证记录补记首次 Windows CI 的两次失败、根因与修复提交
 
 ## v0.2.0 · 水泵支持
 
