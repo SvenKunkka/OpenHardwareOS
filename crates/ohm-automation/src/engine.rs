@@ -296,7 +296,7 @@ impl AutomationEngine {
             if let Some(before) = previous.iter().find(|rule| rule.id == loaded.id) {
                 let change = RuleChange::between(before, loaded);
                 if change.is_semantic() {
-                    self.apply_rule_change(&loaded.name, before, &change);
+                    self.apply_rule_change(before, &change);
                 }
             }
         }
@@ -1192,7 +1192,7 @@ impl AutomationEngine {
     ///
     /// Metadata-only changes take neither step, so renaming a rule cannot interrupt
     /// control.
-    fn apply_rule_change(&self, rule_name: &str, previous: &Rule, change: &RuleChange) {
+    fn apply_rule_change(&self, previous: &Rule, change: &RuleChange) {
         let Some(summary) = change.summary() else {
             return;
         };
@@ -1291,7 +1291,7 @@ impl AutomationEngine {
         // old meaning — and hands the old output over on the way.
         if let Some(previous) = previous {
             let change = RuleChange::between(&previous, &rule);
-            self.apply_rule_change(&rule.name.clone(), &previous, &change);
+            self.apply_rule_change(&previous, &change);
         }
         self.inner
             .runtime
@@ -1420,7 +1420,7 @@ pub fn aggregate_label(aggregate: Aggregate) -> &'static str {
 mod tests {
     use super::*;
     use crate::rule::{Fallback, Source, Target};
-    use ohm_adapter_api::{HardwareAdapter, WriteStatus};
+    use ohm_adapter_api::HardwareAdapter;
     use ohm_adapter_mock::{LoadProfile, MockAdapter, MockConfig, MockFaults};
     use ohm_core::ConfigPaths;
     use ohm_device_model::DeviceType;

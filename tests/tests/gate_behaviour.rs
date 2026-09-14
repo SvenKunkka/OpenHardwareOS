@@ -281,9 +281,8 @@ async fn automation_off_silences_gated_rules_too() {
         duties_before,
         "no rule may write while automation is off"
     );
-    assert_eq!(
-        session.runtime.settings().automation_enabled,
-        false,
+    assert!(
+        !session.runtime.settings().automation_enabled,
         "the setting is honestly reported"
     );
     let _ = Settings::default();

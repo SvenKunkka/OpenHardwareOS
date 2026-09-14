@@ -20,8 +20,7 @@ use ohm_adapter_api::{
     AdapterCapabilities, AdapterInfo, AdapterStatus, HardwareAdapter, WriteOutcome,
 };
 use ohm_automation::{AutomationEngine, MAX_CONSECUTIVE_UNCONFIRMED, Rule, RuleStatus, RuleStore};
-use ohm_core::ids::capability as caps;
-use ohm_core::{AdapterId, ConfigPaths, DeviceId};
+use ohm_core::{ConfigPaths, DeviceId};
 use ohm_device_model::{
     Capability, Device, DeviceState, DeviceType, Reading, Transport, Unit, Value,
 };
@@ -102,7 +101,7 @@ impl HardwareAdapter for UnconfirmingFan {
     async fn write(
         &self,
         _device: &Device,
-        capability: &Capability,
+        _capability: &Capability,
         value: &Value,
     ) -> ohm_core::Result<WriteOutcome> {
         let index = self.writes.fetch_add(1, Ordering::Relaxed);
@@ -312,7 +311,7 @@ async fn repeated_unconfirmed_writes_trigger_the_write_failure_policy() {
 /// A recovered channel must return the rule to normal control.
 #[tokio::test]
 async fn control_recovers_once_a_write_is_confirmed_again() {
-    let (_temp, _runtime, engine, fan) = session(1).await;
+    let (_temp, _runtime, engine, _fan) = session(1).await;
     engine.save_rule(rule()).unwrap();
 
     engine.tick_force().await;
@@ -322,7 +321,7 @@ async fn control_recovers_once_a_write_is_confirmed_again() {
     let recovered = engine.outcome("unconfirmed").unwrap();
     assert_eq!(recovered.status, RuleStatus::Applied);
     assert_eq!(recovered.applied_output, Some(40.0));
-    assert_eq!(recovered.message.contains("not confirmed"), false);
+    assert!(!recovered.message.contains("not confirmed"));
     assert_eq!(
         engine.stats().failures,
         0,

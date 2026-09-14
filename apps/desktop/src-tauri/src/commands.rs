@@ -17,7 +17,7 @@ use ohm_adapter_api::HardwareAdapter;
 use ohm_adapter_mock::{LoadProfile, MockAdapter, MockFaults, MockStatus};
 use ohm_automation::examples::suggest_for;
 use ohm_automation::{Rule, RuleCheck, RuleConflict, RuleOutcome, RuleStore, merge_suggestions};
-use ohm_core::{OhmError, RuleId};
+use ohm_core::RuleId;
 use ohm_device_model::Value;
 use ohm_runtime::{
     AdapterView, CapabilityIndex, DeviceView, RuntimeSnapshot, Sample, Settings, WriteOrigin,
@@ -362,7 +362,7 @@ pub fn runtime_stats(state: State<'_, AppState>) -> CommandResult<ohm_runtime::R
 ///
 /// The caller keeps the `Arc` alive for as long as the borrow is used, so there
 /// is no downcast trickery and no unsafe code.
-fn mock_ref<'a>(adapter: &'a Arc<dyn HardwareAdapter>) -> CommandResult<&'a MockAdapter> {
+fn mock_ref(adapter: &Arc<dyn HardwareAdapter>) -> CommandResult<&MockAdapter> {
     adapter
         .as_any()
         .downcast_ref::<MockAdapter>()
@@ -466,8 +466,10 @@ pub fn mock_set_faults(
     };
     let mock = mock_ref(&adapter)?;
 
-    let mut faults = MockFaults::default();
-    faults.fail_all_writes = fail_writes;
+    let mut faults = MockFaults {
+        fail_all_writes: fail_writes,
+        ..MockFaults::default()
+    };
     if disconnect_gpu_temperature {
         faults.unavailable_readings.push((
             ohm_core::DeviceId::new_unchecked("gpu.mock.0"),
@@ -537,7 +539,7 @@ pub fn rule_store_for(state: &AppState) -> RuleStore {
 
 /// The id of a rule, parsed with a helpful error.
 pub fn rule_id(value: &str) -> CommandResult<RuleId> {
-    RuleId::new(value).map_err(|error| CommandError::from(OhmError::from(error)))
+    RuleId::new(value).map_err(CommandError::from)
 }
 
 #[cfg(test)]

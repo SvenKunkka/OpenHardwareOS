@@ -607,6 +607,37 @@ mod tests {
         }
     }
 
+    /// A channel that becomes readable again must return to confirmed writes.
+    #[tokio::test]
+    async fn confirmation_resumes_once_the_channel_can_be_read_again() {
+        let server = FakeLhm::start();
+        server.read_not_available();
+        let adapter = adapter(&server);
+        let devices = adapter.discover().await.unwrap();
+        let fan = devices
+            .iter()
+            .find(|d| d.name.contains("Nuvoton") && d.name.contains("#1"))
+            .expect("chassis fan #1")
+            .clone();
+        let control = fan.capability_str(caps::FAN_SPEED_PERCENT).unwrap().clone();
+
+        assert!(
+            adapter
+                .write(&fan, &control, &Value::Number(58.0))
+                .await
+                .unwrap()
+                .is_unconfirmed()
+        );
+
+        server.read_normally();
+        let outcome = adapter
+            .write(&fan, &control, &Value::Number(58.0))
+            .await
+            .unwrap();
+        assert!(outcome.is_applied(), "a readable channel confirms again");
+        assert_eq!(outcome.applied, Some(Value::Number(58.0)));
+    }
+
     /// Confirming the set point is not the same as observing the fan respond.
     #[tokio::test]
     async fn a_confirmed_set_point_says_nothing_about_airflow() {

@@ -14,7 +14,6 @@
 use ohm_adapter_mock::MockConfig;
 use ohm_automation::{Fallback, FallbackAction, Rule, RuleStatus, RuleStore};
 use ohm_core::ConfigPaths;
-use ohm_core::ids::capability as caps;
 use ohm_integration_tests::{Session, gpu_sensor_disconnected, heavy_load};
 
 /// Saving a rule that asks for `release` must fail, with a reason that says what
@@ -22,39 +21,38 @@ use ohm_integration_tests::{Session, gpu_sensor_disconnected, heavy_load};
 #[tokio::test]
 async fn release_cannot_be_saved() {
     let session = Session::simulated().await;
+    let action = FallbackAction::Release;
 
-    for action in [FallbackAction::Release] {
-        let rule = session.gpu_rule().with_fallback(Fallback {
-            on_sensor_missing: action,
-            ..Fallback::default()
-        });
-        let check = session.engine.check_rule(&rule);
-        assert!(
-            !check.is_ok(),
-            "release must be refused as an error, not accepted: {check:?}"
-        );
-        assert!(
-            check
-                .errors
-                .iter()
-                .any(|error| error.contains("release") && error.contains("safe_default")),
-            "the error must name the problem and the alternative: {:?}",
-            check.errors
-        );
-        assert!(
-            session.engine.save_rule(rule).is_err(),
-            "saving a release rule must fail"
-        );
+    let rule = session.gpu_rule().with_fallback(Fallback {
+        on_sensor_missing: action,
+        ..Fallback::default()
+    });
+    let check = session.engine.check_rule(&rule);
+    assert!(
+        !check.is_ok(),
+        "release must be refused as an error, not accepted: {check:?}"
+    );
+    assert!(
+        check
+            .errors
+            .iter()
+            .any(|error| error.contains("release") && error.contains("safe_default")),
+        "the error must name the problem and the alternative: {:?}",
+        check.errors
+    );
+    assert!(
+        session.engine.save_rule(rule).is_err(),
+        "saving a release rule must fail"
+    );
 
-        let write_failure_rule = session.gpu_rule().with_fallback(Fallback {
-            on_write_failure: action,
-            ..Fallback::default()
-        });
-        assert!(
-            session.engine.save_rule(write_failure_rule).is_err(),
-            "on_write_failure: release must fail too"
-        );
-    }
+    let write_failure_rule = session.gpu_rule().with_fallback(Fallback {
+        on_write_failure: action,
+        ..Fallback::default()
+    });
+    assert!(
+        session.engine.save_rule(write_failure_rule).is_err(),
+        "on_write_failure: release must fail too"
+    );
 
     session.shutdown().await;
 }

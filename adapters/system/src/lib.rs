@@ -306,15 +306,15 @@ impl SystemAdapter {
                 .iter()
                 .filter(|component| component.temperature().is_some())
                 .count();
-            if total_zones > selected.len() {
-                if let Some(cpu) = devices.first_mut() {
-                    cpu.metadata
-                        .insert("thermal_zones_total".to_string(), total_zones.to_string());
-                    cpu.metadata.insert(
-                        "thermal_zones_shown".to_string(),
-                        selected.len().to_string(),
-                    );
-                }
+            if total_zones > selected.len()
+                && let Some(cpu) = devices.first_mut()
+            {
+                cpu.metadata
+                    .insert("thermal_zones_total".to_string(), total_zones.to_string());
+                cpu.metadata.insert(
+                    "thermal_zones_shown".to_string(),
+                    selected.len().to_string(),
+                );
             }
 
             for (index, component) in selected {

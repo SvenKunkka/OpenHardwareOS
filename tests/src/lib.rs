@@ -47,10 +47,12 @@ impl Session {
         adapters.retain(|adapter| adapter.info().id.as_str() != ohm_adapter_mock::ADAPTER_ID);
         adapters.push(mock.clone());
 
-        let mut settings = Settings::default();
-        settings.dry_run = false;
-        settings.polling_interval_ms = 100;
-        settings.discovery_interval_ms = 500;
+        let settings = Settings {
+            dry_run: false,
+            polling_interval_ms: 100,
+            discovery_interval_ms: 500,
+            ..Settings::default()
+        };
 
         let runtime = Runtime::new(paths.clone(), settings, adapters).expect("runtime");
         let engine = AutomationEngine::new(runtime.clone(), RuleStore::from_paths(&paths));
@@ -212,8 +214,10 @@ mod tests {
     fn settings_round_trip_through_the_temp_dir() {
         let temp = tempfile::tempdir().unwrap();
         let paths = ConfigPaths::from_root(temp.path());
-        let mut settings = Settings::default();
-        settings.polling_interval_ms = 250;
+        let settings = Settings {
+            polling_interval_ms: 250,
+            ..Settings::default()
+        };
         SettingsStore::new(&paths).save(&settings).unwrap();
         assert_eq!(load_settings(&paths).polling_interval_ms, 250);
     }

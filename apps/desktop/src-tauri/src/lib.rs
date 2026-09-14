@@ -184,10 +184,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let settings = runtime.settings();
-            if settings.start_minimized {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.hide();
-                }
+            if settings.start_minimized
+                && let Some(window) = app.get_webview_window("main")
+            {
+                let _ = window.hide();
             }
 
             events::spawn(handle.clone(), runtime.clone());
