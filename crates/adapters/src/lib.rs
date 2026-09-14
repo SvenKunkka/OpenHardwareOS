@@ -16,14 +16,21 @@
 //! mock  simulated machine     — opt-in, for demos, tests and CI
 //! ```
 //!
-//! # Why NVML steps aside when LHM is present
+//! # Why NVML steps aside while LHM is *usable*
 //!
 //! Both see the same physical GPU, so registering both would show the user two
-//! `RTX 5090` entries with half the readings each. LHM actually reports *more*
-//! (it reads the hotspot through NVAPI, which NVML does not expose), so LHM
-//! wins. Setting `adapter_settings.nvidia.always = true` forces NVML back on for
-//! users who prefer it — for example to keep GPU fan control when LHM is only
-//! used for the motherboard.
+//! `RTX 5090` entries with half the readings each. LHM reports *more* (it reads
+//! the hotspot through NVAPI, which NVML does not expose), so LHM wins — but only
+//! while it is actually there. The adapter declares the relationship
+//! (`AdapterInfo::yields_to`) and the **runtime** decides from the probe result on
+//! every discovery cycle.
+//!
+//! This used to be decided from intent: NVML was not even constructed when
+//! `adapter_settings` enabled LHM. On Linux, or on Windows with
+//! LibreHardwareMonitor not running, that left the machine with no GPU provider at
+//! all — and the user had no way to tell why. Setting
+//! `adapter_settings.nvidia.always = true` still forces NVML to stay registered
+//! whatever LHM does, for users who prefer NVML's fan control.
 
 pub mod prelude {
     pub use ohm_adapter_api::{AdapterInfo, AdapterStatus, HardwareAdapter};
@@ -55,6 +62,10 @@ pub struct AdapterOptions {
     pub lhm_config: WebConfig,
     /// NVML GPU telemetry.
     pub nvidia: bool,
+    /// `true` when NVML stands by while LibreHardwareMonitor is usable. Set from
+    /// `adapter_settings.nvidia.always`: forcing NVML keeps it registered even
+    /// when LHM is there.
+    pub nvidia_fallback: bool,
     /// Open Device Protocol devices.
     pub protocol_device: bool,
     /// Simulated hardware.
@@ -70,6 +81,7 @@ impl Default for AdapterOptions {
             lhm: true,
             lhm_config: WebConfig::default(),
             nvidia: true,
+            nvidia_fallback: true,
             protocol_device: false,
             mock: false,
             mock_config: MockConfig::default(),
@@ -103,6 +115,7 @@ impl AdapterOptions {
             system: false,
             lhm: false,
             nvidia: false,
+            nvidia_fallback: true,
             lhm_config: WebConfig::default(),
             protocol_device: true,
             mock: true,
@@ -115,9 +128,14 @@ impl AdapterOptions {
     /// * providers are on unless the user disabled them
     /// * simulated hardware follows `experimental_features`, and can always be
     ///   forced on through `adapter_settings.mock.enabled`
-    /// * NVML steps aside when LibreHardwareMonitor is active (see module docs)
+    /// * NVML is registered whenever it is enabled, and stands by *while LHM is
+    ///   usable* — the runtime decides that from the probe, not from the settings
+    ///   (see the module docs). `adapter_settings.nvidia.always` removes the
+    ///   standby relationship entirely.
     pub fn from_settings(settings: &Settings) -> Self {
         let lhm_enabled = settings.adapter_enabled(ohm_adapter_lhm::ADAPTER_ID);
+        // NVML is a fallback for LHM: both describe the same GPU, and LHM reports
+        // more. `nvidia.always` opts out of that relationship.
         let nvidia_forced = settings
             .adapter_setting("nvidia", "always")
             .and_then(|value| value.as_bool())
@@ -134,8 +152,10 @@ impl AdapterOptions {
             system: settings.adapter_enabled(ohm_adapter_system::ADAPTER_ID),
             lhm: lhm_enabled,
             lhm_config: WebConfig::from_json(settings.adapter_config(ohm_adapter_lhm::ADAPTER_ID)),
-            nvidia: settings.adapter_enabled(ohm_adapter_nvidia::ADAPTER_ID)
-                && (nvidia_forced || !lhm_enabled),
+            // Registered on its own merits. Whether it ends up reporting devices
+            // is decided after probing, in the runtime.
+            nvidia: settings.adapter_enabled(ohm_adapter_nvidia::ADAPTER_ID),
+            nvidia_fallback: !nvidia_forced,
             protocol_device: settings.enable_mock_protocol_device && settings.experimental_features,
             mock,
             mock_config: mock_config_from_settings(settings),
@@ -206,7 +226,10 @@ pub fn build_adapters(options: &AdapterOptions) -> Vec<Arc<dyn HardwareAdapter>>
         adapters.push(LhmAdapter::boxed(options.lhm_config.clone()));
     }
     if options.nvidia {
-        adapters.push(NvidiaAdapter::boxed());
+        let primary = options
+            .nvidia_fallback
+            .then(|| ohm_core::AdapterId::new_unchecked(ohm_adapter_lhm::ADAPTER_ID));
+        adapters.push(NvidiaAdapter::boxed_yielding_to(primary));
     }
     if options.system {
         adapters.push(SystemAdapter::boxed());
@@ -267,7 +290,12 @@ mod tests {
         // Default: real providers only.
         let options = AdapterOptions::from_settings(&settings);
         assert!(options.system && options.lhm);
-        assert!(!options.nvidia, "NVML defers to LHM");
+        // NVML is registered even though LHM is enabled: the question "is LHM
+        // actually there?" is answered by the probe, not by the settings. It used
+        // to be dropped here, which left Linux and any Windows machine without
+        // LibreHardwareMonitor running with no GPU provider at all.
+        assert!(options.nvidia, "availability decides, not intent");
+        assert!(options.nvidia_fallback, "it stands by while LHM is usable");
         assert!(!options.mock);
 
         // Simulated hardware follows the experimental switch.
@@ -276,7 +304,16 @@ mod tests {
         let options = AdapterOptions::from_settings(&settings);
         assert!(options.mock);
         assert!(options.protocol_device);
-        assert_eq!(options.enabled_ids(), vec!["lhm", "system", "opd", "mock"]);
+        assert_eq!(
+            options.enabled_ids(),
+            vec!["lhm", "nvidia", "system", "opd", "mock"]
+        );
+
+        // `nvidia.always` removes the standby relationship: NVML reports its
+        // devices even when LHM is there.
+        settings.set_adapter_setting("nvidia", "always", serde_json::json!(true));
+        let forced = AdapterOptions::from_settings(&settings);
+        assert!(forced.nvidia && !forced.nvidia_fallback);
 
         // Disabling a provider removes it.
         settings.set_adapter_enabled(
@@ -285,7 +322,44 @@ mod tests {
         );
         let options = AdapterOptions::from_settings(&settings);
         assert!(!options.lhm);
-        assert!(options.nvidia, "NVML takes over when LHM is off");
+        assert!(options.nvidia, "NVML stays registered when LHM is off");
+        assert_eq!(
+            options.enabled_ids(),
+            vec!["nvidia", "system", "opd", "mock"]
+        );
+    }
+
+    #[test]
+    fn the_fallback_relationship_is_declared_on_the_adapter() {
+        // The runtime needs the declaration to arbitrate; without it both
+        // providers would report the same GPU.
+        let with_fallback = AdapterOptions {
+            lhm: true,
+            nvidia: true,
+            nvidia_fallback: true,
+            ..AdapterOptions::simulated_only()
+        };
+        let nvidia = build_adapters(&with_fallback)
+            .into_iter()
+            .find(|adapter| adapter.info().id.as_str() == ohm_adapter_nvidia::ADAPTER_ID)
+            .expect("nvidia registered");
+        assert_eq!(
+            nvidia.info().yields_to.map(|id| id.to_string()),
+            Some(ohm_adapter_lhm::ADAPTER_ID.to_string())
+        );
+
+        let forced = AdapterOptions {
+            nvidia_fallback: false,
+            ..with_fallback
+        };
+        let nvidia = build_adapters(&forced)
+            .into_iter()
+            .find(|adapter| adapter.info().id.as_str() == ohm_adapter_nvidia::ADAPTER_ID)
+            .expect("nvidia registered");
+        assert!(
+            nvidia.info().yields_to.is_none(),
+            "asking for NVML explicitly must remove the standby relationship"
+        );
     }
 
     #[test]

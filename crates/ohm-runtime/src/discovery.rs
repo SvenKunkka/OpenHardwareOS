@@ -193,9 +193,52 @@ impl DiscoveryManager {
         let started = Instant::now();
         let mut outcome = DiscoveryOutcome::default();
 
+        // Two passes: probe everything first, so a provider that stands by for
+        // another one can be decided from what is actually there this cycle. The
+        // alternative — deciding from the settings — turned a fallback off on
+        // machines where the primary never runs (Linux, or Windows with
+        // LibreHardwareMonitor closed).
+        let mut probed: Vec<(Arc<dyn HardwareAdapter>, AdapterStatus)> =
+            Vec::with_capacity(self.adapters.len());
         for adapter in &self.adapters {
             let status = self.probe(adapter, settings).await;
+            probed.push((Arc::clone(adapter), status));
+        }
+        let usable: Vec<AdapterId> = probed
+            .iter()
+            .filter(|(_, status)| status.is_usable())
+            .map(|(adapter, _)| adapter.info().id)
+            .collect();
+
+        for (adapter, status) in probed {
             let info = adapter.info();
+
+            if let Some(primary) = info.yields_to.clone()
+                && usable.contains(&primary)
+            {
+                // Registered, deliberately not reporting: the primary describes
+                // the same hardware, and this is why the user does not see it.
+                let status = AdapterStatus {
+                    state: AdapterState::Unavailable,
+                    reason: Some(UnavailableReason::Disabled),
+                    detail: Some(format!(
+                        "standing by: {} is available and reports the same hardware; set \
+                         adapter_settings.{}.always = true to force this provider",
+                        primary, info.id
+                    )),
+                    device_count: 0,
+                    checked_at_ms: ohm_core::now_ms(),
+                    ..status
+                };
+                tracing::debug!(
+                    adapter = info.id.as_str(),
+                    primary = primary.as_str(),
+                    "provider stands by for an available primary"
+                );
+                self.store_status(status.clone());
+                outcome.statuses.push(status);
+                continue;
+            }
 
             if !status.is_usable() {
                 tracing::debug!(

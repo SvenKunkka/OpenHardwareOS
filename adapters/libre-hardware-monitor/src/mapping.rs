@@ -258,10 +258,10 @@ fn fan_channels(hardware: &LhmNode) -> Vec<FanChannel> {
     numbers.sort_unstable();
     numbers.dedup();
 
-    fn claiming<'a>(
-        entries: &'a [(Option<Anchor>, LhmNode)],
+    fn claiming(
+        entries: &[(Option<Anchor>, LhmNode)],
         number: usize,
-    ) -> Vec<&'a (Option<Anchor>, LhmNode)> {
+    ) -> Vec<&(Option<Anchor>, LhmNode)> {
         entries
             .iter()
             .filter(|(anchor, _)| anchor.map(Anchor::number) == Some(number))
@@ -286,15 +286,14 @@ fn fan_channels(hardware: &LhmNode) -> Vec<FanChannel> {
             ));
         } else if let (Some((rpm_anchor, _)), Some((control_anchor, _))) =
             (rpm_here.first(), control_here.first())
+            && rpm_anchor != control_anchor
         {
-            if rpm_anchor != control_anchor {
-                ambiguous = Some(format!(
-                    "the tachometer is identified by {} and the control by {}; they cannot be \
-                     shown to be the same channel",
-                    rpm_anchor.map(Anchor::describe).unwrap_or("nothing"),
-                    control_anchor.map(Anchor::describe).unwrap_or("nothing")
-                ));
-            }
+            ambiguous = Some(format!(
+                "the tachometer is identified by {} and the control by {}; they cannot be \
+                 shown to be the same channel",
+                rpm_anchor.map(Anchor::describe).unwrap_or("nothing"),
+                control_anchor.map(Anchor::describe).unwrap_or("nothing")
+            ));
         }
 
         channels.push(one_channel(
@@ -774,9 +773,16 @@ mod tests {
             "#,
         );
         let channels = fans(&mapping);
-        assert_eq!(channels.len(), 1, "the duplicate must not become a second device");
+        assert_eq!(
+            channels.len(),
+            1,
+            "the duplicate must not become a second device"
+        );
         let channel = channels[0];
-        assert!(channel.supports(caps::FAN_RPM), "the reading stays available");
+        assert!(
+            channel.supports(caps::FAN_RPM),
+            "the reading stays available"
+        );
         assert!(
             !channel.supports(caps::FAN_SPEED_PERCENT),
             "an unidentifiable channel must not be writable"
@@ -786,8 +792,16 @@ mod tests {
             .metadata
             .get("lhm_control_withheld")
             .expect("the device says why its control is missing");
-        assert!(reason.contains("2 tachometers claim channel #1"), "{reason}");
-        assert_eq!(mapping.ambiguous_channels.len(), 1, "{:?}", mapping.ambiguous_channels);
+        assert!(
+            reason.contains("2 tachometers claim channel #1"),
+            "{reason}"
+        );
+        assert_eq!(
+            mapping.ambiguous_channels.len(),
+            1,
+            "{:?}",
+            mapping.ambiguous_channels
+        );
     }
 
     /// A number from the name and a number from the path are not the same number.
@@ -847,7 +861,12 @@ mod tests {
         // The control itself is not exposed as a device — there would be nothing
         // to show and nothing anyone could safely write — but it is not hidden
         // either: the adapter reports it as a limited channel.
-        assert_eq!(mapping.ambiguous_channels.len(), 1, "{:?}", mapping.ambiguous_channels);
+        assert_eq!(
+            mapping.ambiguous_channels.len(),
+            1,
+            "{:?}",
+            mapping.ambiguous_channels
+        );
         assert!(
             mapping.ambiguous_channels[0].contains("no channel number"),
             "{:?}",
@@ -923,7 +942,14 @@ mod tests {
             .unwrap();
         assert_ne!(
             sensor_of(&reconnected, moved, caps::FAN_SPEED_PERCENT),
-            sensor_of(&first, fans(&first).into_iter().find(|d| d.name.contains("Fan #2")).unwrap(), caps::FAN_SPEED_PERCENT)
+            sensor_of(
+                &first,
+                fans(&first)
+                    .into_iter()
+                    .find(|d| d.name.contains("Fan #2"))
+                    .unwrap(),
+                caps::FAN_SPEED_PERCENT
+            )
         );
     }
 

@@ -53,6 +53,8 @@ pub struct NvidiaAdapter {
     nvml: Option<Nvml>,
     /// Why initialisation failed, kept for the UI.
     unavailable: Option<(UnavailableReason, String)>,
+    /// Provider this adapter stands by for, when the settings ask it to.
+    yields_to: Option<AdapterId>,
 }
 
 impl Default for NvidiaAdapter {
@@ -70,6 +72,7 @@ impl NvidiaAdapter {
                 Self {
                     nvml: Some(nvml),
                     unavailable: None,
+                    yields_to: None,
                 }
             }
             Err(err) => {
@@ -78,9 +81,28 @@ impl NvidiaAdapter {
                 Self {
                     nvml: None,
                     unavailable: Some((reason, detail)),
+                    yields_to: None,
                 }
             }
         }
+    }
+
+    /// Stand by while `provider` is usable.
+    ///
+    /// Both NVML and LibreHardwareMonitor describe the same physical card, so the
+    /// bundled adapter set makes one of them a fallback for the other. Which one
+    /// is decided from the probe result, not from whether LHM is merely enabled:
+    /// see `AdapterInfo::yields_to`.
+    #[must_use]
+    pub fn yielding_to(mut self, provider: Option<AdapterId>) -> Self {
+        self.yields_to = provider;
+        self
+    }
+
+    /// As a trait object, ready to register on a runtime, standing by while
+    /// `provider` is usable.
+    pub fn boxed_yielding_to(provider: Option<AdapterId>) -> Arc<dyn HardwareAdapter> {
+        Arc::new(Self::new().yielding_to(provider))
     }
 
     /// As a trait object, ready to register on a runtime.
@@ -417,6 +439,7 @@ impl HardwareAdapter for NvidiaAdapter {
                 poll_interval_ms: None,
                 discovery_interval_ms: None,
             })
+            .yielding_to(self.yields_to.clone())
     }
 
     async fn probe(&self) -> AdapterStatus {

@@ -121,8 +121,7 @@ impl HardwareAdapter for TestFan {
             poll_interval_ms: None,
             discovery_interval_ms: None,
         };
-        AdapterInfo::new(self.id, "Test Fan Controller", self.id)
-            .with_capabilities(capabilities)
+        AdapterInfo::new(self.id, "Test Fan Controller", self.id).with_capabilities(capabilities)
     }
 
     async fn probe(&self) -> AdapterStatus {
@@ -223,7 +222,10 @@ async fn a_confirmed_fail_safe_write_is_reported_as_a_release() {
         released.contains("confirmed at the fail-safe duty"),
         "the entry must claim only what was read back: {released}"
     );
-    assert_eq!(detail_of(&entries, "runtime_stopped"), Some("clean shutdown"));
+    assert_eq!(
+        detail_of(&entries, "runtime_stopped"),
+        Some("clean shutdown")
+    );
     assert!(detail_of(&entries, "control_release_unconfirmed").is_none());
     assert_eq!(
         detail_of(&entries, "control_relinquished"),
@@ -237,7 +239,9 @@ async fn every_writable_duty_channel_is_released_including_the_gpu_fan() {
     let (_temp, runtime) = mock_runtime(MockFaults::default()).await;
     let channels = duty_channels(&runtime);
     assert!(
-        channels.iter().any(|(device, _)| device.starts_with("gpu.")),
+        channels
+            .iter()
+            .any(|(device, _)| device.starts_with("gpu.")),
         "the simulated machine must expose a GPU fan channel: {channels:?}"
     );
 
@@ -251,7 +255,12 @@ async fn every_writable_duty_channel_is_released_including_the_gpu_fan() {
     );
     // Simulated hardware reports simulated writes: the report must not call them
     // confirmed, and must not call them problems either.
-    assert_eq!(release.simulated.len(), channels.len(), "{}", release.summary());
+    assert_eq!(
+        release.simulated.len(),
+        channels.len(),
+        "{}",
+        release.summary()
+    );
     assert!(release.confirmed.is_empty(), "{}", release.summary());
     assert!(release.is_clean(), "{}", release.summary());
     assert!(release.problems().is_empty());
@@ -293,7 +302,12 @@ async fn an_unconfirmed_fail_safe_write_is_never_reported_as_released() {
         "nothing was read back, so nothing may be called released: {}",
         release.summary()
     );
-    assert_eq!(release.unconfirmed.len(), channels.len(), "{}", release.summary());
+    assert_eq!(
+        release.unconfirmed.len(),
+        channels.len(),
+        "{}",
+        release.summary()
+    );
     assert!(!release.is_clean());
     assert_eq!(release.problems().len(), channels.len());
     assert!(release.summary().contains("not read back"));
@@ -326,7 +340,12 @@ async fn a_device_that_refuses_the_duty_is_reported_as_refused() {
     let release = runtime.shutdown().await.expect("shutdown");
 
     assert!(release.confirmed.is_empty(), "{}", release.summary());
-    assert_eq!(release.rejected.len(), channels.len(), "{}", release.summary());
+    assert_eq!(
+        release.rejected.len(),
+        channels.len(),
+        "{}",
+        release.summary()
+    );
     assert!(release.failed.is_empty(), "{}", release.summary());
     assert!(release.simulated.is_empty(), "{}", release.summary());
     assert_eq!(release.problems().len(), channels.len());
@@ -351,7 +370,10 @@ async fn turning_off_relinquish_on_exit_writes_nothing_and_says_so() {
     assert!(release.skipped_by_config);
     assert_eq!(release.attempted(), 0);
     assert!(release.confirmed.is_empty());
-    assert!(release.is_clean(), "nothing was attempted, so nothing is wrong");
+    assert!(
+        release.is_clean(),
+        "nothing was attempted, so nothing is wrong"
+    );
     assert!(release.summary().contains("skipped"));
 
     let entries = lifecycle(&runtime);
@@ -365,7 +387,10 @@ async fn turning_off_relinquish_on_exit_writes_nothing_and_says_so() {
         .into_iter()
         .filter(|entry| entry.get("origin").and_then(|o| o.as_str()) == Some("shutdown"))
         .count();
-    assert_eq!(shutdown_writes, 0, "no write may happen when release is off");
+    assert_eq!(
+        shutdown_writes, 0,
+        "no write may happen when release is off"
+    );
 }
 
 /// An adapter that keeps its channels is reported, not counted as a hand-back.
@@ -427,7 +452,9 @@ async fn an_adapter_that_cannot_hand_control_back_is_reported_separately() {
     assert_eq!(release.shutdown_failed.len(), 1, "{}", release.summary());
     assert_eq!(release.shutdown_failed[0].adapter.as_str(), "stubborn");
     assert!(
-        release.shutdown_failed[0].detail.contains("refused to take"),
+        release.shutdown_failed[0]
+            .detail
+            .contains("refused to take"),
         "the reason must survive: {}",
         release.shutdown_failed[0].detail
     );
@@ -443,7 +470,10 @@ async fn an_adapter_that_cannot_hand_control_back_is_reported_separately() {
     let entries = lifecycle(&runtime);
     let shutdown_failed = detail_of(&entries, "adapter_shutdown_failed").expect("entry");
     assert!(shutdown_failed.contains("stubborn"), "{shutdown_failed}");
-    assert!(shutdown_failed.contains("refused to take"), "{shutdown_failed}");
+    assert!(
+        shutdown_failed.contains("refused to take"),
+        "{shutdown_failed}"
+    );
     let stopped = detail_of(&entries, "runtime_stopped").expect("runtime_stopped");
     assert!(
         stopped.starts_with("shutdown with control problems"),

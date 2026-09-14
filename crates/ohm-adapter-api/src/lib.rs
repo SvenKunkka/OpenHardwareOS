@@ -51,6 +51,17 @@ pub struct AdapterInfo {
     /// Extra capabilities the adapter exposes to the runtime.
     #[serde(default)]
     pub capabilities: AdapterCapabilities,
+    /// When this adapter is a *fallback* for another provider, that provider.
+    ///
+    /// The runtime registers a fallback only while the named provider is not
+    /// usable. Two providers that describe the same physical device would
+    /// otherwise both report it, and the user would see the same GPU twice — but
+    /// choosing between them by *intent* ("LHM is enabled in settings") turns the
+    /// fallback off on machines where the primary never runs at all (Linux, or
+    /// Windows with LibreHardwareMonitor closed). The decision is made from the
+    /// probe result instead, on every discovery cycle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yields_to: Option<AdapterId>,
 }
 
 impl AdapterInfo {
@@ -70,6 +81,7 @@ impl AdapterInfo {
             requires_admin: false,
             supports_hotplug: false,
             capabilities: AdapterCapabilities::default(),
+            yields_to: None,
         }
     }
 
@@ -100,6 +112,13 @@ impl AdapterInfo {
     #[must_use]
     pub fn with_capabilities(mut self, capabilities: AdapterCapabilities) -> Self {
         self.capabilities = capabilities;
+        self
+    }
+
+    /// Declare that this adapter stands by while `provider` is usable.
+    #[must_use]
+    pub fn yielding_to(mut self, provider: Option<AdapterId>) -> Self {
+        self.yields_to = provider;
         self
     }
 }

@@ -127,6 +127,7 @@ fixed:
 |---|---|---|
 | Every vendor path goes through an adapter | Implemented | `HardwareAdapter` trait; five adapters; the UI cannot bypass it |
 | `discover` / `read` / `write` / `subscribe`·`poll` abstraction | Implemented | `probe`, `discover`, `read_state`, `read_all`, `write`, `shutdown`. Push transports surface events through the runtime bus |
+| One device, one provider — decided from what is actually available | Implemented (round 7) | `AdapterInfo::yields_to` declares that an adapter stands by for another; `DiscoveryManager::discover_all` probes every adapter first, then leaves a fallback out of the cycle while its primary is usable, and reports it as `Unavailable` / `disabled` with the reason and the setting that overrides it. The rule used to be applied from the *settings* — NVML was not even constructed when LHM was enabled — which left Linux and any Windows machine with LibreHardwareMonitor closed with no GPU provider at all. `AdapterOptions::nvidia_fallback` carries `adapter_settings.nvidia.always`; `tests/tests/provider_fallback.rs` (3 tests) drives the hand-over in both directions and back. |
 | Third-party plugin loading at runtime | Deferred by design | v0.3, `docs/roadmap.md` |
 
 ## 四 Open Device Protocol
