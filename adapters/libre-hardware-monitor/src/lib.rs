@@ -163,6 +163,9 @@ impl HardwareAdapter for LhmAdapter {
                 // Talking to the web server needs no elevation; *LHM* must be
                 // elevated for the writes to reach the SuperIO.
                 write_requires_admin: true,
+                // `shutdown` sends `SetDefault` to every control channel it
+                // knows, which is what hands the channel back to the firmware.
+                hands_back_control_on_shutdown: true,
                 poll_interval_ms: None,
                 discovery_interval_ms: None,
             })

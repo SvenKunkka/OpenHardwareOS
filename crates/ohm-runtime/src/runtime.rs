@@ -40,6 +40,7 @@ use crate::config::{Settings, SettingsStore};
 use crate::device_table::DeviceTable;
 use crate::discovery::DiscoveryManager;
 use crate::registry::CapabilityRegistry;
+use crate::release::{ControlRelease, ReleasedChannel, ShutdownFailure};
 use crate::safety::SafetyDecision;
 use crate::snapshot::{AdapterView, DeviceStatus, DeviceView, RuntimeSnapshot, RuntimeStats};
 use crate::store::{Sample, StateStore};
@@ -243,11 +244,17 @@ impl Runtime {
     }
 
     /// Stop the loops, release control and hand the fans back to the firmware.
-    pub async fn shutdown(&self) -> Result<()> {
+    ///
+    /// The returned [`ControlRelease`] separates what is known: the fail-safe
+    /// duty was written, the device read it back, the adapter gave ownership
+    /// back. Each of those is audited separately, and a problem is recorded as a
+    /// problem — the exit path no longer reports an unconfirmed write as a
+    /// successful hand-back.
+    pub async fn shutdown(&self) -> Result<ControlRelease> {
         if !self.inner.running.swap(false, Ordering::SeqCst) {
             // Still safe to call twice.
             let _ = self.inner.stop_tx.send(true);
-            return Ok(());
+            return Ok(ControlRelease::default());
         }
         let _ = self.inner.stop_tx.send(true);
 
@@ -259,35 +266,133 @@ impl Runtime {
             let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
         }
 
-        let settings = self.settings();
-        if settings.safety.relinquish_on_exit {
-            let released = self.release_control().await;
-            if released > 0 {
-                self.inner.audit.record_lifecycle(
-                    "control_released",
-                    &format!("{released} outputs handed back to firmware"),
-                );
+        let mut release = self.release_control().await;
+
+        if release.skipped_by_config {
+            self.inner.audit.record_lifecycle(
+                "control_release_skipped",
+                "relinquish_on_exit is off: the exit path wrote nothing and claims nothing",
+            );
+        }
+        if !release.confirmed.is_empty() {
+            self.inner.audit.record_lifecycle(
+                "control_released",
+                &format!(
+                    "{} output(s) confirmed at the fail-safe duty",
+                    release.confirmed.len()
+                ),
+            );
+        }
+        if !release.unconfirmed.is_empty() {
+            tracing::warn!(
+                count = release.unconfirmed.len(),
+                "the fail-safe duty was written but not read back; the value is unknown"
+            );
+            self.inner.audit.record_lifecycle(
+                "control_release_unconfirmed",
+                &format!(
+                    "{} output(s) accepted the fail-safe duty but could not be read back; \
+                     their value is unknown and this is not a confirmed release",
+                    release.unconfirmed.len()
+                ),
+            );
+        }
+        if !release.rejected.is_empty() || !release.failed.is_empty() {
+            let detail = release.problems().join(" | ");
+            tracing::error!(
+                refused = release.rejected.len(),
+                failed = release.failed.len(),
+                detail,
+                "the fail-safe duty could not be applied to every output"
+            );
+            self.inner.audit.record_lifecycle(
+                "control_release_failed",
+                &format!(
+                    "{} output(s) refused the fail-safe duty and {} failed: {detail}",
+                    release.rejected.len(),
+                    release.failed.len()
+                ),
+            );
+        }
+
+        for outcome in self.inner.discovery.shutdown_all().await {
+            match outcome.error {
+                Some(detail) => {
+                    tracing::error!(
+                        adapter = outcome.adapter.as_str(),
+                        detail,
+                        "adapter shutdown failed; it may still hold a channel"
+                    );
+                    self.inner.audit.record_lifecycle(
+                        "adapter_shutdown_failed",
+                        &format!("{}: {detail}", outcome.adapter),
+                    );
+                    release.shutdown_failed.push(ShutdownFailure {
+                        adapter: outcome.adapter,
+                        detail,
+                    });
+                }
+                None => {
+                    if outcome.controls_cooling {
+                        if outcome.hands_back {
+                            release.relinquished.push(outcome.adapter);
+                        } else {
+                            // It drives channels and it does not give them back:
+                            // say so rather than counting `Ok(())` as a release.
+                            release.without_hand_back.push(outcome.adapter);
+                        }
+                    }
+                }
             }
         }
-
-        for (adapter, detail) in self.inner.discovery.shutdown_all().await {
-            tracing::warn!(
-                adapter = adapter.as_str(),
-                detail,
-                "adapter shutdown failed"
+        if !release.relinquished.is_empty() {
+            let adapters: Vec<&str> = release
+                .relinquished
+                .iter()
+                .map(ohm_core::AdapterId::as_str)
+                .collect();
+            self.inner.audit.record_lifecycle(
+                "control_relinquished",
+                &format!(
+                    "{} cooling adapter(s) reported handing control back to the firmware: {}",
+                    adapters.len(),
+                    adapters.join(", ")
+                ),
             );
-            self.inner
-                .audit
-                .record_lifecycle("adapter_shutdown_failed", &format!("{adapter}: {detail}"));
+        }
+        if !release.without_hand_back.is_empty() {
+            let adapters: Vec<&str> = release
+                .without_hand_back
+                .iter()
+                .map(ohm_core::AdapterId::as_str)
+                .collect();
+            tracing::warn!(
+                adapters = adapters.join(", "),
+                "this adapter does not hand firmware control back on shutdown; its channels keep their last duty"
+            );
+            self.inner.audit.record_lifecycle(
+                "control_not_handed_back",
+                &format!(
+                    "{} cooling adapter(s) do not hand control back on shutdown: {}. \
+                     The fail-safe write above is the only release for their channels",
+                    adapters.len(),
+                    adapters.join(", ")
+                ),
+            );
         }
 
+        let stopped = if release.is_clean() {
+            "clean shutdown".to_string()
+        } else {
+            format!("shutdown with control problems: {}", release.summary())
+        };
         self.inner
             .audit
-            .record_lifecycle("runtime_stopped", "clean shutdown");
+            .record_lifecycle("runtime_stopped", &stopped);
         self.inner.bus.publish(RuntimeEvent::RuntimeStopped {
             at_ms: ohm_core::now_ms(),
         });
-        Ok(())
+        Ok(release)
     }
 
     // -------------------------------------------------------------- discovery
@@ -901,15 +1006,25 @@ impl Runtime {
 
     /// Drive every controlled output to the configured fail-safe duty.
     ///
-    /// This is what "hand the fans back safely" means for the MVP: the value is
-    /// safe for the hardware, and adapters additionally release ownership on
-    /// [`HardwareAdapter::shutdown`].
-    pub async fn release_control(&self) -> usize {
+    /// This is what "hand the fans back safely" means for the MVP. The returned
+    /// [`ControlRelease`] keeps three claims apart — the duty was *written*, the
+    /// device *read it back*, and the adapter *gave ownership back* — because an
+    /// unconfirmed write is not a release and must never be counted as one.
+    pub async fn release_control(&self) -> ControlRelease {
         let settings = self.settings();
-        let targets: Vec<(DeviceId, CapabilityId, f64)> = {
+        if !settings.safety.relinquish_on_exit {
+            return ControlRelease {
+                skipped_by_config: true,
+                ..ControlRelease::default()
+            };
+        }
+        let targets: Vec<(DeviceId, String, CapabilityId, f64)> = {
             let table = self.inner.table.read();
             table
-                .cooling_devices()
+                // Every channel this runtime can drive — not just fans and pumps:
+                // a GPU fan is a `Gpu` device with a writable duty control, and
+                // skipping it left it at its last commanded value on exit.
+                .releasable_devices()
                 .into_iter()
                 .filter(|r| r.enabled)
                 .flat_map(|r| {
@@ -918,14 +1033,21 @@ impl Runtime {
                         .capabilities
                         .iter()
                         .filter(|c| c.is_duty_control() && c.writable)
-                        .map(|c| (r.device.id.clone(), c.id.clone(), duty))
+                        .map(|c| {
+                            (
+                                r.device.id.clone(),
+                                r.device.name.clone(),
+                                c.id.clone(),
+                                duty,
+                            )
+                        })
                         .collect::<Vec<_>>()
                 })
                 .collect()
         };
 
-        let mut released = 0;
-        for (device_id, capability_id, duty) in targets {
+        let mut release = ControlRelease::default();
+        for (device_id, device_name, capability_id, duty) in targets {
             let origin = WriteOrigin::Shutdown;
             match self
                 .write_with_origin(
@@ -937,15 +1059,39 @@ impl Runtime {
                 )
                 .await
             {
-                Ok(_) => released += 1,
-                Err(err) => tracing::warn!(
-                    device = device_id.as_str(),
-                    error = %err,
-                    "could not apply the fail-safe duty on shutdown"
-                ),
+                Ok(report) => release.push(ReleasedChannel {
+                    device_id: report.device_id.clone(),
+                    device_name: report.device_name.clone(),
+                    capability: report.capability.clone(),
+                    duty,
+                    applied: report.applied.clone(),
+                    status: report.status,
+                    detail: report.detail.clone(),
+                }),
+                Err(err) => {
+                    tracing::warn!(
+                        device = device_id.as_str(),
+                        capability = capability_id.as_str(),
+                        duty,
+                        error = %err,
+                        "the fail-safe duty was not applied on shutdown"
+                    );
+                    release.push_failure(
+                        ReleasedChannel {
+                            device_id,
+                            device_name,
+                            capability: capability_id,
+                            duty,
+                            applied: None,
+                            status: WriteStatus::Rejected,
+                            detail: Some(err.to_string()),
+                        },
+                        err.code(),
+                    );
+                }
             }
         }
-        released
+        release
     }
 
     // ----------------------------------------------------------------- reads
@@ -1245,6 +1391,7 @@ mod tests {
                 can_write: false,
                 can_control_cooling: false,
                 write_requires_admin: false,
+                hands_back_control_on_shutdown: false,
                 poll_interval_ms: Some(self.hint_ms),
                 discovery_interval_ms: None,
             })

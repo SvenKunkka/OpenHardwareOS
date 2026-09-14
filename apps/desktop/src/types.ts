@@ -161,6 +161,13 @@ export interface AdapterCapabilities {
   can_write: boolean;
   can_control_cooling: boolean;
   write_requires_admin: boolean;
+  /**
+   * `true` when the adapter's shutdown really hands the channels it drove back
+   * to the firmware. An adapter that can control cooling without this keeps its
+   * last duty after the app exits, and the exit report says so instead of
+   * counting a no-op shutdown as a release.
+   */
+  hands_back_control_on_shutdown?: boolean;
   poll_interval_ms?: number;
   discovery_interval_ms?: number;
 }

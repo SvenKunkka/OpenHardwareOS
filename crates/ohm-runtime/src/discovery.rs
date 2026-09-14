@@ -43,6 +43,26 @@ impl DiscoveryOutcome {
     }
 }
 
+/// Outcome of shutting one adapter down.
+///
+/// [`HardwareAdapter::shutdown`] is the point where an adapter hands control of
+/// its channels back to the firmware, so its result is evidence. A failure is
+/// recorded with its reason because the adapter may still be holding a channel
+/// the user believes was released.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdapterShutdown {
+    pub adapter: AdapterId,
+    /// `true` when this adapter can drive cooling hardware, i.e. when its
+    /// shutdown is the moment firmware control comes back.
+    pub controls_cooling: bool,
+    /// `true` when the adapter declares that its shutdown really hands those
+    /// channels back. An adapter that returns `Ok(())` without doing anything is
+    /// not evidence of a hand-back, so it says so in its capabilities instead.
+    pub hands_back: bool,
+    /// `None` when the adapter reported a clean hand-back.
+    pub error: Option<String>,
+}
+
 /// Owns the adapters and their health.
 pub struct DiscoveryManager {
     adapters: Vec<Arc<dyn HardwareAdapter>>,
@@ -236,15 +256,22 @@ impl DiscoveryManager {
     }
 
     /// Shut every adapter down, which is where control is released back to the
-    /// firmware. Errors are collected instead of aborting the shutdown.
-    pub async fn shutdown_all(&self) -> Vec<(AdapterId, String)> {
-        let mut errors = Vec::new();
+    /// firmware. Errors are collected instead of aborting the shutdown, and a
+    /// success is recorded too: "the adapter handed control back" is evidence,
+    /// and so is "it did not".
+    pub async fn shutdown_all(&self) -> Vec<AdapterShutdown> {
+        let mut outcomes = Vec::with_capacity(self.adapters.len());
         for adapter in &self.adapters {
-            if let Err(err) = adapter.shutdown().await {
-                errors.push((adapter.info().id, err.to_string()));
-            }
+            let info = adapter.info();
+            let error = adapter.shutdown().await.err().map(|err| err.to_string());
+            outcomes.push(AdapterShutdown {
+                controls_cooling: info.capabilities.can_control_cooling,
+                hands_back: info.capabilities.hands_back_control_on_shutdown,
+                adapter: info.id,
+                error,
+            });
         }
-        errors
+        outcomes
     }
 
     /// Adapters whose last probe said they are usable.

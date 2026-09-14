@@ -186,6 +186,7 @@ the `AI → structured rule → validation → engine → runtime` path, and
 | A rule that changes target leaves no fan unattended | Implemented (round 3, extended) | `perform_pending_handovers`: the abandoned channel is driven to the fail-safe duty at the next tick, and retried on a bounded cadence if that write does not land. Ownership is re-checked before every attempt, so a channel another rule has taken over is never written |
 | A responsibility that outlives the process is re-decided, never replayed | Implemented (round 4) | Recovery verifies the device, the capability, the current owner and the freshness of the data before applying the safety policy. No stored value is treated as confirmed, no curve position is restored, and no command from the previous session is re-sent |
 | A handover that cannot be completed must not be forgotten | Implemented (round 3) | The handover book keeps it, `ohm-cli handovers` and the Diagnostics panel show it, `retry_failed_handovers` / `ohm-cli handovers --retry` re-arm it. The audit trail records every attempt with its outcome |
+| Leaving must release **every** channel the runtime can drive, and say what is actually known | Implemented (round 7) | `Runtime::release_control` writes the fail-safe duty to `DeviceTable::releasable_devices()` — any device with a writable duty control, not just `Fan \| Pump`, which is how a **GPU fan kept its last duty on exit**. The returned `ControlRelease` splits confirmed / unconfirmed / refused / failed / simulated, and separates *the adapter handed control back* from *it never does*: `AdapterCapabilities::hands_back_control_on_shutdown` exists because the trait's `shutdown` defaults to `Ok(())`, so an adapter that does nothing used to be counted as a hand-back. `tests/tests/control_release.rs` (7 tests) pins each claim, including the GPU-fan regression |
 
 ## 十 Testing
 
@@ -307,5 +308,13 @@ Ordered by what blocks a defensible Windows MVP:
     `34db43b` and `6e37954`) before v0.1.1, and round 6 added the missing local
     gate: `cargo check --target x86_64-pc-windows-msvc` now runs as part of the
     full pass, so a Windows-only file can no longer rot unseen between releases.
-12. **Deferred by design**: plugin loading, scenes/profiles, app and game
+12. **NVML hands nothing back on exit.** `adapters/nvidia` declares
+    `hands_back_control_on_shutdown: false` and has no `shutdown` implementation, so a
+    GPU fan this adapter drove keeps its last duty when the app exits — the runtime's
+    fail-safe write is the only release. The exit report now says this instead of
+    counting a no-op `Ok(())` as a hand-back, and the audit carries a
+    `control_not_handed_back` entry. Fixing it means calling NVML's default-fan-speed
+    entry point in `shutdown`, and doing that honestly needs a fake-NVML harness the
+    adapter does not have yet.
+13. **Deferred by design**: plugin loading, scenes/profiles, app and game
    detection, natural-language rules, OpenHub/OpenFan hardware, release signing.

@@ -432,8 +432,21 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
                         engine.stop().await;
-                        if let Err(error) = runtime.shutdown().await {
-                            tracing::warn!(error = %error, "shutdown reported a problem");
+                        match runtime.shutdown().await {
+                            Ok(release) => {
+                                // A problem here is not a crash: the machine is
+                                // still safe, but the hand-back is incomplete and
+                                // the audit trail says so.
+                                for problem in release.problems() {
+                                    tracing::warn!(problem, "control was not fully released");
+                                }
+                                for caveat in release.caveats() {
+                                    tracing::warn!(caveat, "control hand-back is limited");
+                                }
+                            }
+                            Err(error) => {
+                                tracing::warn!(error = %error, "shutdown reported a problem")
+                            }
                         }
                         app.exit(0);
                     });

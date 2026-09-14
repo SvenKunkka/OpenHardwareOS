@@ -106,8 +106,18 @@ fn handle_menu<R: Runtime>(app: &AppHandle<R>, id: &str) {
             // control is handed back to the firmware.
             tauri::async_runtime::spawn(async move {
                 engine.stop().await;
-                if let Err(error) = runtime.shutdown().await {
-                    tracing::warn!(error = %error, "runtime shutdown reported a problem");
+                match runtime.shutdown().await {
+                    Ok(release) => {
+                        for problem in release.problems() {
+                            tracing::warn!(problem, "control was not fully released");
+                        }
+                        for caveat in release.caveats() {
+                            tracing::warn!(caveat, "control hand-back is limited");
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(error = %error, "runtime shutdown reported a problem")
+                    }
                 }
                 app.exit(0);
             });

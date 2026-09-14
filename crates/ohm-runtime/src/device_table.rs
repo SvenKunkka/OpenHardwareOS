@@ -148,6 +148,24 @@ impl DeviceTable {
             .collect()
     }
 
+    /// Every device whose duty this runtime can drive, whatever its type.
+    ///
+    /// This is what the exit path must release. [`Self::cooling_devices`] is the
+    /// fan/pump list, and a GPU is a `Gpu` device with a writable fan channel:
+    /// leaving it out meant a GPU fan under our control kept its last duty while
+    /// the audit said every output had been handed back.
+    pub fn releasable_devices(&self) -> Vec<&DeviceRecord> {
+        self.devices
+            .values()
+            .filter(|r| {
+                r.device
+                    .capabilities
+                    .iter()
+                    .any(|c| c.is_duty_control() && c.writable)
+            })
+            .collect()
+    }
+
     /// Enabled devices as owned clones, ready to hand to an adapter.
     pub fn poll_targets(&self) -> Vec<Device> {
         self.devices

@@ -158,6 +158,11 @@ impl HardwareAdapter for OpdAdapter {
                 can_write: true,
                 can_control_cooling: true,
                 write_requires_admin: false,
+                // The protocol's own design: a device that loses its host runs
+                // its local fallback curve, so stopping the host is a hand-back.
+                // The transport is simulated today; a real OpenFan must keep this
+                // promise before it is advertised as controlling anything.
+                hands_back_control_on_shutdown: true,
                 poll_interval_ms: None,
                 discovery_interval_ms: None,
             })

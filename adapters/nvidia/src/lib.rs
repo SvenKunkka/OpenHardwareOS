@@ -409,6 +409,11 @@ impl HardwareAdapter for NvidiaAdapter {
                 can_write: true,
                 can_control_cooling: true,
                 write_requires_admin: true,
+                // NVML has no `shutdown` implementation: a GPU fan this adapter
+                // drove keeps its last duty until the driver or the vendor tool
+                // takes it back. Left false on purpose, so the exit report says
+                // the channel was not handed back instead of claiming it was.
+                hands_back_control_on_shutdown: false,
                 poll_interval_ms: None,
                 discovery_interval_ms: None,
             })

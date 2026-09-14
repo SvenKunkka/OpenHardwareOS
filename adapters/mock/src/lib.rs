@@ -507,6 +507,8 @@ impl HardwareAdapter for MockAdapter {
             can_write: true,
             can_control_cooling: true,
             write_requires_admin: false,
+            // Nothing real is held: the simulated device owns its own channels.
+            hands_back_control_on_shutdown: true,
             poll_interval_ms: None,
             discovery_interval_ms: None,
         })

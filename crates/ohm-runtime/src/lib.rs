@@ -31,6 +31,7 @@ pub mod config;
 pub mod device_table;
 pub mod discovery;
 pub mod registry;
+pub mod release;
 pub mod runtime;
 pub mod safety;
 pub mod snapshot;
@@ -40,11 +41,12 @@ pub use audit::{AuditLog, WriteOrigin, WriteReport};
 pub use bus::{EventBus, RuntimeEvent};
 pub use config::{Settings, SettingsStore, Theme};
 pub use device_table::{DeviceRecord, DeviceTable, ReconcileDiff, Upsert};
-pub use discovery::{AdapterResult, DiscoveryManager, DiscoveryOutcome};
+pub use discovery::{AdapterResult, AdapterShutdown, DiscoveryManager, DiscoveryOutcome};
 pub use ohm_core::ConfigPaths;
 pub use registry::{
     BindingRole, CapabilityIndex, CapabilityRef, CapabilityRegistry, ResolvedTarget,
 };
+pub use release::{ControlRelease, ReleasedChannel, ShutdownFailure};
 pub use runtime::{Runtime, group_by_type, online_devices};
 pub use safety::{SafetyDecision, SafetyPolicy};
 pub use snapshot::{AdapterView, DeviceStatus, DeviceView, RuntimeSnapshot, RuntimeStats};

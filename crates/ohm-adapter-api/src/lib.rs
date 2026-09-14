@@ -116,6 +116,17 @@ pub struct AdapterCapabilities {
     pub can_control_cooling: bool,
     /// Adapter needs elevated privileges for its *write* path.
     pub write_requires_admin: bool,
+    /// `true` when [`HardwareAdapter::shutdown`] actually hands the channels this
+    /// adapter drove back to the firmware or to automatic control.
+    ///
+    /// This exists because the trait's `shutdown` defaults to `Ok(())`: an
+    /// adapter that does nothing returns success, and treating that as "control
+    /// was handed back" is the same class of lie as counting an unconfirmed write
+    /// as applied. An adapter that can drive cooling but does not implement a
+    /// real hand-back leaves this `false`, and the runtime reports its channels
+    /// as *not* released instead of claiming otherwise.
+    #[serde(default)]
+    pub hands_back_control_on_shutdown: bool,
     /// Suggested poll cadence in milliseconds. `None` means "use the global
     /// polling interval".
     pub poll_interval_ms: Option<u64>,
@@ -130,14 +141,25 @@ impl AdapterCapabilities {
     }
 
     /// A provider that can drive cooling hardware.
+    ///
+    /// `hands_back_control_on_shutdown` stays `false`: a caller that really
+    /// implements the hand-back has to say so.
     pub fn cooling_control() -> Self {
         Self {
             can_write: true,
             can_control_cooling: true,
             write_requires_admin: true,
+            hands_back_control_on_shutdown: false,
             poll_interval_ms: None,
             discovery_interval_ms: None,
         }
+    }
+
+    /// Declare that this adapter's shutdown restores firmware control.
+    #[must_use]
+    pub fn hands_back_control(mut self) -> Self {
+        self.hands_back_control_on_shutdown = true;
+        self
     }
 }
 

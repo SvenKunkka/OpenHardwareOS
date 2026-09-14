@@ -23,11 +23,35 @@ use ohm_automation::{AutomationEngine, Rule, RuleStore, merge_suggestions};
 use ohm_core::ConfigPaths;
 use ohm_core::logging::LogLevel;
 use ohm_device_model::{DeviceState, Value, caps};
-use ohm_runtime::{DeviceView, Runtime, SettingsStore};
+use ohm_runtime::{ControlRelease, DeviceView, Runtime, SettingsStore};
 
 // ---------------------------------------------------------------------------
 // Rendering helpers
 // ---------------------------------------------------------------------------
+
+/// Print what the exit path actually achieved, without over-claiming.
+///
+/// A write the adapter could not read back is *not* a released channel, and a
+/// refused or failed channel is a problem the operator has to see — on stderr,
+/// so it survives being piped into a log.
+fn report_control_release(release: &ControlRelease) {
+    if release.skipped_by_config {
+        return;
+    }
+    let problems = release.problems();
+    if !problems.is_empty() {
+        eprintln!(
+            "control release finished with problems: {}",
+            release.summary()
+        );
+        for problem in problems {
+            eprintln!("  - {problem}");
+        }
+    }
+    for caveat in release.caveats() {
+        eprintln!("note: {caveat}");
+    }
+}
 
 fn print_header(title: &str) {
     println!();
@@ -335,7 +359,8 @@ impl Session {
 
     async fn stop(&self) -> Result<()> {
         self.engine.stop().await;
-        self.runtime.shutdown().await?;
+        let release = self.runtime.shutdown().await?;
+        report_control_release(&release);
         Ok(())
     }
 }
@@ -709,7 +734,8 @@ async fn demo(
     }
 
     engine.stop().await;
-    runtime.shutdown().await?;
+    let release = runtime.shutdown().await?;
+    report_control_release(&release);
 
     if !ever_wrote {
         anyhow::bail!("the demo never wrote to the simulated fan; the loop is broken");
