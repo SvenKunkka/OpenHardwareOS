@@ -186,6 +186,7 @@ export function Diagnostics({ onOpenSettings }: { onOpenSettings: () => void }) 
         error={handovers.error}
         retryError={retryError}
         retryMessage={retryMessage}
+        persistenceError={automation.data?.persistence_error}
         onReload={() => handovers.reload()}
         onRetry={() => void retryHandovers()}
       />
@@ -381,6 +382,7 @@ function HandoversPanel({
   error,
   retryError,
   retryMessage,
+  persistenceError,
   onReload,
   onRetry,
 }: {
@@ -388,6 +390,8 @@ function HandoversPanel({
   error: NoticeError | null;
   retryError: NoticeError | null;
   retryMessage: string | null;
+  /** Why the responsibility could not be recorded, when it could not. */
+  persistenceError?: string;
   onReload: () => void;
   onRetry: () => void;
 }) {
@@ -453,6 +457,20 @@ function HandoversPanel({
               act; a pending one is still being attempted.
             </p>
           </InlineNotice>
+
+          {persistenceError ? (
+            // The record could not be written: whatever is listed here would not come
+            // back after a restart. Saying so is the whole point of surfacing it.
+            <div data-testid="handover-persistence-error">
+              <InlineNotice
+                tone="error"
+                title="Unresolved control responsibility is not being recorded"
+              >
+                {persistenceError} Until this is fixed, a channel that is owed the
+                fail-safe duty may not be recovered after a restart.
+              </InlineNotice>
+            </div>
+          ) : null}
 
           <div className="stack" style={{ marginTop: 'var(--space-4)' }}>
             {owed.map((report) => {

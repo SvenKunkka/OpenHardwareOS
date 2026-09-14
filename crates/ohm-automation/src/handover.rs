@@ -54,6 +54,12 @@ const HISTORY_LIMIT: usize = 32;
 pub enum HandoverState {
     /// Queued, and not yet confirmed. It is retried on a bounded cadence.
     Pending,
+    /// Recovered from a previous session. The record proves the channel was owed the
+    /// fail-safe duty *then*; it says nothing about the device *now*. The engine
+    /// verifies the device, the capability, the current owner and a fresh reading
+    /// before applying the safety policy — it never replays what the old session was
+    /// about to do, and never treats a stored value as confirmed.
+    NeedsVerification,
     /// An enabled rule targets this channel but has not taken control of it — it has
     /// produced no output, or its writes are unconfirmed or refused. The engine
     /// deliberately does **not** write the fail-safe duty while a rule claims the
@@ -75,6 +81,7 @@ impl HandoverState {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Pending => "pending",
+            Self::NeedsVerification => "needs_verification",
             Self::AwaitingOwner => "awaiting_owner",
             Self::Confirmed => "confirmed",
             Self::Failed => "failed",
@@ -88,7 +95,16 @@ impl HandoverState {
     /// abandoned curve last said — so it stays in front of the user rather than being
     /// filed away with the successes.
     pub fn is_unresolved(&self) -> bool {
-        matches!(self, Self::Pending | Self::AwaitingOwner | Self::Failed)
+        matches!(
+            self,
+            Self::Pending | Self::NeedsVerification | Self::AwaitingOwner | Self::Failed
+        )
+    }
+
+    /// Is this a record restored from a previous session, still to be checked against
+    /// the hardware as it is now?
+    pub fn needs_verification(&self) -> bool {
+        matches!(self, Self::NeedsVerification)
     }
 
     /// Settled: either the fail-safe duty was confirmed, or another rule owns the
@@ -172,6 +188,9 @@ impl HandoverReport {
                 Some(rule) => format!("{base} — {rule} took it over"),
                 None => format!("{base} — the channel has an owner again"),
             },
+            HandoverState::NeedsVerification => format!(
+                "{base} — recovered from a previous session; the device has not been checked yet"
+            ),
             HandoverState::AwaitingOwner => match &self.claimant {
                 Some(rule) => format!(
                     "{base} — claimed by {rule}, which has not driven it ({} tick(s) waiting)",
@@ -207,7 +226,7 @@ pub(crate) struct Handover {
     /// the claim disappears: the reason it was parked is gone.
     pub parked_by_claim: bool,
     /// The first tick on which this handover may be attempted.
-    next_attempt_tick: u64,
+    pub next_attempt_tick: u64,
 }
 
 impl Handover {
@@ -400,13 +419,75 @@ impl HandoverBook {
         true
     }
 
+    /// Put a handover recovered from disk back on the record.
+    ///
+    /// It arrives as [`HandoverState::NeedsVerification`] whatever it was when it was
+    /// saved: the state described the *old* session's view of the device, and the only
+    /// honest starting point for this one is "not checked yet".
+    pub fn restore(&mut self, item: Handover, now_ms: i64) {
+        let mut item = item;
+        item.state = HandoverState::NeedsVerification;
+        item.queued_at_ms = item.queued_at_ms.min(now_ms);
+        self.open.push(item);
+    }
+
+    /// A recovered item that has been checked and now behaves like a fresh one.
+    pub fn verified(&mut self, device: &DeviceId, capability: &CapabilityId, tick: u64) -> bool {
+        let Some(index) = self
+            .open
+            .iter()
+            .position(|item| &item.device == device && &item.capability == capability)
+        else {
+            return false;
+        };
+        let item = &mut self.open[index];
+        if !item.state.needs_verification() {
+            return false;
+        }
+        item.state = HandoverState::Pending;
+        // A verified handover starts with a fresh attempt budget: the attempts it made
+        // in the previous session say nothing about the device now, and carrying them
+        // over could park a healthy channel as failed before it was even tried.
+        item.attempts = 0;
+        item.next_attempt_tick = tick;
+        true
+    }
+
+    /// Mark a recovered item as failed, with the reason verification failed.
+    pub fn fail_recovered(
+        &mut self,
+        device: &DeviceId,
+        capability: &CapabilityId,
+        reason: String,
+    ) -> bool {
+        let Some(index) = self
+            .open
+            .iter()
+            .position(|item| &item.device == device && &item.capability == capability)
+        else {
+            return false;
+        };
+        let item = &mut self.open[index];
+        if item.state != HandoverState::NeedsVerification {
+            return false;
+        }
+        item.state = HandoverState::Failed;
+        item.parked_by_claim = false;
+        if item.first_error.is_none() {
+            item.first_error = Some(reason.clone());
+        }
+        item.last_error = Some(reason.clone());
+        item.reason = reason;
+        true
+    }
+
     /// Is this channel due an attempt?
     pub fn is_due(&self, device: &DeviceId, capability: &CapabilityId, tick: u64) -> bool {
         self.find(device, capability)
             .is_some_and(|item| item.state.is_attemptable() && tick >= item.next_attempt_tick)
     }
 
-    fn find(&self, device: &DeviceId, capability: &CapabilityId) -> Option<&Handover> {
+    pub(crate) fn find(&self, device: &DeviceId, capability: &CapabilityId) -> Option<&Handover> {
         self.open
             .iter()
             .find(|item| &item.device == device && &item.capability == capability)

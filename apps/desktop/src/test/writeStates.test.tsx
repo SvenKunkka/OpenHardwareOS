@@ -464,6 +464,67 @@ describe('the channel handovers on Diagnostics', () => {
     expect(screen.queryByTestId('handover-resolved')).toBeNull();
   });
 
+  it('shows a responsibility recovered from a previous session as owed and unchecked', async () => {
+    ipcMock().api.ruleHandovers.mockResolvedValue([
+      handoverFixture({
+        state: 'needs_verification',
+        attempts: 3,
+        first_error: 'the device refused the fail-safe duty',
+        reason:
+          'rule `gone-rule` was deleted (recovered from the previous session; the device has not been checked yet)',
+      }),
+    ]);
+
+    renderWithProviders(<Diagnostics onOpenSettings={() => undefined} />);
+
+    const row = await screen.findByTestId('handover');
+    expect(row.getAttribute('data-state')).toBe('needs_verification');
+    const badge = within(row).getByText('not verified yet');
+    expect(badge.className).toContain('badge--warn');
+    expect(badge.className).not.toContain('badge--ok');
+    // What it *is*: work owed by a previous session of the app, not a live claim about
+    // the device, and not something the runtime will replay.
+    expect(within(row).getByTestId('handover-state-note').textContent).toMatch(
+      /previous session/i,
+    );
+    expect(within(row).getByTestId('handover-state-note').textContent).toMatch(
+      /never replays/i,
+    );
+    // The cause and the attempt history survive the restart.
+    expect(within(row).getByTestId('handover-cause').textContent).toContain(
+      'the device refused the fail-safe duty',
+    );
+    expect(within(row).getByTestId('handover-attempts').textContent).toContain('3 attempts');
+    expect(screen.getByText('Channel handovers (1 owed)')).toBeTruthy();
+    expect(screen.queryByTestId('handover-resolved')).toBeNull();
+  });
+
+  it('says so when unresolved responsibility could not be recorded at all', async () => {
+    // The engine reports this through `automation_stats`; the panel must not imply the
+    // list it is showing would survive a restart.
+    ipcMock().api.automationStats.mockResolvedValue({
+      rules: 1,
+      enabled_rules: 1,
+      ticks: 12,
+      evaluations: 12,
+      writes: 2,
+      skipped: 0,
+      fallbacks: 0,
+      failures: 0,
+      last_tick_ms: 1_700_000_000_000,
+      persistence_error:
+        'could not record unresolved control responsibility: permission denied',
+    });
+    ipcMock().api.ruleHandovers.mockResolvedValue([handoverFixture({ state: 'pending' })]);
+
+    renderWithProviders(<Diagnostics onOpenSettings={() => undefined} />);
+
+    const notice = await screen.findByTestId('handover-persistence-error');
+    expect(notice.textContent).toContain('permission denied');
+    expect(notice.textContent).toMatch(/may not be recovered after a restart/i);
+    expect(notice.querySelector('.inline-notice--error')).not.toBeNull();
+  });
+
   it('files a resolved handover as history, never as owed work', async () => {
     ipcMock().api.ruleHandovers.mockResolvedValue([
       handoverFixture({

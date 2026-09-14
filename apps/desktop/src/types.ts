@@ -442,6 +442,7 @@ export interface RuleFileNote {
  */
 export type HandoverState =
   | 'pending'
+  | 'needs_verification'
   | 'awaiting_owner'
   | 'confirmed'
   | 'failed'
@@ -518,6 +519,11 @@ export interface AutomationStats {
   fallbacks: number;
   failures: number;
   last_tick_ms: number;
+  /**
+   * Set when the unresolved control responsibility could not be written to disk, so a
+   * front-end can say so instead of implying it was saved.
+   */
+  persistence_error?: string;
 }
 
 // ---------------------------------------------------------------------------

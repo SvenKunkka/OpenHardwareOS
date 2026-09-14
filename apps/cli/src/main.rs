@@ -727,6 +727,11 @@ async fn demo(
 async fn handovers(cli: &Cli, retry: bool) -> Result<()> {
     let session = Session::open(cli, false, None).await?;
     session.start().await?;
+    // Read the machine once and check anything recovered from a previous session
+    // against it, so this report is about the hardware rather than about the file.
+    // Verification resolves channels and marks what it finds; it writes nothing.
+    let _ = session.runtime.poll_once().await;
+    session.engine.verify_recovered_state();
 
     print_header("Control handovers");
     if retry {
@@ -747,6 +752,14 @@ async fn handovers(cli: &Cli, retry: bool) -> Result<()> {
         for line in describe_handover(report) {
             println!("{line}");
         }
+    }
+    if let Some(error) = session.engine.persistence_error() {
+        println!();
+        println!("  NOT RECORDED: {error}");
+        println!(
+            "  Until this is fixed, a channel that is owed the fail-safe duty may not be \
+             recovered after a restart."
+        );
     }
     // The distinction matters: an unresolved handover means a channel nobody protects.
     let owed = session.engine.unfinished_handovers();
@@ -782,6 +795,11 @@ fn describe_handover(report: &ohm_automation::HandoverReport) -> Vec<String> {
              `ohm-cli handovers --retry`",
             report.attempts
         )),
+        ohm_automation::HandoverState::NeedsVerification => lines.push(
+            "      state  : recovered from a previous session and not checked yet — the device \
+             is verified before the fail-safe duty is applied"
+                .to_string(),
+        ),
         ohm_automation::HandoverState::AwaitingOwner => lines.push(format!(
             "      state  : claimed by `{}`, which has not driven it ({} tick(s) waiting) — the \
              channel is not protected while this lasts",

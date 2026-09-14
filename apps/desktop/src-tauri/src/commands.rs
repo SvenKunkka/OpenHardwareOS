@@ -821,6 +821,66 @@ fallback:
         );
     }
 
+    /// A responsibility recovered from a previous session must reach the desktop as
+    /// owed, with its cause intact — the same facts `ohm-cli handovers` prints.
+    #[tokio::test]
+    async fn a_recovered_handover_reaches_the_desktop_as_owed() {
+        use ohm_automation::{RecoveryRecord, RecoveryStore, StoredHandover};
+
+        let (temp, engine) = engine_with_mock().await;
+        // A record as a previous session would have left it, written before this
+        // "session" starts.
+        let paths = ohm_core::ConfigPaths::from_root(temp.path());
+        let store = RecoveryStore::from_paths(&paths);
+        let mut record = RecoveryRecord::new(1_700_000_000_000);
+        record.handovers.push(StoredHandover {
+            device: ohm_core::DeviceId::new("fan.mock.0").unwrap(),
+            capability: ohm_core::CapabilityId::new("fan.speed_percent").unwrap(),
+            from_rule: ohm_core::RuleId::new("gone-rule").unwrap(),
+            reason: "rule `gone-rule` was deleted".into(),
+            state: ohm_automation::HandoverState::Pending,
+            attempts: 2,
+            first_error: Some("the device refused the fail-safe duty".into()),
+            last_error: None,
+            queued_at_ms: 1_700_000_000_000,
+            last_attempt_ms: 1_700_000_000_500,
+            claimant: None,
+            claimed_ticks: 0,
+            parked_by_claim: false,
+        });
+        store.save(&record).unwrap();
+
+        // A new engine over the same config directory recovers it when the rules load.
+        let engine = ohm_automation::AutomationEngine::new(
+            engine.runtime().clone(),
+            RuleStore::from_paths(&paths),
+        );
+        engine.load_rules().unwrap();
+        let owed = handover_report(&engine);
+        assert_eq!(owed.len(), 1, "the recovered responsibility is reported");
+        assert_eq!(
+            owed[0].state,
+            ohm_automation::HandoverState::NeedsVerification,
+            "and it arrives needing verification, not as live work"
+        );
+        assert_eq!(owed[0].from_rule.as_str(), "gone-rule");
+        assert_eq!(owed[0].attempts, 2, "its attempt history survives");
+        assert!(
+            owed[0]
+                .first_error
+                .as_deref()
+                .is_some_and(|error| error.contains("refused")),
+            "and so does the original cause: {owed:?}"
+        );
+        assert!(
+            owed[0]
+                .reason
+                .contains("recovered from the previous session"),
+            "the desktop is told where it came from: {}",
+            owed[0].reason
+        );
+    }
+
     /// The handover contract: what the screen needs to show that a channel is still
     /// unprotected, including after the rule that abandoned it is gone.
     #[tokio::test]

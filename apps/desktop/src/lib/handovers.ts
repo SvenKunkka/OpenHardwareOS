@@ -20,6 +20,9 @@ import type { HandoverReport, HandoverState } from '../types';
 export const HANDOVER_STATE_TONE: Record<HandoverState, Tone> = {
   // Queued, still being retried, and not confirmed yet.
   pending: 'warn',
+  // Recovered from a previous session and not yet checked against this machine: the
+  // responsibility is real, the device is unknown, so it is never presented as fine.
+  needs_verification: 'warn',
   // A rule claims the channel but has not driven it, so nobody is protecting it and
   // the runtime is deliberately not writing under the claimant either.
   awaiting_owner: 'warn',
@@ -34,6 +37,8 @@ export function handoverStateLabel(state: HandoverState): string {
   switch (state) {
     case 'pending':
       return 'pending';
+    case 'needs_verification':
+      return 'not verified yet';
     case 'awaiting_owner':
       return 'waiting for its new owner';
     case 'failed':
@@ -50,6 +55,8 @@ export function handoverStateHint(state: HandoverState): string {
   switch (state) {
     case 'pending':
       return 'The runtime is still trying to hand this channel to the fail-safe duty. Until that is confirmed the channel is not known to be protected.';
+    case 'needs_verification':
+      return 'This channel was left owed the fail-safe duty by a previous session of the app and has not been checked against this machine yet. The runtime verifies the device, its capabilities and the current owner before applying the safety policy — it never replays what the previous session was about to do.';
     case 'awaiting_owner':
       return 'A rule targets this channel but has not driven it, so the runtime is not writing under it — the channel is not known to be protected. It will be handed over as soon as that rule takes control, gives the channel up, or the wait runs out.';
     case 'failed':
@@ -65,6 +72,7 @@ export function handoverStateHint(state: HandoverState): string {
 export function handoverIsOwed(state: HandoverState): boolean {
   switch (state) {
     case 'pending':
+    case 'needs_verification':
     case 'awaiting_owner':
     case 'failed':
       return true;

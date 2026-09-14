@@ -70,6 +70,7 @@ pub mod engine;
 pub mod evaluator;
 pub mod examples;
 pub mod handover;
+pub mod recovery;
 pub mod rule;
 pub mod store;
 
@@ -84,6 +85,9 @@ pub use evaluator::{
 pub use handover::{
     HANDOVER_OWNER_WAIT_TICKS, HANDOVER_RETRY_TICKS, HandoverReport, HandoverState,
     MAX_HANDOVER_ATTEMPTS,
+};
+pub use recovery::{
+    RECOVERY_FILE, RECOVERY_VERSION, RecoveryRecord, RecoveryStore, StoredHandover, StoredHold,
 };
 pub use rule::{
     Aggregate, Comparator, Condition, DEFAULT_DEADBAND, DEFAULT_HYSTERESIS,

@@ -203,6 +203,11 @@ pub struct AutomationStats {
     pub fallbacks: u64,
     pub failures: u64,
     pub last_tick_ms: i64,
+    /// Why the unresolved control responsibility could not be written down, when it
+    /// could not. Surfaced here so a front-end can show it: losing that file means
+    /// losing track of a channel nobody is protecting.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub persistence_error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -230,6 +235,16 @@ struct EngineInner {
     /// The book also keeps a bounded history, because a handover that failed is a
     /// fact the user needs to be able to see even after its rule is gone.
     handovers: Mutex<crate::handover::HandoverBook>,
+    /// Where unresolved control responsibility is written down.
+    recovery: crate::recovery::RecoveryStore,
+    /// Set when the last attempt to write that record failed. Never cleared silently:
+    /// losing this file means losing track of a channel nobody is protecting, so the
+    /// failure has to be visible to the user, not just to the log.
+    persistence_error: Mutex<Option<String>>,
+    /// `true` when the record needs writing before the process could die.
+    dirty: AtomicBool,
+    /// Recovery happens once, the first time the rules are known.
+    recovered: AtomicBool,
 }
 
 /// The automation engine.
@@ -242,6 +257,7 @@ impl AutomationEngine {
     /// Build an engine for a runtime, persisting rules in `store`.
     pub fn new(runtime: Runtime, store: RuleStore) -> Self {
         let (stop_tx, _stop_rx) = watch::channel(false);
+        let recovery = crate::recovery::RecoveryStore::from_paths(runtime.paths());
         Self {
             inner: Arc::new(EngineInner {
                 runtime,
@@ -256,6 +272,10 @@ impl AutomationEngine {
                 conflicts: RwLock::new(Vec::new()),
                 compatibility_notes: RwLock::new(Vec::new()),
                 handovers: Mutex::new(crate::handover::HandoverBook::default()),
+                recovery,
+                persistence_error: Mutex::new(None),
+                dirty: AtomicBool::new(false),
+                recovered: AtomicBool::new(false),
             }),
         }
     }
@@ -352,6 +372,20 @@ impl AutomationEngine {
             );
         }
         self.resolve_loaded_conflicts();
+        // Once, after the rules are known: an issued-but-unconfirmed write made by a
+        // rule that still drives the channel needs no recovery (the rule will settle it
+        // by writing again), and that question cannot be answered before the rules load.
+        if !self.inner.recovered.swap(true, Ordering::SeqCst)
+            && let Err(error) = self.recover_control_state()
+        {
+            // Reported, never ignored: the record exists because a channel may be
+            // unprotected, so nobody may quietly lose it.
+            self.inner.runtime.publish_automation(
+                None,
+                "control_state_recovery_failed",
+                error.to_string(),
+            );
+        }
         Ok(report)
     }
 
@@ -401,6 +435,12 @@ impl AutomationEngine {
         for handle in handles {
             let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
         }
+        // Last chance to record what is still owed before the process goes away.
+        if self.inner.dirty.load(Ordering::SeqCst)
+            || !self.inner.handovers.lock().unresolved().is_empty()
+        {
+            let _ = self.persist_control_state();
+        }
         self.inner
             .runtime
             .publish_automation(None, "engine_stopped", "automation loop stopped");
@@ -437,6 +477,12 @@ impl AutomationEngine {
     ///   spending it parks the handover as `Failed` — on record, and re-armable by
     ///   the user — instead of dropping it.
     async fn perform_pending_handovers(&self, tick: u64, now: i64) {
+        // Recovered items are checked against the hardware as it is *now* before the
+        // safety policy is applied to them. Nothing from the previous session is
+        // replayed: the device has to be present, the channel writable, and the data
+        // fresh, or the item is reported as failed instead of acted on.
+        self.verify_recovered_state();
+
         let duty = self.inner.runtime.settings().safety.fail_safe_duty_percent;
         // Unresolved handovers only: pending, waiting for a claimant, and parked.
         // Resolved ones have been filed away and must never be revisited.
@@ -449,6 +495,12 @@ impl AutomationEngine {
             .filter(|item| item.state.is_unresolved())
             .cloned()
             .collect();
+
+        // Anything this loop decides changes the record: an item that becomes resolved
+        // must disappear from it, or the next session would replay work already done.
+        if !pending.is_empty() {
+            self.inner.dirty.store(true, Ordering::SeqCst);
+        }
 
         for handover in pending {
             let device = &handover.device;
@@ -638,6 +690,104 @@ impl AutomationEngine {
         }
     }
 
+    /// Check every recovered item against the device as it is now.
+    ///
+    /// Public because a diagnostic that only reads — `ohm-cli handovers` — still needs
+    /// the record it prints to be true: an item stuck at "not checked yet" because
+    /// nothing ever ticks would be a report about the file, not about the machine.
+    /// Verification writes nothing to hardware; it only resolves channels and marks
+    /// what it found.
+    ///
+    /// Deliberately not a replay of what the previous session was about to do: an item
+    /// becomes an ordinary pending handover (subject to the normal ownership checks and
+    /// the safety policy) only once its channel is known to exist and be writable. If
+    /// the channel is gone, the item fails *visibly* with the reason, because a
+    /// responsibility that cannot be discharged is a fact the user must see.
+    pub fn verify_recovered_state(&self) {
+        let items: Vec<(DeviceId, CapabilityId)> = self
+            .inner
+            .handovers
+            .lock()
+            .unresolved()
+            .iter()
+            .filter(|item| item.state.needs_verification())
+            .map(|item| (item.device.clone(), item.capability.clone()))
+            .collect();
+        if items.is_empty() {
+            return;
+        }
+        // Acting on readings that may be minutes old is the thing the safety policy
+        // exists to avoid, so verification waits for fresh data rather than guessing.
+        if self.inner.runtime.is_stale(3) {
+            return;
+        }
+        for (device, capability) in items {
+            match self
+                .inner
+                .runtime
+                .resolve(device.as_str(), capability.as_str())
+            {
+                Ok((_, target)) if !target.writable => {
+                    self.fail_recovered(
+                        &device,
+                        &capability,
+                        format!(
+                            "{device}/{capability} is not writable any more, so the fail-safe duty \
+                             cannot be applied to it. Check the device, then re-arm this handover."
+                        ),
+                    );
+                }
+                Ok(_) => {
+                    let verified = self.inner.handovers.lock().verified(
+                        &device,
+                        &capability,
+                        self.inner.ticks.load(Ordering::Relaxed),
+                    );
+                    if verified {
+                        self.inner.dirty.store(true, Ordering::SeqCst);
+                        let message = format!(
+                            "{device}/{capability} exists and is writable; the recovered handover \
+                             is now live and will be applied by the usual safety policy"
+                        );
+                        self.inner.runtime.log("info", message.clone());
+                        self.inner.runtime.publish_automation(
+                            None,
+                            "control_state_verified",
+                            message,
+                        );
+                    }
+                }
+                Err(error) => {
+                    self.fail_recovered(
+                        &device,
+                        &capability,
+                        format!(
+                            "{device}/{capability} could not be resolved on this machine ({error}), \
+                             so the responsibility recovered from the previous session cannot be \
+                             discharged against it. Re-arm it after the device is back."
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    /// A recovered item whose channel cannot be verified: keep it, fail it visibly.
+    fn fail_recovered(&self, device: &DeviceId, capability: &CapabilityId, reason: String) {
+        let failed = self
+            .inner
+            .handovers
+            .lock()
+            .fail_recovered(device, capability, reason.clone());
+        if failed {
+            self.inner.dirty.store(true, Ordering::SeqCst);
+            self.inner.runtime.log("warn", reason.clone());
+            self.inner
+                .runtime
+                .publish_automation(None, "control_state_unverified", reason);
+        }
+    }
+
     /// Which enabled rule claims this channel as its target, if any?
     ///
     /// A claim is a reason **not to write** — the channel is about to be driven by
@@ -757,6 +907,11 @@ impl AutomationEngine {
             outcomes.push(outcome);
         }
 
+        // Anything the tick changed about unresolved control responsibility goes to
+        // disk here, so a crash after this point loses nothing that was known.
+        if self.inner.dirty.load(Ordering::SeqCst) {
+            let _ = self.persist_control_state();
+        }
         outcomes
     }
 
@@ -878,6 +1033,14 @@ impl AutomationEngine {
                         });
                         state.last_write_ms = now;
                         state.last_status = RuleStatus::Unconfirmed;
+                        // The crash window that matters: a write reached the device and
+                        // its result was never learned. If the process dies before the
+                        // next tick, this record is the only trace of it. The state is
+                        // committed to the engine *first* — persisting before that would
+                        // write an empty record and then mark the books clean.
+                        self.remember(&rule.id, state.clone());
+                        self.inner.dirty.store(true, Ordering::SeqCst);
+                        let _ = self.persist_control_state();
                         state.last_message = format!(
                             "{} — accepted {:.0} % but not confirmed: {}",
                             evaluation.message,
@@ -994,6 +1157,11 @@ impl AutomationEngine {
             confirmed: None,
             last_write_ms: now,
         });
+        // Same ordering rule as above: the responsibility has to be in the engine's
+        // state before it can be written down.
+        self.remember(&rule.id, state.clone());
+        self.inner.dirty.store(true, Ordering::SeqCst);
+        let _ = self.persist_control_state();
         self.inner.runtime.publish_automation(
             Some(rule.id.clone()),
             "rule_error",
@@ -1179,6 +1347,213 @@ impl AutomationEngine {
     ///
     /// The rule files are never rewritten; this is how the user finds out that the
     /// machine is running something other than what the file says.
+    /// Write the unresolved control responsibility to disk, atomically.
+    ///
+    /// Failure is recorded and reported rather than swallowed: if this file cannot be
+    /// written, a crash would take the last record of a channel nobody protects with
+    /// it, and the user has to know that is the situation.
+    pub fn persist_control_state(&self) -> Result<()> {
+        let record = self.build_recovery_record();
+        let result = self.inner.recovery.save(&record);
+        match &result {
+            Ok(()) => {
+                self.inner.dirty.store(false, Ordering::SeqCst);
+                // Nothing outstanding means no file: a stale record would claim work
+                // that has already been done.
+                if record.is_empty()
+                    && let Err(error) = self.inner.recovery.clear()
+                {
+                    tracing::warn!(error = %error, "could not remove the control record");
+                }
+                let mut slot = self.inner.persistence_error.lock();
+                if slot.take().is_some() {
+                    self.inner.runtime.publish_automation(
+                        None,
+                        "control_state_persisted",
+                        "unresolved control responsibility is being recorded again".to_string(),
+                    );
+                }
+            }
+            Err(error) => {
+                let message = format!(
+                    "could not record unresolved control responsibility: {error}. If the app \
+                     stops now, a channel that is owed the fail-safe duty may not be recovered."
+                );
+                {
+                    let mut slot = self.inner.persistence_error.lock();
+                    *slot = Some(message.clone());
+                }
+                self.inner.runtime.log("error", message.clone());
+                self.inner.runtime.publish_automation(
+                    None,
+                    "control_state_persistence_failed",
+                    message,
+                );
+            }
+        }
+        result
+    }
+
+    /// Why the last attempt to record control responsibility failed, if it did.
+    pub fn persistence_error(&self) -> Option<String> {
+        self.inner.persistence_error.lock().clone()
+    }
+
+    /// The control responsibility as it would be written down.
+    fn build_recovery_record(&self) -> crate::recovery::RecoveryRecord {
+        let mut record = crate::recovery::RecoveryRecord::new(ohm_core::now_ms());
+        for item in self.inner.handovers.lock().unresolved() {
+            record.handovers.push(crate::recovery::StoredHandover {
+                device: item.device.clone(),
+                capability: item.capability.clone(),
+                from_rule: item.from_rule.clone(),
+                reason: item.reason.clone(),
+                state: item.state,
+                attempts: item.attempts,
+                first_error: item.first_error.clone(),
+                last_error: item.last_error.clone(),
+                queued_at_ms: item.queued_at_ms,
+                last_attempt_ms: item.last_attempt_ms,
+                claimant: item.claimant.clone(),
+                claimed_ticks: item.claimed_ticks,
+                parked_by_claim: item.parked_by_claim,
+            });
+        }
+        // A write that was issued and never confirmed: the channel may have moved and
+        // nobody saw it. That is a live responsibility even while the rule exists.
+        for (rule_id, state) in self.inner.states.lock().iter() {
+            if let Some(hold) = &state.control
+                && hold.confirmed.is_none()
+            {
+                record.holds.push(crate::recovery::StoredHold {
+                    rule_id: rule_id.clone(),
+                    device: hold.device.clone(),
+                    capability: hold.capability.clone(),
+                    last_write_ms: hold.last_write_ms,
+                });
+            }
+        }
+        record
+    }
+
+    /// Read the record written by a previous session and put it back on the books.
+    ///
+    /// Recovered items come back as *needing verification*, never as live work: the
+    /// device, its capabilities and the current owner are checked against the hardware
+    /// as it is now before the safety policy is applied to them.
+    pub fn recover_control_state(&self) -> Result<usize> {
+        let record = match self.inner.recovery.load() {
+            Ok(Some(record)) => record,
+            Ok(None) => return Ok(0),
+            Err(error) => {
+                // A record that cannot be read is reported, not ignored and not
+                // guessed at: the caller decides what to tell the user, and nothing is
+                // invented from a damaged file.
+                let message = format!("{error}");
+                self.inner.runtime.log("error", message.clone());
+                self.inner.runtime.publish_automation(
+                    None,
+                    "control_state_unreadable",
+                    message.clone(),
+                );
+                let mut slot = self.inner.persistence_error.lock();
+                *slot = Some(message);
+                return Err(error);
+            }
+        };
+
+        let now = ohm_core::now_ms();
+        let mut recovered = 0;
+        {
+            let mut book = self.inner.handovers.lock();
+            for stored in record.handovers {
+                book.restore(
+                    crate::handover::Handover {
+                        device: stored.device,
+                        capability: stored.capability,
+                        from_rule: stored.from_rule,
+                        reason: format!(
+                            "{} (recovered from the previous session; the device has not been \
+                             checked yet)",
+                            stored.reason
+                        ),
+                        state: stored.state,
+                        attempts: stored.attempts,
+                        first_error: stored.first_error,
+                        last_error: stored.last_error,
+                        queued_at_ms: stored.queued_at_ms,
+                        last_attempt_ms: stored.last_attempt_ms,
+                        confirmed_value: None,
+                        superseded_by: None,
+                        claimant: stored.claimant,
+                        claimed_ticks: stored.claimed_ticks,
+                        parked_by_claim: stored.parked_by_claim,
+                        next_attempt_tick: 0,
+                    },
+                    now,
+                );
+                recovered += 1;
+            }
+        }
+
+        // An issued-but-unconfirmed write: if the rule that made it is still enabled it
+        // will write again and settle the question by itself, so there is nothing to
+        // recover. If it is not, the channel may be at a value nobody verified and
+        // nobody is answerable for — that is owed the fail-safe duty.
+        let rules = self.rules();
+        for hold in record.holds {
+            let still_driven = rules.iter().any(|rule| {
+                rule.enabled && rule.id == hold.rule_id && rule.target.device == hold.device
+            });
+            if still_driven {
+                continue;
+            }
+            let mut book = self.inner.handovers.lock();
+            book.restore(
+                crate::handover::Handover {
+                    device: hold.device.clone(),
+                    capability: hold.capability.clone(),
+                    from_rule: hold.rule_id.clone(),
+                    reason: format!(
+                        "a write to {}/{} was issued by `{}` and never confirmed, and that rule \
+                         no longer drives it (recovered from the previous session)",
+                        hold.device, hold.capability, hold.rule_id
+                    ),
+                    state: crate::handover::HandoverState::NeedsVerification,
+                    attempts: 0,
+                    first_error: Some(
+                        "a write was issued and its result was never learned".to_string(),
+                    ),
+                    last_error: None,
+                    queued_at_ms: hold.last_write_ms,
+                    last_attempt_ms: hold.last_write_ms,
+                    confirmed_value: None,
+                    superseded_by: None,
+                    claimant: None,
+                    claimed_ticks: 0,
+                    parked_by_claim: false,
+                    next_attempt_tick: 0,
+                },
+                now,
+            );
+            recovered += 1;
+        }
+
+        if recovered > 0 {
+            self.inner.dirty.store(true, Ordering::SeqCst);
+            let message = format!(
+                "{recovered} unresolved control responsibility item(s) recovered from the \
+                 previous session; each will be checked against the hardware before anything \
+                 is written"
+            );
+            self.inner.runtime.log("warn", message.clone());
+            self.inner
+                .runtime
+                .publish_automation(None, "control_state_recovered", message);
+        }
+        Ok(recovered)
+    }
+
     /// Channels left behind by a rule edit, and what became of them.
     ///
     /// Unfinished handovers come first; finished ones are kept as a bounded history.
@@ -1526,6 +1901,10 @@ impl AutomationEngine {
                 change.previous_target.as_ref(),
                 why,
             );
+            // The queue changed; write it down now rather than at the end of a tick
+            // that may never come. A failure is reported by `persist_control_state`
+            // and surfaced through `persistence_error`.
+            let _ = self.persist_control_state();
         }
 
         // 2. Drop the memory that no longer describes this rule.
@@ -1671,7 +2050,10 @@ impl AutomationEngine {
         };
         let file_removed = self.inner.store.delete(&rule_id)?;
         self.inner.states.lock().remove(&rule_id);
-        self.hand_over(rule_id.clone(), held, None, "was deleted");
+        if held.is_some() {
+            self.hand_over(rule_id.clone(), held, None, "was deleted");
+            let _ = self.persist_control_state();
+        }
         // Deleting the winner may have freed the target another rule wants.
         self.refresh_conflicts_for_active_set();
         if existed || file_removed {
@@ -1757,6 +2139,7 @@ impl AutomationEngine {
                 .filter(|o| o.status == RuleStatus::Error)
                 .count() as u64,
             last_tick_ms: self.inner.last_tick_ms.load(Ordering::Relaxed),
+            persistence_error: self.persistence_error(),
         }
     }
 }

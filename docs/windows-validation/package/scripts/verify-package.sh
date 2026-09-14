@@ -51,11 +51,14 @@ while IFS= read -r line; do
   fi
 done < "$MANIFEST"
 
-# Anything the manifest does not describe is a finding too.
+# Anything the manifest does not describe is a finding too. There is no exemption
+# list: the pre-check's write probe used to create `.precheck-*.tmp` inside the package
+# and had to be excused here; it now probes the work directory (where the build
+# writes), so nothing legitimate is ever created inside the package during a run.
 while IFS= read -r file; do
   rel="${file#"$ROOT"/}"
   case "$rel" in
-    MANIFEST.sha256|.precheck-*) continue ;;
+    MANIFEST.sha256) continue ;;
   esac
   if ! grep -Fqx "$rel" "$EXPECTED_LIST"; then
     echo "  * not in the manifest: $rel" >&2

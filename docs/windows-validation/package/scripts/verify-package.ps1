@@ -53,10 +53,16 @@ foreach ($line in Get-Content -LiteralPath $manifest) {
 }
 
 # Anything present that the manifest does not describe is also a finding: an extra
-# file is either a mistake or something added after packaging.
-$onDisk = Get-ChildItem -LiteralPath $root -Recurse -File |
+# file is either a mistake or something added after packaging. There is no exemption
+# list. The pre-check's write probe used to live in this directory as `.precheck-*.tmp`
+# and had to be excused here; it now probes the work directory, where the build writes,
+# so nothing legitimate is ever created inside the package during a run — and an
+# exemption for one name pattern is exactly the kind of hole a manifest check must not
+# have. `-Force` so hidden files (a `.` file, or one with the hidden attribute) are
+# listed too: the manifest describes them, so they are checked in both directions.
+$onDisk = Get-ChildItem -LiteralPath $root -Recurse -File -Force |
     ForEach-Object { $_.FullName.Substring($root.Length + 1) -replace '\\', '/' } |
-    Where-Object { $_ -ne 'MANIFEST.sha256' -and $_ -notlike '.precheck-*' }
+    Where-Object { $_ -ne 'MANIFEST.sha256' }
 foreach ($file in $onDisk) {
     if (-not $expected.ContainsKey($file)) { $problems.Add("not in the manifest: $file") }
 }
