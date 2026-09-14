@@ -13,6 +13,14 @@ pub fn component_device_id(index: usize) -> DeviceId {
     DeviceId::compose("temperature", super::ADAPTER_ID, index)
 }
 
+/// `memory.system.0` — the machine's RAM.
+///
+/// One device, not one per module: the operating system reports totals, and
+/// inventing per-module devices from a total would be a guess.
+pub fn memory_device_id() -> DeviceId {
+    DeviceId::new_unchecked("memory.system.0")
+}
+
 /// `storage.system.{index}` — one per non-removable volume.
 pub fn disk_device_id(index: usize) -> DeviceId {
     DeviceId::compose("storage", super::ADAPTER_ID, index)

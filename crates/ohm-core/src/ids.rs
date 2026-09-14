@@ -209,6 +209,8 @@ pub mod capability {
     pub const STATUS_MESSAGE: &str = "status.message";
     /// Memory used, in bytes.
     pub const MEMORY_USED: &str = "memory.used";
+    /// Total memory of a device, in bytes.
+    pub const MEMORY_TOTAL: &str = "memory.total";
     /// Free disk space, in bytes.
     pub const DISK_FREE: &str = "storage.free";
 }

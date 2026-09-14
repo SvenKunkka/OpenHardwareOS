@@ -22,6 +22,7 @@ wmi.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

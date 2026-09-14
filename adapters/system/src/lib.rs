@@ -6,18 +6,24 @@
 //! | CPU load | yes | yes | yes | `sysinfo` |
 //! | CPU frequency | rated clock | yes | rated clock | `sysinfo` |
 //! | Thermal zones | sometimes | yes | sometimes | `sysinfo::Components` |
+//! | Memory used / total | yes | yes | yes | `sysinfo` |
 //! | SSD temperature | WMI reliability counters | via components | not exposed | `windows` module |
-//! | Fan RPM / control | **no** | **no** | **no** | see the `lhm` adapter |
+//! | Fan RPM | **no** | **yes** (hwmon) | **no** | `hwmon` module on Linux |
+//! | Fan/PWM control | **no** | **no, deliberately** | **no** | see `hwmon` and the `lhm` adapter |
 //!
-//! The honesty in that last row is deliberate. No OS API exposes chassis fan
-//! tachometers or PWM control on consumer hardware, so this adapter declares no
-//! fan capability at all rather than showing a fan it cannot read. Real fan
-//! control needs SuperIO/EC access, which is LibreHardwareMonitor's job.
+//! Where a fan reading comes from is platform business, and the table above is the
+//! honest summary of it. Windows exposes no chassis tachometer through an OS API,
+//! and macOS exposes none at all; on Linux the kernel's **hwmon** subsystem does,
+//! for the boards whose driver implements it. That is what the `hwmon` module
+//! reads — read-only, because writing `pwm<N>` needs root and a wrong channel is
+//! the classic "fans stop" failure. A driver that controls the channel itself
+//! says so, and the channel is described rather than driven.
 //!
 //! Everything here is read-only, needs no elevation and never panics: a missing
 //! sensor becomes a [`Reading`] with an [`UnavailableReason`].
 
 pub mod devices;
+pub mod hwmon;
 
 #[cfg(windows)]
 pub mod windows;
@@ -51,6 +57,11 @@ pub struct SystemAdapter {
     polls: Mutex<u64>,
     /// Cached processor brand string.
     cpu_brand: Mutex<String>,
+    /// Where to look for hwmon chips: `/sys/class/hwmon` on Linux, `None`
+    /// elsewhere, a fixture directory in tests.
+    hwmon_root: Option<std::path::PathBuf>,
+    /// The chips and fan channels found at the last discovery.
+    hwmon: Mutex<Option<hwmon::HwmonTree>>,
 }
 
 impl Default for SystemAdapter {
@@ -59,8 +70,34 @@ impl Default for SystemAdapter {
     }
 }
 
+/// `/sys/class/hwmon` on Linux; nothing on the platforms that have no sysfs.
+fn default_hwmon_root() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        Some(std::path::PathBuf::from(hwmon::DEFAULT_ROOT))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
 impl SystemAdapter {
     pub fn new() -> Self {
+        Self::with_hwmon_root(default_hwmon_root())
+    }
+
+    /// Read fan channels from `root` instead of the platform default.
+    ///
+    /// Used by the tests with a fixture tree, and by anyone whose sysfs is
+    /// mounted somewhere else. `None` disables the hwmon source entirely.
+    pub fn with_hwmon_root(root: Option<std::path::PathBuf>) -> Self {
+        let mut adapter = Self::blank();
+        adapter.hwmon_root = root;
+        adapter
+    }
+
+    fn blank() -> Self {
         let mut system = System::new();
         system.refresh_cpu_all();
         system.refresh_memory();
@@ -76,6 +113,8 @@ impl SystemAdapter {
             disks: Mutex::new(Disks::new_with_refreshed_list()),
             polls: Mutex::new(0),
             cpu_brand: Mutex::new(cpu_brand),
+            hwmon_root: None,
+            hwmon: Mutex::new(None),
         }
     }
 
@@ -392,7 +431,114 @@ impl SystemAdapter {
             }
         }
 
+        // --- Memory ------------------------------------------------------
+        {
+            let system = self.system.lock();
+            let total = system.total_memory();
+            let used = system.used_memory();
+            if total > 0 {
+                devices.push(
+                    Device::new(
+                        devices::memory_device_id(),
+                        "Memory",
+                        ohm_device_model::DeviceType::Memory,
+                        ohm_device_model::Transport::System,
+                        adapter.clone(),
+                    )
+                    .with_vendor(ohm_core::PRODUCT_NAME)
+                    .with_capability(Capability::sensor(
+                        ohm_device_model::caps::MEMORY_USED,
+                        "Memory Used",
+                        Unit::Byte,
+                    ))
+                    .with_capability(Capability::sensor(
+                        ohm_device_model::caps::MEMORY_TOTAL,
+                        "Memory Total",
+                        Unit::Byte,
+                    ))
+                    .with_metadata("used_bytes", used.to_string())
+                    .with_metadata("total_bytes", total.to_string())
+                    .with_metadata("source", "operating system"),
+                );
+            }
+        }
+
+        // --- Fan tachometers (Linux hwmon) -------------------------------
+        //
+        // Only where the kernel has them, and read-only on purpose: the module
+        // explains why writing `pwm<N>` is separate work.
+        {
+            let tree = self.hwmon.lock();
+            if let Some(tree) = tree.as_ref() {
+                for (chip, fan) in tree.channels() {
+                    let mut capabilities: Vec<Capability> = Vec::new();
+                    if fan.rpm.is_some() {
+                        capabilities.push(Capability::sensor(
+                            ohm_device_model::caps::FAN_RPM,
+                            "Fan RPM",
+                            Unit::Rpm,
+                        ));
+                    }
+                    if fan.pwm.is_some() {
+                        // A *sensor*: the duty the kernel is applying, not a
+                        // control this program may drive yet.
+                        capabilities.push(Capability::sensor(
+                            ohm_device_model::caps::FAN_PWM,
+                            "PWM Duty",
+                            Unit::Percent,
+                        ));
+                    }
+                    if capabilities.is_empty() {
+                        continue;
+                    }
+                    let mut device = Device::new(
+                        DeviceId::new_unchecked(fan.device_id()),
+                        fan.display_name(),
+                        ohm_device_model::DeviceType::Fan,
+                        ohm_device_model::Transport::System,
+                        adapter.clone(),
+                    )
+                    .with_vendor(ohm_core::PRODUCT_NAME)
+                    .with_capabilities(capabilities)
+                    .with_metadata("hwmon_chip", chip.name.clone())
+                    .with_metadata("hwmon_channel", fan.channel.to_string())
+                    .with_metadata("source", "linux hwmon (read-only)");
+                    if let Some(path) = &fan.rpm {
+                        device = device.with_metadata("fan_input", path.display().to_string());
+                    }
+                    if let Some(path) = &fan.pwm {
+                        device = device.with_metadata("pwm_path", path.display().to_string());
+                    }
+                    if let Some(mode) = fan.current_mode() {
+                        device = device.with_metadata("control_mode", mode.describe());
+                    }
+                    devices.push(device);
+                }
+            }
+        }
+
         devices
+    }
+
+    /// Rescan the hwmon tree, remembering what was found.
+    fn scan_hwmon(&self) {
+        let Some(root) = self.hwmon_root.clone() else {
+            return;
+        };
+        let tree = hwmon::discover(&root);
+        if !tree.notes.is_empty() {
+            tracing::debug!(root = %root.display(), notes = ?tree.notes, "hwmon scan notes");
+        }
+        *self.hwmon.lock() = Some(tree);
+    }
+
+    /// The fan channel behind a device id, if the last scan found it.
+    fn hwmon_channel(&self, device: &Device) -> Option<hwmon::FanChannel> {
+        let tree = self.hwmon.lock();
+        let tree = tree.as_ref()?;
+        tree.channels()
+            .find(|(_, fan)| fan.device_id() == device.id.as_str())
+            .map(|(_, fan)| fan.clone())
     }
 
     /// Read one device.
@@ -446,6 +592,65 @@ impl SystemAdapter {
                     UnavailableReason::ReadError,
                     Some("the thermal zone stopped reporting".to_string()),
                 )),
+            }
+            return state;
+        }
+
+        if device.id == devices::memory_device_id() {
+            let system = self.system.lock();
+            let total = system.total_memory();
+            let used = system.used_memory();
+            state.set(Reading::ok(
+                ohm_device_model::caps::MEMORY_USED,
+                Value::Integer(used.min(i64::MAX as u64) as i64),
+            ));
+            state.set(Reading::ok(
+                ohm_device_model::caps::MEMORY_TOTAL,
+                Value::Integer(total.min(i64::MAX as u64) as i64),
+            ));
+            return state;
+        }
+
+        if device.id.as_str().starts_with("fan.system.") {
+            let Some(fan) = self.hwmon_channel(device) else {
+                // The last scan does not know this channel any more.
+                return state.offline(
+                    UnavailableReason::NotPresent,
+                    "the kernel no longer exposes this fan channel",
+                );
+            };
+            match fan.read_rpm() {
+                Some(Ok(rpm)) => state.set(Reading::ok(
+                    ohm_device_model::caps::FAN_RPM,
+                    Value::Integer(rpm.round() as i64),
+                )),
+                Some(Err((reason, detail))) => state.set(Reading::unavailable(
+                    ohm_device_model::caps::FAN_RPM,
+                    reason,
+                    Some(detail),
+                )),
+                None => {}
+            }
+            match fan.read_pwm() {
+                Some(Ok((percent, _raw))) => state.set(Reading::ok(
+                    ohm_device_model::caps::FAN_PWM,
+                    Value::Number((percent * 10.0).round() / 10.0),
+                )),
+                Some(Err((reason, detail))) => state.set(Reading::unavailable(
+                    ohm_device_model::caps::FAN_PWM,
+                    reason,
+                    Some(detail),
+                )),
+                None => {}
+            }
+            // The control mode is part of the reading: it says who is driving
+            // the channel while this program only watches it.
+            if let Some((reason, detail)) = fan.read_mode() {
+                state.set(Reading::unavailable(
+                    ohm_device_model::caps::STATUS_MESSAGE,
+                    reason,
+                    Some(format!("pwm control mode unreadable: {detail}")),
+                ));
             }
             return state;
         }
@@ -542,6 +747,7 @@ impl HardwareAdapter for SystemAdapter {
     }
 
     async fn discover(&self) -> Result<Vec<Device>> {
+        self.scan_hwmon();
         let devices = self.build_devices();
         if devices.is_empty() {
             return Err(OhmError::AdapterUnavailable {
@@ -589,6 +795,136 @@ impl HardwareAdapter for SystemAdapter {
 mod tests {
     use super::*;
     use ohm_device_model::{DeviceType, caps};
+
+    /// A sysfs tree with one SuperIO chip: two fans, one driver-controlled.
+    fn hwmon_fixture() -> tempfile::TempDir {
+        let temp = tempfile::tempdir().unwrap();
+        let chip = temp.path().join("hwmon3");
+        std::fs::create_dir_all(&chip).unwrap();
+        std::fs::write(chip.join("name"), "nct6798d\n").unwrap();
+        std::fs::write(chip.join("fan1_input"), "1200\n").unwrap();
+        std::fs::write(chip.join("fan1_label"), "CPU Fan\n").unwrap();
+        std::fs::write(chip.join("pwm1"), "128\n").unwrap();
+        std::fs::write(chip.join("pwm1_enable"), "2\n").unwrap();
+        std::fs::write(chip.join("fan2_input"), "800\n").unwrap();
+        temp
+    }
+
+    #[tokio::test]
+    async fn memory_is_reported_in_bytes() {
+        let adapter = SystemAdapter::new();
+        let devices = adapter.discover().await.unwrap();
+        let memory = devices
+            .iter()
+            .find(|device| device.id == devices::memory_device_id())
+            .expect("the machine has memory");
+
+        assert_eq!(memory.device_type, DeviceType::Memory);
+        assert!(memory.supports(caps::MEMORY_USED));
+        assert!(memory.supports(caps::MEMORY_TOTAL));
+
+        let state = adapter.read_state(memory).await.unwrap();
+        let used = state.number(caps::MEMORY_USED).expect("used memory");
+        let total = state.number(caps::MEMORY_TOTAL).expect("total memory");
+        assert!(
+            total > 0.0,
+            "a machine reporting no memory is not believable"
+        );
+        assert!(used > 0.0 && used < total, "used {used} of {total}");
+    }
+
+    #[tokio::test]
+    async fn hwmon_channels_become_read_only_fan_devices() {
+        let temp = hwmon_fixture();
+        let adapter = SystemAdapter::with_hwmon_root(Some(temp.path().to_path_buf()));
+        let devices = adapter.discover().await.unwrap();
+
+        let fans: Vec<&Device> = devices
+            .iter()
+            .filter(|device| device.id.as_str().starts_with("fan.system."))
+            .collect();
+        assert_eq!(
+            fans.len(),
+            2,
+            "{:?}",
+            fans.iter().map(|d| d.id.as_str()).collect::<Vec<_>>()
+        );
+
+        // Identity comes from the chip name and channel number, never from the
+        // order the kernel enumerated the chips in.
+        let first = fans
+            .iter()
+            .find(|device| device.id.as_str() == "fan.system.nct6798d_fan1")
+            .expect("stable id");
+        assert_eq!(first.name, "CPU Fan — nct6798d");
+        assert!(first.supports(caps::FAN_RPM));
+        assert!(first.supports(caps::FAN_PWM));
+        assert!(
+            !first.is_controllable(),
+            "monitoring a channel is not controlling it"
+        );
+        assert!(
+            first
+                .capabilities
+                .iter()
+                .all(|capability| !capability.writable),
+            "every hwmon capability is read-only in this release"
+        );
+        let mode = first.metadata.get("control_mode").expect("who owns it");
+        assert!(mode.contains("driver controls"), "{mode}");
+
+        let state = adapter.read_state(first).await.unwrap();
+        assert_eq!(state.number(caps::FAN_RPM), Some(1200.0));
+        let pwm = state.number(caps::FAN_PWM).expect("duty");
+        assert!((pwm - 50.2).abs() < 0.1, "{pwm}");
+
+        // The channel without a pwm file still reports its tachometer.
+        let second = fans
+            .iter()
+            .find(|device| device.id.as_str() == "fan.system.nct6798d_fan2")
+            .expect("second channel");
+        assert!(second.supports(caps::FAN_RPM));
+        assert!(!second.supports(caps::FAN_PWM));
+        let state = adapter.read_state(second).await.unwrap();
+        assert_eq!(state.number(caps::FAN_RPM), Some(800.0));
+    }
+
+    #[tokio::test]
+    async fn a_fan_channel_that_disappears_reports_a_reason_not_zero() {
+        let temp = hwmon_fixture();
+        let adapter = SystemAdapter::with_hwmon_root(Some(temp.path().to_path_buf()));
+        let devices = adapter.discover().await.unwrap();
+        let fan = devices
+            .iter()
+            .find(|device| device.id.as_str() == "fan.system.nct6798d_fan1")
+            .unwrap()
+            .clone();
+
+        std::fs::remove_file(temp.path().join("hwmon3/fan1_input")).unwrap();
+        let state = adapter.read_state(&fan).await.unwrap();
+        let reading = state.get(caps::FAN_RPM).expect("the reading is present");
+        assert!(!reading.is_ok(), "a vanished file is not a zero");
+        assert!(reading.reason().is_some());
+        let detail = match &reading.status {
+            ohm_device_model::ReadingStatus::Unavailable { detail, .. } => {
+                detail.clone().unwrap_or_default()
+            }
+            ohm_device_model::ReadingStatus::Ok { .. } => String::new(),
+        };
+        assert!(detail.contains("fan1_input"), "{detail}");
+    }
+
+    #[tokio::test]
+    async fn no_hwmon_root_means_no_fan_devices() {
+        let adapter = SystemAdapter::with_hwmon_root(None);
+        let devices = adapter.discover().await.unwrap();
+        assert!(
+            !devices
+                .iter()
+                .any(|device| device.id.as_str().starts_with("fan.system.")),
+            "without a sysfs root there is nothing to read, and nothing is invented"
+        );
+    }
 
     #[tokio::test]
     async fn discovery_finds_the_machine() {

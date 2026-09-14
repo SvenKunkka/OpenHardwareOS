@@ -99,7 +99,7 @@ nice; a machine that keeps itself quiet and cool is the product.
 | GPU → fan and CPU + GPU → fan example rules | implemented | `examples.rs` |
 | Validation before save, identical for hand-written and generated rules | implemented | `engine.rs` — `check_rule` |
 | Safety floor, fail-safe duty, emergency override, ramp limiting | implemented | `runtime/src/safety.rs` |
-| Fan **detection** (RPM) on a desktop board | partial | requires LHM to find a SuperIO chip |
+| Fan **detection** (RPM) on a desktop board | partial | Windows: requires LHM to find a SuperIO chip. Linux: read from the kernel's hwmon subsystem when the board's driver implements it (`adapters/system/src/hwmon.rs`), with no elevation. macOS: not exposed by any OS API |
 | Fan **control** (PWM write) | partial | only where LHM exposes a writable `Control` sensor; opt-in by design |
 | GPU fan duty control (NVIDIA) | partial | NVML `nvmlDeviceSetFanSpeed_v2`, documented for Maxwell+, **requires elevation**; some SKUs refuse third-party control |
 | GPU fan duty control (AMD) | partial | via LHM's Overdrive `Control` sensor only — see the licence note below |

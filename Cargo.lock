@@ -2505,6 +2505,7 @@ dependencies = [
  "parking_lot",
  "serde",
  "sysinfo",
+ "tempfile",
  "tokio",
  "tracing",
  "wmi",
