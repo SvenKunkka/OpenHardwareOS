@@ -100,3 +100,65 @@ jobs:
           path: artifacts/release/*
           if-no-files-found: error
           retention-days: 30
+
+  # The Linux CLI, built and packaged on the platform it targets. Its packaging
+  # script is fixture-tested first (the same rule the Windows job follows), and
+  # the binary is executed after packaging so the archive is known to contain a
+  # program that runs and reports the version it claims.
+  linux:
+    name: Linux x64 build and package
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          components: clippy, rustfmt
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check version catalogue and generated views
+        run: python -B scripts/versions.py check --generated
+      - name: Test version lifecycle and synchronization
+        run: python -B -m unittest discover -s scripts/tests -p test_versions.py -v
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Verify release version and toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Expected vMAJOR.MINOR.PATCH"; exit 1; }
+          manifest_version=$(python -c "import tomllib;print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])")
+          [ "v$manifest_version" = "$RELEASE_VERSION" ] || { echo "Workspace version $manifest_version differs from $RELEASE_VERSION"; exit 1; }
+          rustc --version
+          cargo --version
+      - name: Frontend tests
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npm test
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Workspace tests
+        run: cargo test --locked --workspace --no-fail-fast
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Test the Linux packager with isolated fixtures
+        run: ./scripts/tests/package-linux.test.sh
+      - name: Build CLI
+        run: cargo build --locked --release -p ohm-cli
+      - name: Generate dependency notices
+        run: python scripts/release/generate-notices.py --output artifacts/THIRD_PARTY_NOTICES.txt
+      - name: Package verified build outputs
+        run: ./scripts/release/package-linux.sh --version "$RELEASE_VERSION" --binary target/release/ohm-cli --run-binary
+      - name: Upload release assets for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenHardwareOS-${{ env.RELEASE_VERSION }}-linux-x86_64
+          path: artifacts/release/*
+          if-no-files-found: error
+          retention-days: 30
