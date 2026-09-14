@@ -8,18 +8,10 @@ it: *when this sensor does that, change this device*. The first release focuses
 on **cooling**, because that is where the value is obvious and where hardware
 access is hardest.
 
-It is not a fan-control utility. It is the layer those utilities should have been
-built on:
-
-```text
-Device Discovery ─▶ Capability Model ─▶ Hardware Runtime ─▶ State / Event Bus
-        ─▶ Automation Engine ─▶ Hardware Actions ─▶ Plugin / SDK Ecosystem
-```
-
-The goal is the thing PC hardware has never had: **Home Assistant / Matter for
-PC components**. The same runtime that drives a chassis fan today should drive a
-pump, a case display, a keyboard layer or an AI deck tomorrow, through the same
-device model and the same rule engine.
+This is an early preview. The runtime, automation engine, desktop UI and CLI are
+implemented; Windows release builds are tested by GitHub Actions. Real fan-control
+compatibility still needs verification on each motherboard and GPU. See the
+[Windows acceptance guide](docs/windows-validation/ACCEPTANCE-ENTRY.md).
 
 - **Local first.** No account, no cloud, no telemetry. Everything lives in one
   config directory on your machine.
@@ -34,7 +26,39 @@ device model and the same rule engine.
 
 ---
 
-## Quick start
+## Windows: install from PowerShell
+
+The prebuilt x64 release does not require Rust, Node.js or a source checkout.
+Download the versioned installer script, then run it locally:
+
+```powershell
+Invoke-WebRequest 'https://github.com/SvenKunkka/OpenHardwareOS/releases/download/v0.1.0/install.ps1' -OutFile "$env:TEMP\OpenHardwareOS-install.ps1"
+& "$env:TEMP\OpenHardwareOS-install.ps1" -Version v0.1.0
+& "$env:LOCALAPPDATA\OpenHardwareOS\cli\ohm-cli.exe" doctor
+```
+
+The script checks the downloaded CLI archive against the release's `SHA256SUMS`
+before installation. It installs into your account and prints the executable path.
+To install the desktop app as well, run the script with `-Desktop`; the desktop
+installer asks for administrator access and does not start hardware control.
+
+```powershell
+& "$env:TEMP\OpenHardwareOS-install.ps1" -Version v0.1.0 -Desktop
+```
+
+The desktop installer is unsigned. Keep Windows security settings enabled; if a
+policy blocks installation, retain the error for diagnosis. Hardware access through
+LibreHardwareMonitor requires that separate application; it is not bundled.
+The CLI is also available to Rust users directly from source:
+
+```powershell
+cargo install --git https://github.com/SvenKunkka/OpenHardwareOS --tag v0.1.0 --locked ohm-cli
+```
+
+[Release assets and checksums](https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.0)
+· [Windows installation details](docs/windows-install.md)
+
+## Build from source
 
 ### Requirements
 
@@ -47,8 +71,8 @@ device model and the same rule engine.
 ### Run it
 
 ```bash
-git clone https://github.com/openhardwareos/openhardwareos
-cd openhardwareos
+git clone https://github.com/SvenKunkka/OpenHardwareOS
+cd OpenHardwareOS
 
 # 1. See the whole cooling loop work with no hardware at all
 cargo run -p ohm-cli -- demo --steps 90
@@ -57,9 +81,11 @@ cargo run -p ohm-cli -- demo --steps 90
 cargo run -p ohm-cli -- doctor
 
 # 3. Desktop app
-cd apps/desktop && npm install && npm run build && cd ../..
-cargo run -p ohm-desktop              # opens the window
-cargo run -p ohm-desktop -- --selftest --mock   # headless check, prints a report
+cd apps/desktop
+npm ci
+npx tauri dev                       # starts Vite and the desktop together
+# For a packaged desktop build: npx tauri build
+# From the repository root: cargo run -p ohm-desktop -- --selftest --mock
 ```
 
 `ohm-cli demo` runs the simulated machine: the GPU heats under load, a rule maps
@@ -343,8 +369,9 @@ guide and the licensing rules for new dependencies.
 
 ## Third-party components and licences
 
-OpenHardwareOS is Apache-2.0. It depends on the following, and redistributes
-none of their binaries:
+OpenHardwareOS is Apache-2.0. The application links Rust dependencies and embeds
+its frontend; release assets include their [copyright and license notices](THIRD_PARTY_NOTICES.md).
+Separately installed hardware libraries and vendor drivers are not bundled:
 
 | Component | Licence | How it is used |
 |---|---|---|
@@ -362,7 +389,7 @@ none of their binaries:
 | [parking_lot](https://github.com/Amanieu/parking_lot) | MIT OR Apache-2.0 | Locks |
 | [dirs](https://github.com/dirs-dev/dirs-rs) | MIT OR Apache-2.0 | Config paths |
 | [React](https://github.com/facebook/react) / [Vite](https://github.com/vitejs/vite) / TypeScript | MIT | UI build |
-| NVIDIA NVML | NVIDIA proprietary (redistributable terms) | **Not** redistributed: loaded from the installed driver at runtime |
+| NVIDIA NVML | NVIDIA proprietary | **Not** redistributed: loaded from the installed driver at runtime |
 
 `ohm-cli protocol` and the simulated hardware exist so that no part of the
 project requires any of these to be present.

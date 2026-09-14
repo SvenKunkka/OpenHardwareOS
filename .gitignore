@@ -4,6 +4,7 @@
 
 # Local delivery artefacts — built from a revision, never committed
 /dist/
+/artifacts/
 
 # Node
 node_modules/

@@ -1,0 +1,93 @@
+name: Windows release assets
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version matching the checked-out source
+        required: true
+        default: v0.1.0
+
+# This workflow builds artifacts for review. The maintainer publishes the
+# successful run's artifacts as a GitHub Release after checking its commit SHA.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUSTUP_TOOLCHAIN: 1.98.1
+
+jobs:
+  windows:
+    name: Windows x64 build and package
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          targets: x86_64-pc-windows-msvc
+          components: clippy, rustfmt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify release version and toolchain
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_VERSION -notmatch '^v\d+\.\d+\.\d+$') { throw 'Expected version vMAJOR.MINOR.PATCH' }
+          $meta = cargo metadata --locked --format-version 1 --no-deps | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed' }
+          foreach ($package in $meta.packages) {
+            if ("v$($package.version)" -ne $env:RELEASE_VERSION) { throw "Version mismatch: $($package.name)" }
+          }
+          $tauri = Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          if ("v$($tauri.version)" -ne $env:RELEASE_VERSION) { throw 'Desktop version mismatch' }
+          rustc --version
+          cargo --version
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+      - name: Frontend tests
+        working-directory: apps/desktop
+        run: npm test
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Windows workspace tests
+        run: cargo test --locked --workspace --target x86_64-pc-windows-msvc
+      - name: Windows clippy
+        run: cargo clippy --locked --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+      - name: Build CLI
+        run: cargo build --locked --release -p ohm-cli --target x86_64-pc-windows-msvc
+      - name: Build desktop NSIS installer
+        working-directory: apps/desktop
+        run: npx tauri build --ci --target x86_64-pc-windows-msvc -- --locked
+      - name: Generate dependency notices
+        run: python scripts/release/generate-notices.py --output artifacts/THIRD_PARTY_NOTICES.txt
+      - name: Test installer behavior with isolated fixtures
+        shell: pwsh
+        run: ./scripts/release/test-install.ps1
+      - name: Package verified build outputs
+        shell: pwsh
+        run: ./scripts/release/package-windows.ps1 -Version $env:RELEASE_VERSION
+      - name: Install and run the actual packaged CLI in isolation
+        shell: pwsh
+        run: ./scripts/release/smoke-windows-install.ps1 -ReleaseVersion $env:RELEASE_VERSION
+      - name: Upload release assets for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenHardwareOS-${{ env.RELEASE_VERSION }}-windows-x86_64
+          path: artifacts/release/*
+          if-no-files-found: error
+          retention-days: 30

@@ -23,8 +23,8 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
-repository = "https://github.com/openhardwareos/openhardwareos"
-homepage = "https://github.com/openhardwareos/openhardwareos"
+repository = "https://github.com/SvenKunkka/OpenHardwareOS"
+homepage = "https://github.com/SvenKunkka/OpenHardwareOS"
 authors = ["OpenHardwareOS Contributors"]
 description = "Open Runtime, Device Layer and Automation Engine for PC hardware"
 
