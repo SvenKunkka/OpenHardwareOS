@@ -37,8 +37,8 @@ assertion that is failing, so the result proves nothing about the MSRV.
 ## Build and test
 
 ```bash
-# 1. The whole workspace: unit + cross-crate integration tests. 413 of them at
-#    commit 096e13b — docs/verification-log.md records the current figure.
+# 1. The whole workspace: unit + cross-crate integration tests. 444 of them at
+#    the round-3 revision — docs/verification-log.md records the current figure.
 cargo test --workspace
 
 # 2. Lints. Must be warning-free.

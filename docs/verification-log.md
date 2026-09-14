@@ -401,3 +401,209 @@ index a character.
   `AdapterCapabilities::discovery_interval_ms` hints remain unimplemented and are
   now documented as such in `docs/requirements.md`.
 
+
+---
+
+## 2026-09-14 — round 3: control-handover integrity, desktop feedback, a delivery package
+
+**Revision: the commits `544d38d`, `d38600c`, `67d2af9`, `5521e82`/`e1eba21` and the
+documentation commit that contains this entry.** The pass below was executed with a
+clean worktree; the revision is recorded in the table itself, because it was re-run
+after the docs were written.
+
+Round 2 fixed "the rule was retargeted from fan A to fan B". A read-only review found
+that the same idea — *a rule leaving a channel behind it* — still had three groups of
+holes, plus a desktop that had never been told about the round-2 status at all. Round 3
+closes those, and adds a delivery package, without adding a feature the brief does not
+ask for.
+
+### 1. Only some ways of leaving control were covered
+
+* **Old behaviour.** `RuleChange` compared `target.device` alone, so switching
+  *capability* on the same device was not a change at all: the old channel kept the
+  abandoned duty and the new one inherited the old one's `applied_output`, which
+  suppressed its first write. `delete_rule` removed the rule's state without handing
+  anything over, `set_rule_enabled(false)` let the rule stop being evaluated with its
+  channel left at the last curve value, and `load_rules` iterated only over rules that
+  were still on disk — a file that had been deleted simply vanished, state and all.
+* **Trigger.** Any of: retarget to another capability on the same device; disable a
+  running rule; delete it; delete its file and reload.
+* **Behaviour now.** A channel is `(device, capability)` everywhere. Every path that
+  ends control — retarget, disable, delete, a file that disappeared — runs the same
+  reconciliation, and each rule records the channel it is *actually* driving
+  (`RuleState::control`, a `ControlHold`), which is what makes "did this rule ever take
+  control of it?" answerable at all. A source, condition or mapping change is *not* an
+  exit: the same rule still owns the same channel and keeps driving it.
+* **Tests.** `tests/tests/handover_integrity.rs` — `switching_capability_on_the_same_
+  device_hands_over_the_old_channel`, `disabling_a_rule_hands_its_channel_over`,
+  `deleting_a_rule_hands_its_channel_over`,
+  `a_rule_file_removed_from_disk_is_handed_over_on_reload`, and — the counterpart —
+  `changing_only_the_source_does_not_hand_the_channel_over`.
+
+### 2. Handovers were queued for channels the rule never drove, and executed blindly
+
+* **Old behaviour.** Queueing looked only at whether the *config* named a different
+  target: it did not check that the rule was enabled, or that it had ever written
+  anywhere. Execution did not re-check ownership either. The review's reproduction: R2
+  (enabled) drives fan 0 at 40 %; R1 is disabled and points at the same fan; R1 is
+  retargeted to another fan; the handover writes 70 % onto R2's channel, and R2's cache
+  still says 40 % — so the hardware is at 70 % while the rule, and therefore the UI,
+  reports 40 %. A second: A→B→C edited twice before the first tick wrote the fail-safe
+  duty onto B, a channel nothing had ever driven.
+* **Trigger.** Retargeting a disabled rule; retargeting a rule whose channel another
+  enabled rule also targets; editing a rule twice before the engine runs.
+* **Behaviour now.** A handover is queued only for the channel the rule's own record
+  says it held. Ownership is re-checked before *every* attempt: a channel that an
+  enabled rule targets again is **superseded** — on the record, and not written — so a
+  stale handover can never overwrite the live owner. Queueing for a channel that
+  already has an unfinished handover merges into it rather than accumulating entries,
+  and the attempt budget deliberately survives the edit.
+* **Tests.** `a_disabled_rule_that_never_drove_a_channel_cannot_hand_it_over`,
+  `a_handover_is_superseded_by_the_rule_that_now_owns_the_channel`,
+  `retargeting_twice_before_the_first_tick_never_touches_the_middle_channel`,
+  `a_rule_deleted_before_its_first_write_hands_over_nothing`,
+  `a_retry_does_not_replay_a_handover_whose_channel_has_a_new_owner`, and in the state
+  suite `a_superseded_handover_names_the_rule_that_took_over`,
+  `repeated_edits_of_one_channel_stay_one_handover`.
+
+### 3. A failed handover disappeared
+
+* **Old behaviour.** `perform_pending_handovers` drained the queue with `mem::take`
+  *before* attempting the write; an `Unconfirmed` result only published an event and an
+  `Err` only logged. Nothing was left to retry, so a channel whose handover failed
+  stayed at the abandoned duty for good — the review's reproduction: A→B with A's
+  handover unreadable, and once the link recovered A was still at the old low duty.
+* **Trigger.** A refused, or accepted-but-unconfirmed, handover write.
+* **Behaviour now.** The handover book keeps the work: retried every
+  `HANDOVER_RETRY_TICKS` (5 ticks — nothing spins), up to `MAX_HANDOVER_ATTEMPTS` (5),
+  after which it is **parked as `Failed`**: still in the queue, still readable, with the
+  first error (the cause) and the last one, re-armable by
+  `AutomationEngine::retry_failed_handovers` / `ohm-cli handovers --retry`. Nothing
+  re-arms itself. `Confirmed` requires a confirmed write; `Superseded` requires a live
+  owner — nothing else completes a handover. The rule id is kept as *data*, so a
+  deleted rule does not hide the channel it left unprotected.
+* **Tests.** `a_refused_handover_is_retried_on_a_bounded_cadence`,
+  `a_recovered_channel_completes_its_handover_exactly_once`,
+  `an_unconfirmed_handover_stays_pending_with_its_reason`,
+  `an_exhausted_handover_is_parked_and_can_be_re_armed`,
+  `a_confirmed_handover_is_recorded_with_its_value`, `a_handover_outlives_its_rule`,
+  `an_owed_handover_is_listed_before_it_is_attempted`,
+  `a_failing_handover_records_why_and_how_often`.
+
+**What the pre-fix run showed.** Of the 12 tests in `handover_integrity.rs`, **8 failed
+against the unfixed code**, each with the symptom above and nothing else: the old
+channel left at 55 % instead of 70 %; 70 % written onto a channel another rule owns;
+the middle channel of A→B→C written once though never driven; the unconfirmed handover
+never completed. The other four passed, two of them for the wrong reason (no retry
+existed at all), which is why the state suite was added afterwards: it asserts the
+record, not just the hardware calls.
+
+### 4. The desktop had not been told any of this
+
+* **Old behaviour.** `types.ts` declared `WriteStatus = 'applied' | 'simulated' |
+  'rejected'`. An `unconfirmed` result therefore fell through to the *success* branch in
+  `DeviceDetail` (green, "applied"), and a missing `applied` value was rendered as
+  "nothing" and "not applied" — the UI asserting an outcome nobody had established,
+  which is exactly the defect round 2 removed from the backend. `compatibility_notes()`
+  had no Tauri command, no IPC method and no screen: a legacy `release` rule was
+  substituted in memory where only the CLI could see it.
+* **Behaviour now.** `unconfirmed` is part of the contract and is warn, never ok; one
+  exhaustive module (`src/lib/writeStatus.ts`) owns tone, label, sentence and
+  applied-value text, and a report with no `applied` value says `value unknown — not
+  confirmed`. The manual-control path raises its own warn notice for an unconfirmed
+  result, distinct from the danger notice for a refusal, both carrying the backend's
+  `detail` verbatim. `RuleFileNote` is structured (`field`, `original`, `effective`,
+  `message`, `hint`) and reaches the Automation screen, which states that the file was
+  not modified and the fail-safe duty still protects the machine. Handovers reach a
+  Diagnostics panel with a retry control.
+* **Two defects found while fixing it.** (a) Pushed `write_performed` events are merged
+  into the same recent-writes list as the audit rows and were all levelled `info`, so an
+  unconfirmed write would still have rendered green through the event path. (b)
+  `HandoverReport`'s optional fields serialised as `null` while TypeScript declares
+  them `?` — a value the frontend never expects to read. They are omitted when absent
+  now, matching `WriteReport`, and the exact key sets are asserted in a test.
+* **Tests.** `apps/desktop/src/test/writeStates.test.tsx` (17 tests, replacing the
+  helper-only `writeStates.test.ts`) renders the real screens through the real
+  providers with only the IPC module mocked; `apps/desktop/src-tauri/src/commands.rs`
+  adds three tests, including `compatibility_notes_arrive_structured` (a real legacy
+  rule file on disk, read back through the command) and
+  `the_ipc_payload_shape_matches_the_typescript_contract`.
+
+### 5. The verification pass
+
+Everything below was executed in this round, on this machine, after the fixes. The two
+non-zero exits in the earlier run of this pass were both real and both are visible in
+the history above: `cargo fmt --check` finding my newly added test code unformatted,
+and `make-acceptance-package.sh` refusing to package an uncommitted tree. Both were
+fixed before the record below.
+
+Environment: macOS 26.6.2 (25G83) arm64, pinned `rustc 1.98.0` / `cargo 1.98.0` /
+`clippy 0.1.98` (`rustup run 1.98.0`); the owner's default toolchain `stable` (1.92.0),
+`PATH` and shell configuration untouched; `cargo-deny 0.20.2`; Node 26.8.1 / npm
+11.19.0.
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `rustup run 1.98.0 cargo fmt --all -- --check` | exit 0 |
+| 2 | `rustup run 1.98.0 cargo clippy --workspace --all-targets -- -D warnings` | **exit 0, no warnings** |
+| 3 | `rustup run 1.98.0 cargo build --workspace --all-targets` | exit 0 |
+| 4 | `rustup run 1.98.0 cargo test --workspace` | **444 passed, 0 failed, 0 ignored**, 41 test binaries and doc-tests |
+| 5 | `cargo deny check` | `advisories ok, bans ok, licenses ok, sources ok` |
+| 6 | `npm run typecheck` / `npm run test` / `npm run build` | exit 0 / **5 files, 39 tests passed** / exit 0, `index-*.js` 387.88 kB |
+| 7 | `ohm-cli doctor --mock` | exit 0: 4 providers (LHM unavailable on macOS, with a fix hint), 15 devices, 27 readable sensors / 4 writable actuators |
+| 8 | `ohm-cli demo --steps 60 --profile gaming` | exit 0: GPU 69.1 → 68.7 °C, 48 % / 1169 RPM, 60 evaluations, 45 writes, 15 skipped, 0 fallbacks |
+| 9 | `ohm-cli audit --limit 2` | clean shutdown, `control_released — 3 outputs handed back to firmware` |
+| 10 | `ohm-cli handovers` and `--retry` | exit 0 both; reports nothing outstanding on a fresh config directory and re-arms 0 |
+| 11 | `ohm-cli protocol` | exit 0, full ODP exchange including `SET_STATE` → `StateSet` |
+| 12 | `ohm-desktop --selftest --mock` and `--dry-run` | exit 0, 15 devices, 4 controllable, rule applied |
+| 13 | `ohm-cli rules check examples/rules/*.yaml` (4 files, with `experimental_features` in a scratch config dir) | exit 0, `valid against the attached hardware` for all four |
+| 14 | `scripts/make-acceptance-package.sh` | exit 0 on a clean tree; see §6 |
+
+Isolation: every run used `OHM_CONFIG_DIR` under a throwaway root, the real per-user
+config directory does not exist, and the only worktree changes during the pass were the
+documentation files being written by hand.
+
+### 6. The Windows acceptance package
+
+`scripts/make-acceptance-package.sh` assembles a **source** package for one exact
+commit, and verifies itself. From the run recorded in this entry:
+
+* the package verified against its own manifest — every file hashed and matched;
+* no VCS data, no `target/`, no `node_modules/`, no Windows binary and no local runtime
+  state (audit trail, settings, logs) is present;
+* the manifest detects tampering: appending one line to a source file fails
+  verification naming that file, and adding an unlisted file fails naming that file;
+* the **shipped pre-check refuses a non-Windows host** (exit 1) as it must, and with
+  `-AllowNonWindows -Toolchain 1.98.0` it passes every check;
+* run against the machine's `PATH` pair it **fails**, correctly: `/opt/homebrew/bin`
+  has `rustc 1.98.0` beside `clippy 0.1.92`, and that pair cannot lint this workspace.
+  That is the round-2 lesson encoded as a pre-flight check rather than a paragraph.
+
+The package states in its own README that it contains no Windows build artefacts, and
+its evidence index marks the whole Windows surface *Prepared — never run*.
+
+### What round 3 could **not** verify here
+
+* **Windows — still nothing.** No workflow was pushed or triggered; every
+  `windows-latest` job is **Prepared**, and no NSIS installer has been built anywhere.
+  The package's PowerShell entry points were executed here **on macOS only**, with
+  `-AllowNonWindows`; on Windows they are unexecuted.
+* **The desktop against a live Tauri IPC round trip.** The frontend tests mock the IPC
+  module, and no GUI session was launched. What *is* verified is both halves of the
+  contract: the producer side by a Rust test asserting the exact JSON key set, and the
+  consumer side by rendering the real screens. A live round trip remains unverified.
+* **A physical fan.** Unchanged and still the largest gap: no write has reached real
+  hardware, and no fan's response has been measured. The read-back confirms what a
+  *provider* reports as a channel's set point, which is not airflow.
+* **One unreproduced observation.** In a single run of the frontend suite with a
+  deliberately mutated handover tone, two tests failed where three subsequent runs of
+  the same mutation failed exactly one; the unmutated suite then passed 39/39 three
+  times in a row. It is recorded here because it happened, not because it was explained.
+
+### Deliberately **not** done in round 3
+
+No hardware was written to, no autostart or device-control setting was changed, and
+nothing was installed on the host. Nothing was pushed, published, tagged or triggered.
+The licence decisions (ADR 0002, ADR 0004) remain **Proposed**. No new architecture: no
+CPU native collector, no cross-adapter identity work, no plugin loading — CPU package
+power stays at the LHM support boundary.

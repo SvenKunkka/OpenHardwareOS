@@ -10,11 +10,11 @@ still missing. The rule from here on:
 > the app or the CLI, and is covered by a test that would fail if it broke.
 > Anything else is **Partial**, **Missing**, or **Unverified on hardware**.
 
-Last reviewed: 2026-09-14 (round 2), against commit `096e13b` (no release tag yet).
-Test baseline at that revision: **413 Rust tests + 27 frontend behaviour tests, 0
-failures**, with `cargo clippy --workspace --all-targets -- -D warnings` clean.
-Commands, environment and per-command results are in `docs/verification-log.md`;
-that file is the authority for any number quoted here.
+Last reviewed: 2026-09-14 (round 3), against the commit that contains this file
+(no release tag yet). Test baseline at that revision: see the round-3 entry of
+`docs/verification-log.md`, which records the command, the environment and the
+result — that file is the authority for any number quoted here, and numbers in this
+file are not carried over from an earlier round.
 
 ## Status vocabulary
 
@@ -81,6 +81,9 @@ that file is the authority for any number quoted here.
 | Condition false must not hold a stale fan value | Implemented | `evaluate_gated` | Drives `otherwise` (fail-safe duty by default, or an explicit percent). Unbounded "hold" is deliberately not offered; see `OtherwiseAction` docs |
 | `release` only when the adapter can really release | Implemented by refusal | `OtherwiseAction` has no `release` variant; `FallbackAction::Release` is rejected by `Rule::validate` and sanitised on load | No adapter in this build advertises a mid-run release channel, so offering one would be a promise we cannot keep — and a `release` fallback that silently did nothing was a real defect in this build (see the round-2 entry in `docs/verification-log.md`). `release` can no longer be saved, imported, enabled or loaded into the active set; a hand-written `release:` in an old rule file is left **untouched on disk**, replaced in memory by the fail-safe duty, and reported as a per-field compatibility note. LHM's `SetDefault` release happens on shutdown |
 | A write that was accepted but **not** confirmed must not be reported as applied | **Implemented** (round 2) | `WriteStatus::Unconfirmed` + `WriteOutcome::is_confirmed` (`crates/ohm-adapter-api`); `Runtime::write_value`; `crates/ohm-automation/src/engine.rs` | Three outcomes are now distinguishable end to end: the request was accepted, the value was **read back and confirmed**, or the result is failed/unknown. An unconfirmed write carries **no** value, so it can never become the recorded `applied_output`, never suppresses the next attempt, and the engine retries it — after `MAX_CONSECUTIVE_UNCONFIRMED` (3) consecutive unconfirmed writes the rule's write-failure policy runs the fail-safe duty. The read-back for LHM is the *channel set point*, which says nothing about airflow, and the detail says so |
+| Every way a rule can stop driving a channel must hand it over | **Implemented** (round 3) | `RuleChange` + `RuleState::control` + the handover book (`crates/ohm-automation/src/{engine,handover,evaluator}.rs`) | A channel is `(device, capability)` — *device and capability* — so "same fan, different control channel" is a retarget like any other. Retarget, disable, delete, and a rule file that vanishes from disk and is reloaded all end control the same way: the channel is queued for the fail-safe duty, the rule's cache for it is dropped, and the new channel is driven from its own evidence on the first cycle. A source, condition or mapping change is **not** an exit: the same rule still owns the same channel, and a test pins that down |
+| A handover may only be queued by a rule that really controlled the channel | **Implemented** (round 3) | `AutomationEngine::hand_over` + `owner_of` | The rule's own record of what it drove decides, not what its config used to name, and only the channel it actually held is handed over. A channel that an enabled rule targets again is *superseded* — resolved on the record, and **not written** — so a stale handover can never overwrite the live owner's value (the defect where hardware sat at 70 % while the owning rule displayed 40 %) |
+| An unfinished handover must be visible, bounded and recoverable | **Implemented** (round 3) | `crates/ohm-automation/src/handover.rs`; `AutomationEngine::{handovers,unfinished_handovers,retry_failed_handovers}`; `ohm-cli handovers [--retry]`; the Diagnostics panel | Retried every `HANDOVER_RETRY_TICKS` (5 ticks, so nothing spins) up to `MAX_HANDOVER_ATTEMPTS` (5), then **parked as `Failed`**: still on the record, still in the queue, with the first error (the cause) and the last one, and re-armable by an explicit user action. A `Confirmed` state requires a confirmed write; a `Superseded` one requires a live owner. The record names the rule as *data*, so deleting the rule does not hide the channel it left unprotected |
 | Editing a rule must not inherit the previous target's state | **Implemented** (round 2) | `RuleChange` / `apply_rule_change` / `perform_pending_handovers` in `crates/ohm-automation/src/engine.rs`; the same reconciliation runs for `save_rule` and `load_rules` | Changing `target`, `source` or `when` (and `otherwise`, which drives the output when the gate is closed) discards the rule's applied/held state, so the new output is driven from the new target's own evidence on the first cycle instead of being skipped by "unchanged value" dedup. The abandoned output is handed to the fail-safe duty at the next cycle and the handover is audited with the reason. Metadata-only edits (name, description, interval) apply at the next cycle without interrupting control |
 | Condition source missing/stale follows the sensor policy | Implemented | `resolve_gate` | Same `fallback.sensor_timeout_s` grace period, same anchor discipline as the main source |
 | Emergency protection must not be blockable by `when` | Implemented | `crates/ohm-runtime/src/runtime.rs` (`supervise_safety`) | The supervisor is independent of rules; a gated rule's write is still clamped by `SafetyPolicy::check_duty` |
@@ -95,6 +98,9 @@ that file is the authority for any number quoted here.
 | Automation page (form-based) | Implemented | `Automation.tsx` (now incl. the condition editor) |
 | Settings: start with Windows, minimize to tray, polling interval, logging level, experimental features, developer mode | Implemented | `Settings.tsx`; each switch was checked end-to-end in round 1 (see "Settings reality check" below) |
 | Not an RGB/gamer aesthetic | Implemented | `src/styles/theme.css` — one accent colour, no glows |
+| Every write status shown honestly, including "requested, not confirmed" | **Implemented** (round 3) | `src/lib/writeStatus.ts` (tone, label, sentence, applied-value text) consumed by `DeviceDetail.tsx` and `Diagnostics.tsx`. `unconfirmed` is warn, never success; a report with no `applied` value renders `value unknown — not confirmed` rather than the requested value, "nothing" or "not applied"; manual control raises its own notice for an unconfirmed result, distinct from a refusal — one is *known to have failed*, the other is *unknown* — and both carry the backend's reason. The maps are exhaustive over `WriteStatus`, so a new status breaks the build until it is handled (checked by compiling) |
+| Rule files adjusted in memory are visible, and never silently rewritten | **Implemented** (round 3) | `RuleFileNote` (`field`, `original`, `effective`, `message`, `hint`) → `rule_compatibility_notes` → the Automation screen's compatibility panel. The user sees which rule, which field, what the file on disk says, what is in force instead and how to fix it, and is told the file was **not** modified and the fail-safe duty still protects the machine |
+| Channels left behind by a rule are visible, with a way to act | **Implemented** (round 3) | `rule_handovers` / `rule_retry_handovers` → the Diagnostics screen's handover panel. Owed handovers (pending, failed) list channel, the rule that left them, the reason, attempts and the cause; `failed` is visually distinct and says retrying stopped and needs the user; a retry control re-arms and refreshes; resolved ones are filed as history, never as owed work |
 
 ### Settings reality check
 
@@ -173,15 +179,18 @@ the `AI → structured rule → validation → engine → runtime` path, and
 | Every write logged | Implemented | `audit.jsonl`, including refused writes |
 | A write **result** must be distinguishable from a write **request** | Implemented (round 2) | `WriteStatus::{Applied, Unconfirmed, Simulated, Rejected}`. The audit trail records which one happened; only a confirmed write is counted as an applied value, and an unconfirmed one is logged at warn level and excluded from "changed hardware" |
 | An unconfirmed write retries, then follows the write-failure policy | Implemented (round 2) | 3 consecutive unconfirmed attempts ⇒ `on_write_failure` (fail-safe duty by default). The audit reason keeps the original cause *and* names the fail-safe action, so the fail-safe is never reported as if it were the original failure |
-| A rule that changes target leaves no fan unattended | Implemented (round 2) | `perform_pending_handovers`: the abandoned output is driven to the fail-safe duty at the next tick and the handover is audited |
+| A rule that changes target leaves no fan unattended | Implemented (round 3, extended) | `perform_pending_handovers`: the abandoned channel is driven to the fail-safe duty at the next tick, and retried on a bounded cadence if that write does not land. Ownership is re-checked before every attempt, so a channel another rule has taken over is never written |
+| A handover that cannot be completed must not be forgotten | Implemented (round 3) | The handover book keeps it, `ohm-cli handovers` and the Diagnostics panel show it, `retry_failed_handovers` / `ohm-cli handovers --retry` re-arm it. The audit trail records every attempt with its outcome |
 
 ## 十 Testing
 
 | Required | Status | Evidence |
 |---|---|---|
-| Unit / integration / mock-hardware / automation tests | Implemented | **413 tests, 0 failed** at `096e13b`, across 15 crates, 8 integration test binaries and doc-tests |
+| Unit / integration / mock-hardware / automation tests | Implemented | **444 tests, 0 failed** at the round-3 revision, across 15 crates, 10 integration test binaries and doc-tests — the round-3 entry of `docs/verification-log.md` is authoritative |
 | Temperature→fan mapping, hysteresis, sensor disconnect, actuator failure, invalid value, device hotplug | Implemented | `tests/tests/{acceptance,edge_cases,rule_lifecycle,protocol_flow}.rs` |
 | A write result that was never confirmed, a `release` fallback, and rule retargeting | Implemented (round 2) | `tests/tests/{write_confirmation,fallback_release,rule_edit_state}.rs` — 14 tests covering the three defects |
+| Control handover integrity, asserted on the hardware calls | Implemented (round 3) | `tests/tests/handover_integrity.rs` (12 tests) and `tests/tests/handover_state.rs` (9 tests), on a shared fake rig whose three channels can apply, accept-without-confirming, or refuse. They assert the values asked of each channel, in order, the number of attempts, what the fake hardware is left at, and the queryable record — not log strings |
+| The desktop's write-status and record surfaces, rendered | Implemented (round 3) | `apps/desktop/src/test/writeStates.test.tsx` — 17 tests rendering the real screens through the real providers with only the IPC module mocked. Checked by mutation: reverting the unconfirmed tone to `ok` fails two tests, reverting the failed-handover tone to `warn` fails one |
 | Passes without special hardware | Implemented | every test uses the simulated provider |
 
 ## 十一 Acceptance scenarios
@@ -192,6 +201,17 @@ the `AI → structured rule → validation → engine → runtime` path, and
 | B — devices and their capabilities | Implemented | `scenario_b_capabilities_are_complete_and_honest` |
 | C — Mock GPU temp → rule → fan RPM, dynamically | Implemented | `scenario_c_mock_gpu_temperature_drives_the_fan`, `ohm-cli demo` |
 | D — real fan control works, or refuses honestly | **Unverified on hardware** | The path is implemented and tested against a fake LHM server, and since round 2 a write is only called `Applied` when the channel reads back the value it was given; an unreadable channel yields `Unconfirmed`, which is retried and then falls back. Neither of those is hardware evidence: no real SuperIO machine has run it, and no fan has been measured responding. Kit: `docs/windows-validation/` |
+
+## 十一.bis Deliverable: the Windows acceptance package
+
+The brief requires a reproducible deliverable, and there is no Windows build to ship.
+`scripts/make-acceptance-package.sh` produces a **source** acceptance package instead:
+the tracked tree at exactly one commit, the entry points an operator needs, an evidence
+index, and a SHA-256 manifest of every file. It refuses to package a dirty tree, states
+in its own README that it contains no Windows artefacts, and verifies its own output
+(manifest match; no VCS data, build output, dependencies, binaries or local runtime
+state). The shipped pre-check refuses a non-Windows host, and the package's build
+script stops at the first failure rather than continuing past it.
 
 ## 十二 Development process (Step 1–8)
 
@@ -237,5 +257,16 @@ Ordered by what blocks a defensible Windows MVP:
    adapter asking for slower re-enumeration is currently ignored. The remainder
    stay reserved with a documented reason rather than being deleted, because they
    are part of the adapter and protocol contracts.
-7. **Deferred by design**: plugin loading, scenes/profiles, app and game
+7. **The handover record does not survive a restart.** A pending handover lives in the
+   engine's memory, so if the app is killed while one is unfinished, the next start
+   has no record of it. The runtime's own shutdown path releases control channels, so
+   this is a gap in *reporting* rather than in safety, but it is a gap: the channel's
+   last abandoned duty is not re-established as owed work on restart.
+8. **A handover is superseded when an enabled rule merely *declares* the channel.**
+   Ownership is declared ownership (an enabled rule whose target is that channel),
+   which is what makes the check deterministic before the rules have run in that tick.
+   The consequence: if the declared owner then fails to drive the channel — its target
+   cannot be resolved, say — the channel keeps the abandoned value and no handover is
+   owed for it. The owner's own error status is the signal in that case.
+9. **Deferred by design**: plugin loading, scenes/profiles, app and game
    detection, natural-language rules, OpenHub/OpenFan hardware, release signing.

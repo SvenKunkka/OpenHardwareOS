@@ -411,8 +411,12 @@ in code, and `cargo deny check` is **required**, backed by a `deny.toml` that ha
 been run locally and passes). There is **no `continue-on-error` anywhere** in the
 workflow: a check that cannot fail is not a check.
 
-What is still missing before a first release: no release workflow, no code
-signing, and no generated third-party notices file — which `research.md`
+A **source acceptance package** for Windows is produced by
+`scripts/make-acceptance-package.sh`: the tracked tree at one commit, the pre-check /
+build / verify entry points, an evidence index and a SHA-256 manifest of every file,
+with the platform's own README stating that it contains no Windows build artefacts
+because none exist. What is still missing before a first release: no release workflow,
+no code signing, and no generated third-party notices file — which `research.md`
 (decision 13) recommends. Note also that a workflow definition is not a run:
 nothing in this repository has been executed by GitHub Actions, so every
 `windows-latest` job is **Prepared**, not verified. See
@@ -426,16 +430,16 @@ parses, validates and checks each of them on every test run. What does not exist
 is an **import** path: the app has no "load a rule file" button and no
 drag-and-drop, so a user must copy the file into `<config>/rules` by hand.
 
-**Workspace test status.** `cargo test --workspace` passes: **413 tests, 0
-failed**, exit code 0, measured at commit `096e13b` with the pinned toolchain
+**Workspace test status.** `cargo test --workspace` passes: **444 tests, 0
+failed**, exit code 0, measured at the round-3 revision with the pinned toolchain
 `rustc 1.98.0` / `cargo 1.98.0` (see `docs/verification-log.md`, which records the
 command, the environment and the result, and is the authority if this number ever
 disagrees with a fresh run). The suite spans `ohm-core`, `ohm-device-model`,
 `ohm-adapter-api`, `ohm-runtime`, `ohm-automation`, `ohm-protocol`, `ohm-adapters`,
-all five adapter crates, `ohm-desktop`, `ohm-cli` and the eight cross-crate
+all five adapter crates, `ohm-desktop`, `ohm-cli` and the ten cross-crate
 integration test binaries (`acceptance`, `edge_cases`, `fallback_release`,
-`gate_behaviour`, `protocol_flow`, `rule_edit_state`, `rule_lifecycle`,
-`write_confirmation`).
+`gate_behaviour`, `handover_integrity`, `handover_state`, `protocol_flow`,
+`rule_edit_state`, `rule_lifecycle`, `write_confirmation`).
 
 **Clippy now runs over the whole workspace.** This was an environment gap, not a
 project one: the machine's `PATH` toolchain mixed `clippy-driver 0.1.92` with

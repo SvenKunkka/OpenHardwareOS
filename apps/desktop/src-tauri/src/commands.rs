@@ -741,7 +741,12 @@ fallback:
         };
         let json = serde_json::to_value(&owed).unwrap();
         // `serde_json::Value` orders keys, so compare as a set.
-        let mut keys: Vec<&str> = json.as_object().unwrap().keys().map(String::as_str).collect();
+        let mut keys: Vec<&str> = json
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         keys.sort_unstable();
         let mut expected = vec![
             "attempts",
@@ -758,7 +763,10 @@ fallback:
             keys, expected,
             "an absent optional field must be absent, not null: {json}"
         );
-        assert_eq!(json["state"], "pending", "states are snake_case on the wire");
+        assert_eq!(
+            json["state"], "pending",
+            "states are snake_case on the wire"
+        );
 
         // With values, the optional fields appear and keep their names.
         let failed = HandoverReport {
@@ -784,7 +792,12 @@ fallback:
             hint: "edit the file".into(),
         };
         let json = serde_json::to_value(&note).unwrap();
-        let mut keys: Vec<&str> = json.as_object().unwrap().keys().map(String::as_str).collect();
+        let mut keys: Vec<&str> = json
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         keys.sort_unstable();
         assert_eq!(
             keys,
@@ -803,7 +816,6 @@ fallback:
             json["path"], r"C:\cfg\rules\legacy.yaml",
             "a Windows path must reach the frontend as the path it is"
         );
-
     }
 
     /// The handover contract: what the screen needs to show that a channel is still
