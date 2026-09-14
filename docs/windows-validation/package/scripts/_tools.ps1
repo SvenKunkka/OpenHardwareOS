@@ -350,6 +350,72 @@ function Get-DriveQualifier {
     return $null
 }
 
+function Test-DiskSpace {
+    <#
+    .SYNOPSIS
+        The disk-space check, with its two host dependencies injected.
+    .DESCRIPTION
+        The check needs two things this project cannot always have: a Windows host, and
+        a drive to ask. Both are parameters rather than assumptions —
+
+          * -IsWindowsHost: on a non-Windows host there are no drive letters to read, so
+            the check says it was skipped instead of guessing (the gate is the real
+            platform, never $env:OS, which any process can set);
+          * -FreeSpaceProvider: the only thing that touches the operating system. It is
+            called with the drive qualifier and returns free bytes, which lets the whole
+            decision — which drive, how much room, pass or fail — be exercised on a
+            machine with no drive letters at all.
+
+        Nothing else in it is host-dependent, and a path with no drive qualifier never
+        reaches the provider.
+    .OUTPUTS
+        [pscustomobject] Kind ('skipped' | 'passed' | 'short' | 'unreadable'), Qualifier,
+        FreeBytes, Detail.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][bool]$IsWindowsHost,
+        [Parameter(Mandatory)][scriptblock]$FreeSpaceProvider,
+        [double]$RequiredGb = 8
+    )
+    if (-not $IsWindowsHost) {
+        return [pscustomobject]@{
+            Kind      = 'skipped'
+            Qualifier = $null
+            FreeBytes = $null
+            Detail    = "free disk space not checked: this is not Windows. '$Path' is a POSIX path with no drive qualifier to read, and the build happens on Windows."
+        }
+    }
+    $qualifier = Get-DriveQualifier -Path $Path
+    if (-not $qualifier) {
+        return [pscustomobject]@{
+            Kind      = 'skipped'
+            Qualifier = $null
+            FreeBytes = $null
+            Detail    = "free disk space not checked: '$Path' has no drive qualifier (a UNC or non-drive path), and guessing one would report space on a volume that is not the one being written to."
+        }
+    }
+    try {
+        $free = & $FreeSpaceProvider $qualifier
+        if ($null -eq $free) { throw "the drive $qualifier did not report free space" }
+    } catch {
+        return [pscustomobject]@{
+            Kind      = 'unreadable'
+            Qualifier = $qualifier
+            FreeBytes = $null
+            Detail    = "could not read free space on ${qualifier}: $($_.Exception.Message)"
+        }
+    }
+    $freeGb = [math]::Round($free / 1GB, 1)
+    return [pscustomobject]@{
+        Kind      = if ($freeGb -ge $RequiredGb) { 'passed' } else { 'short' }
+        Qualifier = $qualifier
+        FreeBytes = $free
+        Detail    = "$freeGb GB free on ${qualifier} (the work directory's volume)"
+    }
+}
+
 function Test-WritableDirectory {
     <#
     .SYNOPSIS

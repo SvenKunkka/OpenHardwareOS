@@ -271,25 +271,22 @@ try {
 # no drive letters, and reading the first three characters of '/Users/name/pkg' as a
 # drive name is how this check once reported free space for the drive '/Us'. A path
 # with no drive qualifier is now reported as such instead of being guessed at.
-if (-not $IsWindows) {
-    Add-Note "free disk space not checked: this is not Windows. '$($script:WorkDir)' is a POSIX path with no drive qualifier to read, and the build happens on Windows."
-} else {
-    $qualifier = Get-DriveQualifier -Path $script:WorkDir
-    if (-not $qualifier) {
-        Add-Note "free disk space not checked: '$($script:WorkDir)' has no drive qualifier (a UNC or non-drive path), and guessing one would report space on a volume that is not the one being written to."
-    } else {
-        try {
-            $free = (Get-PSDrive -Name $qualifier.TrimEnd(':') -ErrorAction Stop).Free
-            if ($null -eq $free) { throw "the drive $qualifier did not report free space" }
-            $freeGb = [math]::Round($free / 1GB, 1)
-            Add-Result 'free disk space >= 8 GB' ($freeGb -ge 8) ("$freeGb GB free on ${qualifier} (the work directory's volume)")
-        } catch {
-            Add-Note "could not read free space on ${qualifier}: $($_.Exception.Message)"
-        }
-    }
+# The decision itself lives in Test-DiskSpace (_tools.ps1), with the platform and the
+# drive reading passed in, so the harness can exercise it on a machine that has neither.
+$disk = Test-DiskSpace -Path $script:WorkDir -IsWindowsHost $IsWindows -FreeSpaceProvider {
+    param($qualifier)
+    (Get-PSDrive -Name $qualifier.TrimEnd(':') -ErrorAction Stop).Free
+}
+switch ($disk.Kind) {
+    'passed'     { Add-Result 'free disk space >= 8 GB' $true $disk.Detail }
+    'short'      { Add-Result 'free disk space >= 8 GB' $false $disk.Detail }
+    'unreadable' { Add-Note $disk.Detail }
+    default      { Add-Note $disk.Detail }
+}
+if ($IsWindows) {
     $packageQualifier = Get-DriveQualifier -Path $script:PackageRoot
-    if ($packageQualifier -and $packageQualifier -ne $qualifier) {
-        Add-Note "the package is on $packageQualifier and the work directory is on $qualifier`: the build needs its space on the second, and copying the source crosses volumes."
+    if ($packageQualifier -and $packageQualifier -ne $disk.Qualifier) {
+        Add-Note "the package is on $packageQualifier and the work directory is on $($disk.Qualifier)`: the build needs its space on the second, and copying the source crosses volumes."
     }
 }
 

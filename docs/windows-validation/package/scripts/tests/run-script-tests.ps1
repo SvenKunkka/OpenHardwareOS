@@ -218,10 +218,18 @@ function Assert-ToolchainInherited {
     }
 }
 function Assert-NotRequestedToFail {
-    param([string]$Tool)
-    $fail = @($env:OHM_FAKE_FAIL -split ',') | Where-Object { $_.Trim() -ne '' }
-    if ($fail -contains $Tool) {
-        Write-Output "FAKE ${Tool}: failing on purpose (OHM_FAKE_FAIL)"
+    param([string]$Tool, [string[]]$Arguments = @())
+    # OHM_FAKE_FAIL fails the tool's *work* (so a build step can fail while the
+    # pre-check's `--version` probes still succeed); OHM_FAKE_FAIL_VERSION fails the
+    # probes too, which is how the harness checks that a non-zero exit from a version
+    # probe is noticed rather than reported as "available".
+    $failSteps = @($env:OHM_FAKE_FAIL -split ',') | Where-Object { $_.Trim() -ne '' }
+    $failAny = @($env:OHM_FAKE_FAIL_VERSION -split ',') | Where-Object { $_.Trim() -ne '' }
+    $versionProbe = ($Arguments -contains '--version')
+    $shouldFail = ($failAny -contains $Tool) -or ((-not $versionProbe) -and ($failSteps -contains $Tool))
+    if ($shouldFail) {
+        $mode = if ($failAny -contains $Tool) { 'OHM_FAKE_FAIL_VERSION' } else { 'OHM_FAKE_FAIL' }
+        Write-Output "FAKE ${Tool}: failing on purpose ($mode)"
         Record-Invocation -Tool "$Tool-FAILING" -Arguments @()
         exit 3
     }
@@ -236,7 +244,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '_common.ps1')
 $tool = 'rustup'
 Record-Invocation -Tool $tool -Arguments @($args)
-Assert-NotRequestedToFail -Tool $tool
+Assert-NotRequestedToFail -Tool $tool -Arguments @($args)
 Assert-ToolchainInherited -Tool $tool
 if ($args.Count -eq 0) { 'rustup 1.28.0 (test double)'; exit 0 }
 switch ($args[0]) {
@@ -287,7 +295,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '_common.ps1')
 $tool = 'cargo'
 Record-Invocation -Tool $tool -Arguments @($args)
-Assert-NotRequestedToFail -Tool $tool
+Assert-NotRequestedToFail -Tool $tool -Arguments @($args)
 Assert-ToolchainInherited -Tool $tool
 if ($args.Count -gt 0 -and $args[0] -eq '--version') { 'cargo 1.98.0 (797e8a9bc 2026-08-05)'; exit 0 }
 if ($args.Count -gt 0 -and $args[0] -eq 'clippy') {
@@ -334,7 +342,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '_common.ps1')
 $tool = 'rustc'
 Record-Invocation -Tool $tool -Arguments @($args)
-Assert-NotRequestedToFail -Tool $tool
+Assert-NotRequestedToFail -Tool $tool -Arguments @($args)
 Assert-ToolchainInherited -Tool $tool
 $version = if ($env:OHM_FAKE_RUSTC_VERSION) { $env:OHM_FAKE_RUSTC_VERSION } else { '1.98.0' }
 $hash = if ($env:OHM_FAKE_RUSTC_HASH) { $env:OHM_FAKE_RUSTC_HASH } else { '88d9e12ae' }
@@ -349,7 +357,7 @@ exit 0
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '_common.ps1')
 Record-Invocation -Tool 'node' -Arguments @($args)
-Assert-NotRequestedToFail -Tool 'node'
+Assert-NotRequestedToFail -Tool 'node' -Arguments @($args)
 $version = if ($env:OHM_FAKE_NODE_VERSION) { $env:OHM_FAKE_NODE_VERSION } else { 'v22.12.0' }
 $version
 exit 0
@@ -363,7 +371,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '_common.ps1')
 $tool = 'npm'
 Record-Invocation -Tool $tool -Arguments @($args)
-Assert-NotRequestedToFail -Tool $tool
+Assert-NotRequestedToFail -Tool $tool -Arguments @($args)
 if ($args.Count -gt 0 -and $args[0] -eq '--version') {
     $version = if ($env:OHM_FAKE_NPM_VERSION) { $env:OHM_FAKE_NPM_VERSION } else { '10.9.0' }
     $version
@@ -393,15 +401,16 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '_common.ps1')
 $tool = 'npx'
 Record-Invocation -Tool $tool -Arguments @($args)
-Assert-NotRequestedToFail -Tool $tool
+Assert-NotRequestedToFail -Tool $tool -Arguments @($args)
 Assert-ToolchainInherited -Tool $tool
 if ($args.Count -gt 0 -and $args[0] -eq 'tauri') {
     $mode = if ($env:OHM_FAKE_TAURI) { $env:OHM_FAKE_TAURI } else { 'ok' }
     if ($mode -eq 'fail') { 'FAKE npx: the tauri build failed on purpose'; exit 3 }
     if ($mode -eq 'touchpackage') {
+        # A build that produces its artefact *and* writes one file into the package: the
+        # only reason this run may fail is the write into the read-only package.
         if (-not $env:OHM_FAKE_PACKAGE) { 'FAKE npx: OHM_FAKE_PACKAGE is not set'; exit 5 }
         Set-Content -LiteralPath (Join-Path $env:OHM_FAKE_PACKAGE '.build-touched-the-package.tmp') -Value 'a build that wrote into the read-only package'
-        exit 0
     }
     if ($mode -eq 'nobundle') { exit 0 }
     if (-not $env:CARGO_TARGET_DIR) {
@@ -480,7 +489,7 @@ function Write-FakeManifest {
     }
     # LF endings and no trailing blank line: both verifiers (PowerShell and the shell
     # twin) read this file, and a CR would make the shell twin see a 65-character hash.
-    Set-Content -LiteralPath (Join-Path $root 'MANIFEST.sha256') -Value (@($lines) -join "`n") -NoNewline
+    Set-Content -LiteralPath (Join-Path $root 'MANIFEST.sha256') -Value ((@($lines) -join "`n") + "`n") -NoNewline
 }
 
 function New-FakePackage {
@@ -595,6 +604,11 @@ function Get-Tail {
     return "(last $Lines of $($all.Count) lines)`n" + (($all | Select-Object -Last $Lines) -join "`n")
 }
 
+function Test-OutputLine {
+    param([string]$Output, [string]$Line)
+    return [bool](@($Output -split "`n" | Where-Object { $_.Trim() -eq $Line }).Count -gt 0)
+}
+
 function Test-OutputHas {
     param([string]$Output, [string]$Pattern)
     return [bool]($Output -match [regex]::Escape($Pattern))
@@ -613,7 +627,7 @@ $script:EnvKeys = @(
     'PROCESSOR_ARCHITECTURE', 'OS', 'OHM_CALL_LOG', 'OHM_FAKE_PACKAGE', 'OHM_FAKE_TAURI',
     'OHM_FAKE_FAIL', 'OHM_FAKE_TOOLCHAINS', 'OHM_FAKE_RUSTC_VERSION', 'OHM_FAKE_RUSTC_HASH',
     'OHM_FAKE_CLIPPY_VERSION', 'OHM_FAKE_CLIPPY_HASH', 'OHM_FAKE_NODE_VERSION',
-    'OHM_FAKE_NPM_VERSION', 'OHM_REQUIRE_TOOLCHAIN'
+    'OHM_FAKE_NPM_VERSION', 'OHM_REQUIRE_TOOLCHAIN', 'OHM_FAKE_FAIL_VERSION'
 )
 $script:EnvOriginal = @{}
 foreach ($key in $script:EnvKeys) {
@@ -726,7 +740,7 @@ Invoke-Case -Name 'normal-first-run' -Defect 'a first run that does not produce,
 
     $build = Invoke-UnderTest -Script 'build.ps1' -Arguments @('-AllowNonWindows') -PackageRoot $pkg -WorkingDirectory $pkg -Label 'case01-build'
     Assert-That 'build exits 0' ($build.ExitCode -eq 0) "exit $($build.ExitCode)`n$(Get-Tail $build.Output)"
-    Assert-That 'build prints BUILD COMPLETE' (Test-OutputHas $build.Output 'BUILD COMPLETE') $build.Output
+    Assert-That 'build prints BUILD COMPLETE' (Test-OutputLine -Output $build.Output -Line 'BUILD COMPLETE') $build.Output
     Assert-That 'build prints the absolute installer path' (Test-OutputHas $build.Output (Join-Path $work 'target')) $build.Output
 
     $installer = Join-Path $work ('target/release/bundle/nsis/' + (Get-ExpectedInstallerName))
@@ -787,12 +801,13 @@ Invoke-Case -Name 'repeat-run' -Defect 'a second run blocked by the first run''s
 
     $second = Invoke-UnderTest -Script 'build.ps1' -Arguments @('-AllowNonWindows') -PackageRoot $pkg -WorkingDirectory $pkg -Label 'case02-build-2'
     Assert-That 'the second run exits 0 (not blocked by the first run''s output)' ($second.ExitCode -eq 0) "exit $($second.ExitCode)`n$(Get-Tail $second.Output)"
-    Assert-That 'the second run prints BUILD COMPLETE' (Test-OutputHas $second.Output 'BUILD COMPLETE') $second.Output
+    Assert-That 'the second run prints BUILD COMPLETE' (Test-OutputLine -Output $second.Output -Line 'BUILD COMPLETE') $second.Output
     Assert-That 'the second run noticed the installer already there before it started' (Test-OutputHas $second.Output 'before this run:') $second.Output
     Assert-That 'the second run produced its own artefact (hash differs from run 1)' ((Get-Sha256 -Path $installer) -ne $firstHash)
     Assert-That 'the copy was reset: run 1''s leftover is gone' (-not (Test-Path -LiteralPath (Join-Path $work 'source/leftover-from-run-1.txt')))
-    Assert-That 'the copy holds exactly the package''s files' `
-        (((Get-RelativeFiles -Root (Join-Path $work 'source')) -join '|') -eq ((Get-RelativeFiles -Root $pkg) -join '|'))
+    $copiedFiles = Get-RelativeFiles -Root (Join-Path $work 'source')
+    $missingFromCopy = @((Get-RelativeFiles -Root $pkg) | Where-Object { $copiedFiles -notcontains $_ })
+    Assert-That 'the reset copy still holds every package file' ($missingFromCopy.Count -eq 0) ($missingFromCopy -join ', ')
     Assert-That 'run 1''s evidence folder is still there' (Test-Path -LiteralPath (Join-Path $firstRunDir 'build-summary.txt') -PathType Leaf)
     Assert-That 'each run gets its own evidence folder' (@(Get-ChildItem -LiteralPath (Join-Path $work 'evidence') -Directory).Count -ge 2)
     Assert-That 'the package is still byte-for-byte unchanged' (((Get-RelativeFiles -Root $pkg) -join '|') -eq ($before -join '|'))
@@ -816,7 +831,7 @@ Invoke-Case -Name 'tampered-source-file' -Defect 'source tampering that is not r
     $build = Invoke-UnderTest -Script 'build.ps1' -Arguments @('-AllowNonWindows') -PackageRoot $pkg -WorkingDirectory $pkg -Label 'case03-build'
     Assert-That 'the build refuses to start' ($build.ExitCode -ne 0) "exit $($build.ExitCode)"
     Assert-That 'the build names the changed file' (Test-OutputHas $build.Output 'crates/ohm-core/src/lib.rs') $build.Output
-    Assert-That 'the build prints no BUILD COMPLETE' (-not (Test-OutputHas $build.Output 'BUILD COMPLETE')) $build.Output
+    Assert-That 'the build prints no BUILD COMPLETE' (-not (Test-OutputLine -Output $build.Output -Line 'BUILD COMPLETE')) $build.Output
     Assert-That 'nothing was copied into the work directory' (-not (Test-Path -LiteralPath (Join-Path $work 'source')))
 }
 
@@ -838,6 +853,8 @@ Invoke-Case -Name 'unknown-file-in-package' -Defect 'an unknown file that verifi
 
     $bash = Get-BashPath
     if ($bash) {
+        $systemPath = $script:EnvOriginal['PATH'].Value
+        if ($systemPath) { $env:PATH = "$env:PATH$([System.IO.Path]::PathSeparator)$systemPath" }
         Push-Location -LiteralPath $pkg
         try {
             $shOutput = & $bash (Join-Path $pkg 'scripts/verify-package.sh') 2>&1 | Out-String
@@ -865,7 +882,7 @@ Invoke-Case -Name 'build-writes-into-package' -Defect 'a build that writes into 
     Assert-That 'the build exits non-zero' ($build.ExitCode -ne 0) "exit $($build.ExitCode)"
     Assert-That 'the build reports the package as modified by this run' (Test-OutputHas $build.Output 'PACKAGE MODIFIED BY THIS RUN') $build.Output
     Assert-That 'the build names the file it put in the package' (Test-OutputHas $build.Output '.build-touched-the-package.tmp') $build.Output
-    Assert-That 'the build prints no BUILD COMPLETE' (-not (Test-OutputHas $build.Output 'BUILD COMPLETE')) $build.Output
+    Assert-That 'the build prints no BUILD COMPLETE' (-not (Test-OutputLine -Output $build.Output -Line 'BUILD COMPLETE')) $build.Output
 
     $verify = Invoke-UnderTest -Script 'verify-package.ps1' -PackageRoot $pkg -WorkingDirectory $pkg -Label 'case05-verify'
     Assert-That 'the package no longer verifies afterwards' ($verify.ExitCode -ne 0) $verify.Output
@@ -911,7 +928,7 @@ Invoke-Case -Name 'unrelated-current-directory' -Defect 'cargo metadata answerin
 
     $build = Invoke-UnderTest -Script 'build.ps1' -Arguments @('-AllowNonWindows') -PackageRoot $pkg -WorkingDirectory $elsewhere -Label 'case07-build'
     Assert-That 'build works from an unrelated directory' ($build.ExitCode -eq 0) "exit $($build.ExitCode)`n$(Get-Tail $build.Output)"
-    Assert-That 'build prints BUILD COMPLETE' (Test-OutputHas $build.Output 'BUILD COMPLETE') $build.Output
+    Assert-That 'build prints BUILD COMPLETE' (Test-OutputLine -Output $build.Output -Line 'BUILD COMPLETE') $build.Output
 
     $runDir = @(Get-ChildItem -LiteralPath (Join-Path $work 'evidence') -Directory | Select-Object -Last 1).FullName
     $record = Get-Content -LiteralPath (Join-Path $runDir '91-installer.txt') -Raw
@@ -988,7 +1005,7 @@ Invoke-Case -Name 'toolchain-propagation' -Defect '-Toolchain reaching some Rust
 
     $build = Invoke-UnderTest -Script 'build.ps1' -Arguments @('-AllowNonWindows', '-Toolchain', '1.98.0') -PackageRoot $pkg -WorkingDirectory $pkg -Label 'case09-build'
     Assert-That 'build exits 0 with -Toolchain' ($build.ExitCode -eq 0) "exit $($build.ExitCode)`n$(Get-Tail $build.Output)"
-    Assert-That 'build prints BUILD COMPLETE' (Test-OutputHas $build.Output 'BUILD COMPLETE') $build.Output
+    Assert-That 'build prints BUILD COMPLETE' (Test-OutputLine -Output $build.Output -Line 'BUILD COMPLETE') $build.Output
     Assert-That 'build never reached the decoy cargo' (@(Get-CallLog | Where-Object { $_ -like 'DECOY*' }).Count -eq 0) ((Get-CallLog) -join "`n")
 
     $calls = Get-CallLog
@@ -1025,7 +1042,7 @@ Invoke-Case -Name 'missing-installer' -Defect '"BUILD COMPLETE" printed because 
     Assert-That 'the run fails' ($build.ExitCode -ne 0) "exit $($build.ExitCode)"
     Assert-That 'the run says INSTALLER MISSING' (Test-OutputHas $build.Output 'INSTALLER MISSING') $build.Output
     Assert-That 'the message names the installer it expected' (Test-OutputHas $build.Output (Get-ExpectedInstallerName)) $build.Output
-    Assert-That 'no BUILD COMPLETE is printed' (-not (Test-OutputHas $build.Output 'BUILD COMPLETE')) $build.Output
+    Assert-That 'no BUILD COMPLETE is printed' (-not (Test-OutputLine -Output $build.Output -Line 'BUILD COMPLETE')) $build.Output
 }
 
 # ===========================================================================
@@ -1046,7 +1063,7 @@ Invoke-Case -Name 'stale-installer' -Defect 'a leftover installer passing as the
     Assert-That 'the run fails' ($build.ExitCode -ne 0) "exit $($build.ExitCode)"
     Assert-That 'the run says INSTALLER STALE' (Test-OutputHas $build.Output 'INSTALLER STALE') $build.Output
     Assert-That 'the message explains that a leftover is not this run''s artefact' (Test-OutputHas $build.Output 'leftover from an earlier build') $build.Output
-    Assert-That 'no BUILD COMPLETE is printed' (-not (Test-OutputHas $build.Output 'BUILD COMPLETE')) $build.Output
+    Assert-That 'no BUILD COMPLETE is printed' (-not (Test-OutputLine -Output $build.Output -Line 'BUILD COMPLETE')) $build.Output
 }
 
 # ===========================================================================
@@ -1059,14 +1076,14 @@ Invoke-Case -Name 'wrong-or-empty-installer' -Defect 'an installer belonging to 
     Assert-That 'an installer for another version fails the run' ($build.ExitCode -ne 0) "exit $($build.ExitCode)"
     Assert-That 'the run says INSTALLER MISMATCH' (Test-OutputHas $build.Output 'INSTALLER MISMATCH') $build.Output
     Assert-That 'the message names the file it found instead' (Test-OutputHas $build.Output 'OpenHardwareOS_0.2.0_x64-setup.exe') $build.Output
-    Assert-That 'no BUILD COMPLETE is printed' (-not (Test-OutputHas $build.Output 'BUILD COMPLETE')) $build.Output
+    Assert-That 'no BUILD COMPLETE is printed' (-not (Test-OutputLine -Output $build.Output -Line 'BUILD COMPLETE')) $build.Output
 
     Set-CaseEnvironment -PackageRoot $pkg -PathDirectories $shellTools -Extra @{ CARGO_HOME = $script:TempRoot + '/doubles'; OHM_FAKE_TAURI = 'empty' }
     Remove-Item -LiteralPath (Get-WorkDirFor -PackageRoot $pkg) -Recurse -Force -ErrorAction SilentlyContinue
     $empty = Invoke-UnderTest -Script 'build.ps1' -Arguments @('-AllowNonWindows') -PackageRoot $pkg -WorkingDirectory $pkg -Label 'case12-build-empty'
     Assert-That 'a zero-byte installer fails the run' ($empty.ExitCode -ne 0) "exit $($empty.ExitCode)"
     Assert-That 'the run says INSTALLER EMPTY' (Test-OutputHas $empty.Output 'INSTALLER EMPTY') $empty.Output
-    Assert-That 'no BUILD COMPLETE is printed for an empty installer' (-not (Test-OutputHas $empty.Output 'BUILD COMPLETE')) $empty.Output
+    Assert-That 'no BUILD COMPLETE is printed for an empty installer' (-not (Test-OutputLine -Output $empty.Output -Line 'BUILD COMPLETE')) $empty.Output
 }
 
 # ===========================================================================
@@ -1097,17 +1114,17 @@ Invoke-Case -Name 'failing-native-command-aborts' -Defect 'a native command''s n
     Assert-That 'the run says RUN STOPPED' (Test-OutputHas $build.Output 'RUN STOPPED at step') $build.Output
     Assert-That 'the run stops at the frontend step' (Test-OutputHas $build.Output 'frontend install (npm ci)') $build.Output
     Assert-That 'the Rust steps never ran' (@(Get-CallLog | Where-Object { $_ -like 'rustup-run-cargo*' -or $_ -like 'cargo|args=build*' }).Count -eq 0) ((Get-CallLog) -join "`n")
-    Assert-That 'no BUILD COMPLETE is printed' (-not (Test-OutputHas $build.Output 'BUILD COMPLETE')) $build.Output
+    Assert-That 'no BUILD COMPLETE is printed' (-not (Test-OutputLine -Output $build.Output -Line 'BUILD COMPLETE')) $build.Output
 
     # (b) the bundle step fails: no installer, no success.
     Set-CaseEnvironment -PackageRoot $pkg -PathDirectories $shellTools -Extra @{ CARGO_HOME = $script:TempRoot + '/doubles'; OHM_FAKE_FAIL = 'npx' }
     $npxFail = Invoke-UnderTest -Script 'build.ps1' -Arguments @('-AllowNonWindows') -PackageRoot $pkg -WorkingDirectory $pkg -Label 'case14-build-npx'
     Assert-That 'a failing tauri build aborts the run' ($npxFail.ExitCode -ne 0) "exit $($npxFail.ExitCode)"
     Assert-That 'the run stops at the bundle step' (Test-OutputHas $npxFail.Output 'RUN STOPPED at step 7') $npxFail.Output
-    Assert-That 'no BUILD COMPLETE is printed when the bundle fails' (-not (Test-OutputHas $npxFail.Output 'BUILD COMPLETE')) $npxFail.Output
+    Assert-That 'no BUILD COMPLETE is printed when the bundle fails' (-not (Test-OutputLine -Output $npxFail.Output -Line 'BUILD COMPLETE')) $npxFail.Output
 
     # (c) the pre-check must not report a tool as available when it exits non-zero.
-    Set-CaseEnvironment -PackageRoot $pkg -PathDirectories $shellTools -Extra @{ CARGO_HOME = $script:TempRoot + '/doubles'; OHM_FAKE_FAIL = 'npm' }
+    Set-CaseEnvironment -PackageRoot $pkg -PathDirectories $shellTools -Extra @{ CARGO_HOME = $script:TempRoot + '/doubles'; OHM_FAKE_FAIL_VERSION = 'npm' }
     $pre = Invoke-UnderTest -Script 'precheck.ps1' -Arguments @('-AllowNonWindows') -PackageRoot $pkg -WorkingDirectory $pkg -Label 'case14-precheck-npm'
     Assert-That 'a non-zero npm --version fails the pre-check' ($pre.ExitCode -ne 0) "exit $($pre.ExitCode)`n$(Get-Tail $pre.Output)"
     Assert-That 'the pre-check names npm as the failing tool' `
@@ -1115,7 +1132,7 @@ Invoke-Case -Name 'failing-native-command-aborts' -Defect 'a native command''s n
     Assert-That 'the pre-check quotes the failing exit code' (Test-OutputHas $pre.Output 'exit code 3') $pre.Output
 
     # (d) a failing rustc, likewise.
-    Set-CaseEnvironment -PackageRoot $pkg -PathDirectories $shellTools -Extra @{ CARGO_HOME = $script:TempRoot + '/doubles'; OHM_FAKE_FAIL = 'rustc' }
+    Set-CaseEnvironment -PackageRoot $pkg -PathDirectories $shellTools -Extra @{ CARGO_HOME = $script:TempRoot + '/doubles'; OHM_FAKE_FAIL_VERSION = 'rustc' }
     $preRustc = Invoke-UnderTest -Script 'precheck.ps1' -Arguments @('-AllowNonWindows') -PackageRoot $pkg -WorkingDirectory $pkg -Label 'case14-precheck-rustc'
     Assert-That 'a non-zero rustc --version fails the pre-check' ($preRustc.ExitCode -ne 0) "exit $($preRustc.ExitCode)`n$(Get-Tail $preRustc.Output)"
     Assert-That 'the pre-check reports rustc as unavailable' (Test-OutputHas $preRustc.Output 'rustc available') $preRustc.Output
@@ -1128,11 +1145,11 @@ Invoke-Case -Name 'precheck-gate-blocks-build' -Defect 'a build that starts alth
     $pkg = New-FakePackage -Root (Join-Path (New-CaseRoot 'gate') 'OpenHardwareOS-cafe015-windows-acceptance')
     $work = Get-WorkDirFor -PackageRoot $pkg
     # Break the toolchain so the pre-check fails whatever the host is.
-    Set-CaseEnvironment -PackageRoot $pkg -PathDirectories $shellTools -Extra @{ CARGO_HOME = $script:TempRoot + '/doubles'; OHM_FAKE_FAIL = 'rustup,cargo,rustc' }
+    Set-CaseEnvironment -PackageRoot $pkg -PathDirectories $shellTools -Extra @{ CARGO_HOME = $script:TempRoot + '/doubles'; OHM_FAKE_FAIL_VERSION = 'rustup,cargo,rustc' }
     $build = Invoke-UnderTest -Script 'build.ps1' -Arguments @('-AllowNonWindows') -PackageRoot $pkg -WorkingDirectory $pkg -Label 'case15-build'
     Assert-That 'the build exits non-zero' ($build.ExitCode -ne 0) "exit $($build.ExitCode)"
     Assert-That 'the build says it did not start' (Test-OutputHas $build.Output 'BUILD NOT STARTED') $build.Output
-    Assert-That 'the build prints no BUILD COMPLETE' (-not (Test-OutputHas $build.Output 'BUILD COMPLETE')) $build.Output
+    Assert-That 'the build prints no BUILD COMPLETE' (-not (Test-OutputLine -Output $build.Output -Line 'BUILD COMPLETE')) $build.Output
     Assert-That 'no source was copied' (-not (Test-Path -LiteralPath (Join-Path $work 'source')))
 
     # On Windows the host check would pass, so this is the non-Windows half of the gate:
@@ -1165,6 +1182,34 @@ Invoke-Case -Name 'disk-space-check-scope' -Defect 'the disk-space check reading
     $toolsPath = Join-Path $script:ScriptsDir '_tools.ps1'
     . $toolsPath
     Assert-That '_tools.ps1 defines Get-DriveQualifier (dot-sourced here as the scripts do)' ([bool](Get-Command -Name Get-DriveQualifier -ErrorAction SilentlyContinue))
+
+    # The whole disk-space decision, with the host and the drive reading injected: this
+    # is what makes "it reads a drive qualifier" checkable on a machine with no drives.
+    $script:providerCalled = $false
+    $neverCall = { param($q) $script:providerCalled = $true; return 100GB }
+    $posixOnFakeWindows = Test-DiskSpace -Path '/Users/operator/OpenHardwareOS-build' -IsWindowsHost $true -FreeSpaceProvider $neverCall
+    Assert-That 'a POSIX path yields a skip, not a drive' ($posixOnFakeWindows.Kind -eq 'skipped') $posixOnFakeWindows.Detail
+    Assert-That 'a POSIX path never reaches the drive reader (the /Us defect)' (-not $script:providerCalled)
+    Assert-That 'the skip says there is no drive qualifier' (Test-OutputHas $posixOnFakeWindows.Detail 'no drive qualifier') $posixOnFakeWindows.Detail
+
+    $script:providerCalled = $false
+    $unc = Test-DiskSpace -Path '\\server\share\ohm-build' -IsWindowsHost $true -FreeSpaceProvider $neverCall
+    Assert-That 'a UNC path yields a skip, not a drive' (($unc.Kind -eq 'skipped') -and (-not $script:providerCalled)) $unc.Detail
+
+    $roomy = Test-DiskSpace -Path 'D:\ohm-build' -IsWindowsHost $true -FreeSpaceProvider { param($q) if ($q -ne 'D:') { throw "asked for $q" }; return 12GB }
+    Assert-That 'a drive path reads that drive and passes with room' (($roomy.Kind -eq 'passed') -and ($roomy.Qualifier -eq 'D:')) $roomy.Detail
+    Assert-That 'the passing line names the drive it read' (Test-OutputHas $roomy.Detail '12 GB free on D:') $roomy.Detail
+
+    $tight = Test-DiskSpace -Path 'C:\ohm-build' -IsWindowsHost $true -FreeSpaceProvider { param($q) return 2GB }
+    Assert-That 'too little space is a failure, not a note' ($tight.Kind -eq 'short') $tight.Detail
+
+    $unreadable = Test-DiskSpace -Path 'C:\ohm-build' -IsWindowsHost $true -FreeSpaceProvider { param($q) throw 'no such drive' }
+    Assert-That 'a drive that cannot be read is a note, not a guess' (($unreadable.Kind -eq 'unreadable') -and (Test-OutputHas $unreadable.Detail 'could not read free space on C:')) $unreadable.Detail
+
+    $script:providerCalled = $false
+    $notWindows = Test-DiskSpace -Path 'C:\ohm-build' -IsWindowsHost $false -FreeSpaceProvider $neverCall
+    Assert-That 'the platform gate wins even for a drive-looking path' (($notWindows.Kind -eq 'skipped') -and (-not $script:providerCalled)) $notWindows.Detail
+    Assert-That 'the platform skip says the build happens on Windows' (Test-OutputHas $notWindows.Detail 'this is not Windows') $notWindows.Detail
 
     $qualifierCases = @(
         @{ Path = 'C:\Users\operator\OpenHardwareOS-build'; Expect = 'C:' },

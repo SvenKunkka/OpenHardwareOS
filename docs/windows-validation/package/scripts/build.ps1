@@ -87,7 +87,7 @@ $script:Evidence = Join-Path (Join-Path $script:WorkDir 'evidence') $script:RunS
 $script:Started = Get-Date
 $script:StepIndex = 0
 $script:Summary = New-Object System.Collections.Generic.List[string]
-$script:Installer = $null
+$script:InstallerInfo = $null
 $script:InstallerRecord = ''
 
 if ($script:WorkDir -eq $script:PackageRoot) {
@@ -519,6 +519,14 @@ if ($SkipBundle) {
     $npx = Get-ToolPath 'npx'
     Invoke-Step 'NSIS installer bundle (npx tauri build)' $npx @('tauri', 'build') $desktop
 
+    # The package must still be the package — checked before the installer verdict, so
+    # that a build which wrote into the read-only package is reported as that, and not
+    # as a missing installer.
+    Write-Host ''
+    Write-Host '[gate] verify the package again, after the build'
+    Assert-PackageUntouched -PackageRoot $script:PackageRoot -Before $packageFilesBefore -VerifyScript $verifyScript `
+        -LogPath (Join-Path $script:Evidence '90-package-verify-after.log')
+
     $verdict = Test-InstallerProduced -PreState $preState -BundleRoot $bundleRoot -ExpectedName $tauri.ExpectedName
     if (-not $verdict.Ok) {
         Fail-Run $verdict.Message @(
@@ -546,10 +554,15 @@ if ($SkipBundle) {
         $script:Summary.Add(("ARTEFACT {0} sha256={1} bytes={2}" -f (Get-PathRelativeTo -Path $item.FullName -Base $bundleRoot), $hash, $item.Length))
     }
 
-    $script:Installer = [pscustomobject]@{
-        Path   = $installer.FullName
-        Length = $installer.Length
-        Sha256 = $installerHash
+    # Deliberately not $script:Installer: PowerShell variable names are
+    # case-insensitive, so `$script:Installer` and the `$installer` FileInfo above are
+    # the same variable, and assigning this summary would silently replace the file
+    # with it. (The harness caught exactly that: `$installer.LastWriteTimeUtc` became
+    # null one statement later.)
+    $script:InstallerInfo = [pscustomobject]@{
+        Path    = $installer.FullName
+        Length  = $installer.Length
+        Sha256  = $installerHash
         Written = $installer.LastWriteTimeUtc
     }
     $script:InstallerRecord = @(
@@ -575,17 +588,19 @@ if ($SkipBundle) {
 }
 
 # --- The package must still be the package ------------------------------------
-Write-Host ''
-Write-Host '[gate] verify the package again, after the build'
-Assert-PackageUntouched -PackageRoot $script:PackageRoot -Before $packageFilesBefore -VerifyScript $verifyScript `
-    -LogPath (Join-Path $script:Evidence '90-package-verify-after.log')
+if ($SkipBundle) {
+    Write-Host ''
+    Write-Host '[gate] verify the package again, after the build'
+    Assert-PackageUntouched -PackageRoot $script:PackageRoot -Before $packageFilesBefore -VerifyScript $verifyScript `
+        -LogPath (Join-Path $script:Evidence '90-package-verify-after.log')
+}
 
 Write-Host ''
 Write-Host 'BUILD COMPLETE' -ForegroundColor Green
 Write-Summary
 Write-Host ("evidence: {0}" -f $script:Evidence)
-if ($script:Installer) {
-    Write-Host ("installer: {0}  ({1} bytes, sha256 {2})" -f $script:Installer.Path, $script:Installer.Length, $script:Installer.Sha256)
+if ($script:InstallerInfo) {
+    Write-Host ("installer: {0}  ({1} bytes, sha256 {2})" -f $script:InstallerInfo.Path, $script:InstallerInfo.Length, $script:InstallerInfo.Sha256)
 }
 Write-Host ''
 Write-Host 'Next: docs\windows-validation\checklist.md §7.2 (install, needs administrator),'

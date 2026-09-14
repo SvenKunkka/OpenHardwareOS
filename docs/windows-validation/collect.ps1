@@ -57,6 +57,51 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+
+# Refuse to write inside an assembled acceptance package.
+#
+# The default output root is the current directory, so running this from a package's
+# root — the obvious thing to do, and what the quick start used to say — writes the
+# evidence bundle *inside* the package. The package's own manifest then no longer
+# matches its contents, and every later `verify-package` or `build` refuses to run: the
+# collector breaks the package it is collecting evidence for. A package is recognisable
+# by the MANIFEST.sha256 at its root, so that is what is checked, for the resolved output
+# root and for every directory above it.
+function Get-PackageRootAbove {
+    param([string]$Path)
+    try {
+        $current = [System.IO.Path]::GetFullPath($Path)
+    } catch {
+        return $null
+    }
+    while (-not [string]::IsNullOrWhiteSpace($current)) {
+        if (Test-Path -LiteralPath (Join-Path $current 'MANIFEST.sha256') -PathType Leaf) {
+            return $current
+        }
+        $parent = Split-Path -Parent $current
+        if ($parent -eq $current) { break }
+        $current = $parent
+    }
+    return $null
+}
+
+$script:PackageRoot = Get-PackageRootAbove -Path $OutputRoot
+if ($null -ne $script:PackageRoot) {
+    Write-Host ''
+    Write-Host 'REFUSING TO COLLECT: the output folder is inside an assembled acceptance package.' -ForegroundColor Red
+    Write-Host "  output root  : $OutputRoot"
+    Write-Host "  package root : $script:PackageRoot"
+    Write-Host ''
+    Write-Host 'A bundle written into the package would stop it matching its own manifest, and'
+    Write-Host 'every later verify-package.ps1 or build.ps1 would refuse to run. Give the'
+    Write-Host 'collector somewhere outside the package to write, for example:'
+    Write-Host ''
+    Write-Host '  .\docs\windows-validation\collect.ps1 -OutputRoot "$env:USERPROFILE\OpenHardwareOS-evidence"'
+    Write-Host ''
+    Write-Host 'Nothing was collected and nothing was written.'
+    exit 1
+}
+
 $script:Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $script:Computer = $env:COMPUTERNAME
 if ([string]::IsNullOrWhiteSpace($script:Computer)) { $script:Computer = 'unknown-host' }

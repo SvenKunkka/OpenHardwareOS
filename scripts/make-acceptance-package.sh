@@ -76,12 +76,50 @@ git archive --format=tar "$SHA" | tar -x -C "$PKG"
 TEMPLATES="$REPO_ROOT/docs/windows-validation/package"
 [ -d "$TEMPLATES" ] || fail "missing $TEMPLATES"
 mkdir -p "$PKG/scripts"
-cp "$TEMPLATES/scripts/precheck.ps1" "$PKG/scripts/"
-cp "$TEMPLATES/scripts/build.ps1" "$PKG/scripts/"
-cp "$TEMPLATES/scripts/verify-package.ps1" "$PKG/scripts/"
-cp "$TEMPLATES/scripts/verify-package.sh" "$PKG/scripts/"
+# The entry points an operator runs, plus the shared helper they all dot-source
+# (_tools.ps1 resolves every tool to an absolute path and pins the toolchain). Kept as
+# an explicit list, and checked against the template directory, so a new file there
+# cannot ship half-wired: a package missing _tools.ps1 would fail on every entry point.
+ENTRY_SCRIPTS="_tools.ps1 precheck.ps1 build.ps1 verify-package.ps1 verify-package.sh"
+for entry in $ENTRY_SCRIPTS; do
+  [ -f "$TEMPLATES/scripts/$entry" ] || fail "missing $TEMPLATES/scripts/$entry"
+done
+for template in "$TEMPLATES"/scripts/*.ps1 "$TEMPLATES"/scripts/*.sh; do
+  [ -e "$template" ] || continue
+  name="$(basename "$template")"
+  case " $ENTRY_SCRIPTS " in
+    *" $name "*) ;;
+    *) fail "$TEMPLATES/scripts/$name is not in the packager's entry-point list — add it there, or the package ships without it" ;;
+  esac
+done
+for entry in $ENTRY_SCRIPTS; do
+  cp "$TEMPLATES/scripts/$entry" "$PKG/scripts/"
+done
 cp "$TEMPLATES/README-ACCEPTANCE.md" "$PKG/README-ACCEPTANCE.md"
 chmod +x "$PKG/scripts/verify-package.sh"
+
+# The tracked tree also contains this template directory, so the entry points now exist
+# twice in the package: as scripts\<name> (copied above, from the working tree) and as
+# docs/windows-validation/package/scripts/<name> (from the archived commit). On a clean
+# tree they are byte-identical. With --allow-dirty they can differ, and then one of the
+# two is not the script the operator will run — say so rather than shipping the ambiguity
+# silently.
+TEMPLATE_DRIFT=0
+check_drift() {
+  # $1 the file an operator runs, $2 the archived copy of the same file
+  [ -f "$2" ] || return 0
+  if ! cmp -s "$1" "$2"; then
+    echo "  WARNING: ${2#"$PKG"/} differs from ${1#"$PKG"/} (uncommitted worktree): the package holds two versions of that file, and ${1#"$PKG"/} is the one an operator uses" >&2
+    TEMPLATE_DRIFT=$((TEMPLATE_DRIFT+1))
+  fi
+}
+for entry in $ENTRY_SCRIPTS; do
+  check_drift "$PKG/scripts/$entry" "$PKG/docs/windows-validation/package/scripts/$entry"
+done
+check_drift "$PKG/README-ACCEPTANCE.md" "$PKG/docs/windows-validation/package/README-ACCEPTANCE.md"
+if [ "$TEMPLATE_DRIFT" -eq 0 ]; then
+  echo "  ok: the archived copy of every entry point and of the README is identical to the shipped one"
+fi
 
 # ---------------------------------------------------------------------------
 # 3. Record the revision inside the package and in the quick start.
@@ -111,18 +149,24 @@ Machine the checks below were run on: macOS 26.6.2 (25G83) arm64, pinned
 
 | What | Status | Where the evidence is |
 |---|---|---|
-| Rust workspace tests (446 passed, 0 failed), \`clippy --workspace --all-targets -- -D warnings\`, \`cargo fmt --check\`, \`cargo deny check\` | Passed on macOS at this commit | \`docs/verification-log.md\` — the round-3 entry records every command, its environment and its result |
-| Frontend typecheck, 5 test files / 39 tests, production build | Passed on macOS at this commit | \`docs/verification-log.md\` (same entry) |
+| Rust workspace test suite, \`clippy --workspace --all-targets -- -D warnings\`, \`cargo fmt --check\`, \`cargo deny check\` | Passed on macOS at this commit | \`docs/verification-log.md\` — the round-3 entry records every command, its environment, its result and the exact pass count |
+| Frontend typecheck, test suite, production build | Passed on macOS at this commit | \`docs/verification-log.md\` (same entry) |
 | Simulated closed loop (\`ohm-cli demo\`, \`ohm-desktop --selftest --mock\`, \`ohm-cli doctor --mock\`) | Passed on macOS at this commit | \`docs/verification-log.md\` |
+| The acceptance entry points' control flow (\`precheck.ps1\`, \`build.ps1\`, \`verify-package.ps1\`, \`_tools.ps1\`) | Exercised on macOS **with test doubles only** | \`docs/windows-validation/package/scripts/tests/run-script-tests.ps1\` — one case per defect that was real, with the failing assertion named for each |
 | Windows: WMI storage, \`reg.exe\` autostart, tray, NVML, LibreHardwareMonitor against real hardware, NSIS install | **Prepared — never run** | \`docs/windows-validation/README.md\` (the honest baseline table) |
 | A physical fan responding to a write | **No evidence at all** | \`docs/windows-validation/README.md\` — needs a tachometer, separately from any Windows run |
 | Licence decisions (ADR 0002, ADR 0004) | **Proposed, not accepted** | \`docs/decisions/\` |
 
+**Why no test count is quoted here.** A number written into a package goes stale the
+next time a test is added — this file used to assert a count that was already wrong.
+\`docs/verification-log.md\` is the authority: it records each command, its environment,
+its result and the revision it was run at.
+
 **What this package cannot tell you.** Nothing in it has been executed on Windows.
 The pre-check, the build script and the evidence collector are written and reviewed,
-and their logic was exercised on the development machine, but a Windows run is the
-only thing that can produce Windows evidence. Treat every Windows claim in the docs
-as *Prepared* until you produce it here.
+and their control flow was exercised on the development machine with test doubles, but a
+Windows run is the only thing that can produce Windows evidence. Treat every Windows
+claim in the docs as *Prepared* until you produce it here.
 
 Verify the package before use:
 
@@ -130,7 +174,18 @@ Verify the package before use:
 .\\scripts\\verify-package.ps1
 \`\`\`
 
-then follow \`README-ACCEPTANCE.md\`.
+Then follow \`README-ACCEPTANCE.md\`. Two things about the flow are worth repeating here,
+because both exist to keep this package verifiable:
+
+* the build writes **outside** the package. Its output — logs, the environment record,
+  the installer — goes to a work directory beside the extracted package
+  (\`<package>-build\\\` by default, or whatever you pass as \`-WorkDir\` to both
+  \`precheck.ps1\` and \`build.ps1\`). Nothing a run produces lands in here, so the
+  manifest still describes this package after a build, and a second run works;
+* \`collect.ps1\` writes a bundle folder into the directory it is given, so give it one
+  outside the package (\`-OutputRoot <work>\\evidence\`). A collector bundle inside the
+  package is a file the manifest does not describe, and the next verification will
+  say so.
 EOF
 
 # ---------------------------------------------------------------------------
@@ -223,13 +278,21 @@ directory         : $PKG
 archive           : $ZIP
 archive size      : $ZIP_SIZE bytes
 files             : $FILE_COUNT (all listed in MANIFEST.sha256)
+entry points      : scripts\precheck.ps1, scripts\build.ps1, scripts\verify-package.ps1,
+                    scripts\_tools.ps1 (shared by both) and scripts\verify-package.sh
+script tests      : docs\windows-validation\package\scripts\tests\run-script-tests.ps1
+                    (test doubles only — NOT evidence that a Windows build succeeds)
+build writes to   : a work directory BESIDE the package (<package>-build\, or -WorkDir),
+                    never inside it, so the package still matches this manifest after a build
 MANIFEST.sha256   : $MANIFEST_SHA
 archive SHA-256   : $ZIP_SHA
 
 Verified on this machine: contents match the manifest, no VCS data, no build
 output, no dependencies, no binaries, no local runtime state.
 NOT verified anywhere: anything requiring Windows. The pre-check, build and
-collector scripts are unexecuted on Windows and are marked *Prepared*.
+collector scripts are unexecuted on Windows and are marked *Prepared*; their
+control flow was exercised here with test doubles, which proves nothing about
+WMI, NSIS, the registry, NVML or a real fan.
 ================================================================================
 EOF
 
