@@ -340,6 +340,13 @@ mv "$STAGE_PKG" "$PKG"
 ( cd "$OUT_ROOT" && zip -q -r -X "$NAME.zip" "$NAME" )
 ZIP_SHA="$(python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$ZIP")"
 MANIFEST_SHA="$(python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$PKG/MANIFEST.sha256")"
+
+# An artefact cannot contain its own hash — writing it inside would change the hash it
+# records. So the digest goes beside the archive, in the format `sha256sum -c` and
+# `Get-FileHash` users both expect, next to the file it describes.
+ZIP_BASE="$(basename "$ZIP")"
+printf '%s  %s\n' "$ZIP_SHA" "$ZIP_BASE" > "$ZIP.sha256"
+printf '%s  %s\n' "$MANIFEST_SHA" "MANIFEST.sha256" > "$PKG/MANIFEST.sha256.txt"
 FILE_COUNT="$(wc -l < "$PKG/MANIFEST.sha256" | tr -d ' ')"
 ZIP_SIZE="$(wc -c < "$ZIP" | tr -d ' ')"
 
@@ -365,6 +372,7 @@ build writes to   : a work directory BESIDE the package (<package>-build\, or -W
                     never inside it, so the package still matches this manifest after a build
 MANIFEST.sha256   : $MANIFEST_SHA
 archive SHA-256   : $ZIP_SHA
+hash beside it    : $ZIP.sha256 (an artefact cannot contain its own digest)
 
 Verified on this machine: contents match the manifest, no VCS data, no build
 output, no dependencies, no binaries, no local runtime state.

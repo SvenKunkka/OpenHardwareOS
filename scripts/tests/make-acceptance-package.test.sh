@@ -103,6 +103,10 @@ check "the first package was produced" "$([ "$FIRST_CODE" -eq 0 ] && echo 1 || e
 FIRST_ZIP="$(ls "$FIX1"/dist/acceptance/*.zip 2>/dev/null | head -1)"
 FIRST_SHA="$(python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$FIRST_ZIP" 2>/dev/null)"
 check "it has an archive" "$([ -n "$FIRST_ZIP" ] && echo 1 || echo 0)" "$FIRST_ZIP"
+SIDECAR_SHA="$(awk '{print $1}' "$FIRST_ZIP.sha256" 2>/dev/null)"
+check "  and a hash written beside it, not inside it" \
+  "$([ -n "$SIDECAR_SHA" ] && [ "$SIDECAR_SHA" = "$FIRST_SHA" ] && echo 1 || echo 0)" \
+  "$FIRST_ZIP.sha256 -> $SIDECAR_SHA"
 
 ( cd "$FIX1" && ./scripts/make-acceptance-package.sh > "$WORK/second.log" 2>&1 )
 SECOND_CODE=$?
