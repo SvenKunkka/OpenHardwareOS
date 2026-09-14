@@ -103,10 +103,37 @@ check "the first package was produced" "$([ "$FIRST_CODE" -eq 0 ] && echo 1 || e
 FIRST_ZIP="$(ls "$FIX1"/dist/acceptance/*.zip 2>/dev/null | head -1)"
 FIRST_SHA="$(python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$FIRST_ZIP" 2>/dev/null)"
 check "it has an archive" "$([ -n "$FIRST_ZIP" ] && echo 1 || echo 0)" "$FIRST_ZIP"
-SIDECAR_SHA="$(awk '{print $1}' "$FIRST_ZIP.sha256" 2>/dev/null)"
+SIDECAR_SHA="$(awk 'NR==1 {print $1}' "$FIRST_ZIP.sha256" 2>/dev/null)"
 check "  and a hash written beside it, not inside it" \
   "$([ -n "$SIDECAR_SHA" ] && [ "$SIDECAR_SHA" = "$FIRST_SHA" ] && echo 1 || echo 0)" \
   "$FIRST_ZIP.sha256 -> $SIDECAR_SHA"
+check "  the sidecar also carries the manifest digest" \
+  "$([ "$(wc -l < "$FIRST_ZIP.sha256" | tr -d ' ')" = "2" ] && grep -q 'MANIFEST.sha256' "$FIRST_ZIP.sha256" && echo 1 || echo 0)" \
+  "$(tr '\n' '|' < "$FIRST_ZIP.sha256")"
+# Nothing may be written into the package after the manifest is computed: the manifest
+# claims to list every file, so a file added afterwards makes the package fail its own
+# verification. The first version of the sidecar did exactly that.
+PKG1="$(ls -d "$FIX1"/dist/acceptance/*-windows-acceptance | head -1)"
+UNLISTED="$(python3 - "$PKG1" <<'PYCHECK'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+listed = {
+    line.split("  ", 1)[1].strip()
+    for line in (root / "MANIFEST.sha256").read_text().splitlines()
+    if "  " in line
+}
+present = {
+    path.relative_to(root).as_posix()
+    for path in root.rglob("*")
+    if path.is_file() and path.name != "MANIFEST.sha256"
+}
+extra = sorted(present - listed)
+missing = sorted(listed - present)
+print("; ".join(f"unlisted={extra}" if extra else []) + ("; " if extra and missing else "") + ("; ".join(f"missing={missing}" if missing else [])))
+PYCHECK
+)"
+check "  every file in the package is in its manifest" \
+  "$([ -z "$UNLISTED" ] && echo 1 || echo 0)" "${UNLISTED:-all 20 files listed}"
 
 ( cd "$FIX1" && ./scripts/make-acceptance-package.sh > "$WORK/second.log" 2>&1 )
 SECOND_CODE=$?

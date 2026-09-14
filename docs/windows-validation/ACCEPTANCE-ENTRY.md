@@ -28,7 +28,11 @@
 |---|---|---|---|
 | `27ee667`（第三轮） | `dist/acceptance/OpenHardwareOS-27ee667-windows-acceptance{,.zip}` | 192 | `53f76a4fc64c738e96341c03c45ce30bccee96cc7a597ba8046014959a6fb21f`（**重建**，见下） |
 | `5fd8c23`（第四轮） | `dist/acceptance/OpenHardwareOS-5fd8c23-windows-acceptance{,.zip}` | 201 | `fddcd1886ca96c1ed119b7b6b90202b2fb538cff0e82bb980dd503654ab05e4d` |
-| 第五轮最终包 | `dist/acceptance/OpenHardwareOS-<最终提交短号>-windows-acceptance{,.zip}` | 见其 `MANIFEST.sha256` | 见压缩包**旁边**的 `<同名>.zip.sha256`（包内无法自述自身摘要），打包器输出里也会打印 |
+| 第五轮及以后 | `dist/acceptance/OpenHardwareOS-<提交短号>-windows-acceptance{,.zip}` | 见其 `MANIFEST.sha256` | 见压缩包**旁边**的 `<同名>.zip.sha256`（包内无法自述自身摘要），打包器输出里也会打印 |
+
+**你手上的这一包是哪一版**：看包根 `README-ACCEPTANCE.md` 顶部的 `Commit` 行（打包时写入），
+摘要看与压缩包同目录的 `<同名>.zip.sha256`（第一行是压缩包，第二行是包内清单文件）。
+包内无法写自己的摘要——那会改变它正在记录的哈希。
 
 包内每个文件的摘要都在 `MANIFEST.sha256` 里；同一目录下还有 `MANIFEST.sha256.txt`
 给出清单文件自身的摘要。校验方式（Windows 或 macOS 均可）：

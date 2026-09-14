@@ -341,12 +341,19 @@ mv "$STAGE_PKG" "$PKG"
 ZIP_SHA="$(python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$ZIP")"
 MANIFEST_SHA="$(python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$PKG/MANIFEST.sha256")"
 
-# An artefact cannot contain its own hash — writing it inside would change the hash it
-# records. So the digest goes beside the archive, in the format `sha256sum -c` and
-# `Get-FileHash` users both expect, next to the file it describes.
+# An artefact cannot contain its own hash — writing the digest inside would change the
+# hash it records — and that is true of the manifest as well as of the archive. Both
+# digests therefore go into one file *beside* the archive, in the format `sha256sum -c`
+# expects, with paths relative to the directory the archive sits in.
+#
+# The first version of this wrote the manifest's digest into the package after the
+# manifest had been computed, which made the package fail its own verification: an
+# out-of-manifest file inside the very thing that asserts every file is in the manifest.
 ZIP_BASE="$(basename "$ZIP")"
-printf '%s  %s\n' "$ZIP_SHA" "$ZIP_BASE" > "$ZIP.sha256"
-printf '%s  %s\n' "$MANIFEST_SHA" "MANIFEST.sha256" > "$PKG/MANIFEST.sha256.txt"
+{
+  printf '%s  %s\n' "$ZIP_SHA" "$ZIP_BASE"
+  printf '%s  %s\n' "$MANIFEST_SHA" "$NAME/MANIFEST.sha256"
+} > "$ZIP.sha256"
 FILE_COUNT="$(wc -l < "$PKG/MANIFEST.sha256" | tr -d ' ')"
 ZIP_SIZE="$(wc -c < "$ZIP" | tr -d ' ')"
 
