@@ -64,8 +64,9 @@ impl ProbeFailure {
 /// Celsius for NVMe and most SATA SSDs. Drives that do not implement it simply
 /// do not appear in the result.
 pub fn storage_temperatures() -> Result<HashMap<String, f64>, ProbeFailure> {
-    let com = wmi::COMLibrary::new().map_err(|e| ProbeFailure::WmiUnavailable(e.to_string()))?;
-    let connection = wmi::WMIConnection::new(com.into())
+    // wmi 0.18 initializes COM as needed. Reliability counters live in the
+    // Storage provider's namespace, not the default ROOT\CIMV2 namespace.
+    let connection = wmi::WMIConnection::with_namespace_path(r"ROOT\Microsoft\Windows\Storage")
         .map_err(|e| ProbeFailure::WmiUnavailable(e.to_string()))?;
 
     let rows: Vec<HashMap<String, wmi::Variant>> = connection
