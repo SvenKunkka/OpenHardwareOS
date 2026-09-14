@@ -1,0 +1,64 @@
+# GPU Cooling, but only while the GPU is actually busy.
+#
+# This rule shows the `when` gate: the curve below only steers the fan while the
+# GPU load is above 60 %. The moment the load drops, the rule STANDS DOWN — it
+# drives the output to `otherwise` instead of leaving the fan wherever gaming
+# left it.
+#
+# Why that matters: "hold the last value" is deliberately not offered. A fan
+# frozen at 80 % because a load sensor went quiet is the failure mode the safety
+# layer exists to prevent, and a fan frozen at 20 % while the GPU is still hot is
+# worse. `safe_default` is the runtime's fail-safe duty (70 % by default, see
+# Settings -> Safety); `fixed` writes an explicit percentage instead.
+#
+# The gate is read like any other sensor: if the load sensor disappears, the rule
+# follows its normal sensor-failure policy, and `sensor_timeout_s` gives it a
+# short grace period first. The emergency temperature ceiling is independent of
+# this gate — a machine at 95 °C is forced to full airflow whether or not the
+# gate is open.
+#
+# The device and capability ids below belong to the SIMULATED machine
+# (adapters/mock). Replace them with the ids shown on your Devices page.
+
+name: GPU Cooling (gaming only)
+id: gpu-cooling-gaming-only
+enabled: true
+description: Keeps the GPU cool while it is busy, and stands down when it is not.
+
+source:
+  device: gpu.mock.0
+  capability: temperature.core
+
+when:
+  # The gate reads a different capability of the same device: utilisation.
+  source:
+    device: gpu.mock.0
+    capability: load.gpu
+  # gt | gte | lt | lte | eq | ne. Prefer gt/gte/lt/lte on analog readings:
+  # `eq`/`ne` are only meaningful on quantised values, and check_rule warns.
+  op: gt
+  value: 60
+  # safe_default = the runtime's fail-safe duty, or fixed: { percent: 40 }.
+  otherwise: safe_default
+
+target:
+  device: fan.mock.0
+  capability: fan.speed_percent
+
+curve:
+  - [40, 20]
+  - [60, 35]
+  - [70, 50]
+  - [80, 80]
+  - [85, 100]
+
+hysteresis: 2
+deadband: 2
+update_interval_ms: 1000
+
+fallback:
+  on_sensor_missing: safe_default
+  on_write_failure: safe_default
+  # A 5 s grace period for both the curve source and the gate source, so one
+  # missed poll does not make the fan jump.
+  sensor_timeout_s: 5
