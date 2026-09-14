@@ -52,7 +52,7 @@
 | `5fd8c23`（第四轮） | `dist/acceptance/OpenHardwareOS-5fd8c23-windows-acceptance{,.zip}` | 201 | `fddcd1886ca96c1ed119b7b6b90202b2fb538cff0e82bb980dd503654ab05e4d` |
 | `4a72112`（第五轮） | `dist/acceptance/OpenHardwareOS-4a72112-windows-acceptance{,.zip}` | 204 | `453aeb2028e7d1318e2a77ab8750d6d99b24cbeda658e19c0ff02ac4089de774`（清单文件本身：`da4d9dfebf2a0bb589560aa252e21ab3837b4edd531b1dd0567bb132149ab030`） |
 | `499008c` | `dist/acceptance/OpenHardwareOS-499008c-windows-acceptance{,.zip}` | 204 | **请勿使用**：该包由有缺陷的打包器产出，旁边有 `.DO-NOT-USE.txt` |
-| v0.1.2 本轮 | `dist/acceptance/OpenHardwareOS-<提交短号>-windows-acceptance{,.zip}` | 见包内 `MANIFEST.sha256` | 见压缩包**旁边**的 `<同名>.zip.sha256`（包内无法自述自身摘要） |
+| `2a0391d`（v0.1.2，第六轮） | `dist/acceptance/OpenHardwareOS-2a0391d-windows-acceptance{,.zip}` | 245 | `db1a875770026568d8662577767905ade22b84320ce9baedbd86f2155384aaaf`（清单文件本身：`67abd843e699daa5cbb5b0965e758e930e6c8d3885564ffae7244a47c4ec027b`） |
 
 **你手上的这一包是哪一版**：看包根 `README-ACCEPTANCE.md` 顶部的 `Commit` 行（打包时写入），
 摘要看与压缩包同目录的 `<同名>.zip.sha256`（第一行是压缩包，第二行是包内清单文件）。
