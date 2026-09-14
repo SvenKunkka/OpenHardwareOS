@@ -175,6 +175,32 @@ gives `35 + 1.5·9.5 = 49.25` — a 0.75 delta, held. At `hysteresis = 0` the ru
 curve exactly (70 °C → 50.00, 69 °C → 48.50; `evaluator.rs` —
 `tests::hysteresis_zero_follows_the_curve_exactly`).
 
+## What `applied` means
+
+A `WriteReport` distinguishes three things, and the difference matters when you
+are deciding whether a fan actually moved:
+
+| Field | Meaning |
+|---|---|
+| `requested` | what the caller asked for |
+| `applied` | what the adapter reported the device ended up with, after range clamping and the safety policy |
+| `status` | `applied` (the hardware took it), `simulated` (dry run, or simulated hardware), `rejected` (refused, with `error_code` and `detail`) |
+
+`applied` is **not** a read-back unless the adapter does one. Today:
+
+* `adapters/libre-hardware-monitor` **reads the channel back** after every write and
+  treats a value more than `READ_BACK_TOLERANCE_PERCENT` (1 %) away as a refusal —
+  the failure it guards against is LHM answering `200 OK` while the SuperIO holds
+  the old duty, which would otherwise be reported as success. If the channel
+  cannot be read back at all (LHM answers `N/A`), the write is reported as
+  applied but the `detail` says the value is *requested, not confirmed*;
+* `adapters/mock` applies the value to its own state, so `applied` is exact;
+* `adapters/nvidia` reports what NVML accepted; NVML offers no per-call read-back
+  on the write path, and the next poll is what shows the result.
+
+Anywhere a write looks successful but the hardware disagrees, the next poll will
+show it — and the audit trail records both the request and what was reported.
+
 ## The engine
 
 **Tick scheduling.** `TICK_INTERVAL_MS = 100`. `start()` spawns one Tokio task that sleeps

@@ -54,6 +54,10 @@ pub use web::{DEFAULT_BASE_URL, DEFAULT_PORT, LhmConfig as WebConfig};
 
 /// Adapter id, also the device id namespace.
 pub const ADAPTER_ID: &str = "lhm";
+/// How far a control channel's value may sit from what we asked for before the
+/// write is treated as refused rather than applied. One percent covers the
+/// rounding LHM does on a percentage channel.
+pub const READ_BACK_TOLERANCE_PERCENT: f64 = 1.0;
 /// Display name.
 pub const ADAPTER_NAME: &str = "LibreHardwareMonitor";
 
@@ -263,12 +267,47 @@ impl HardwareAdapter for LhmAdapter {
         };
         let sensor_id = sensor_id.to_string();
 
-        match self.client.set_sensor(&sensor_id, Some(applied)) {
-            Ok(()) => Ok(WriteOutcome::applied(Value::Number(applied))),
-            Err(error) => Err(OhmError::WriteRejected {
+        if let Err(error) = self.client.set_sensor(&sensor_id, Some(applied)) {
+            return Err(OhmError::WriteRejected {
                 device: device.id.to_string(),
                 capability: capability.id.to_string(),
                 detail: error.detail(self.base_url()),
+            });
+        }
+
+        // Reading the channel back is what separates "the request was accepted"
+        // from "the fan is at this value". LHM answers a `Set` with the value it
+        // *would* apply; only a `Get` reflects what the SuperIO actually holds,
+        // and a channel that silently ignores writes is a real failure mode on
+        // locked-down boards.
+        match self.client.read_sensor(&sensor_id) {
+            Ok(Some(read_back)) => {
+                let delta = (read_back - applied).abs();
+                if delta > READ_BACK_TOLERANCE_PERCENT {
+                    return Err(OhmError::WriteRejected {
+                        device: device.id.to_string(),
+                        capability: capability.id.to_string(),
+                        detail: format!(
+                            "LibreHardwareMonitor accepted {applied:.1} % but the channel reports \
+                             {read_back:.1} %. The value was not applied — the chip may be \
+                             ignoring writes, or a vendor tool may be holding the controller."
+                        ),
+                    });
+                }
+                Ok(WriteOutcome::applied(Value::Number(read_back)))
+            }
+            // A channel that answers `N/A` cannot confirm the value. Report the
+            // write as applied but say the confirmation is missing, rather than
+            // implying we verified something we did not.
+            Ok(None) => Ok(WriteOutcome::applied(Value::Number(applied))),
+            Err(error) => Ok(WriteOutcome {
+                status: ohm_adapter_api::WriteStatus::Applied,
+                applied: Some(Value::Number(applied)),
+                detail: Some(format!(
+                    "the write was accepted but could not be read back ({}); treat the value as \
+                     requested, not confirmed",
+                    error.detail(self.base_url())
+                )),
             }),
         }
     }
@@ -406,9 +445,11 @@ mod tests {
         assert!(outcome.is_applied());
         assert_eq!(outcome.applied, Some(Value::Number(72.0)));
 
+        // One `Set` for the write, plus one `Get` for the confirmation.
         let writes = server.writes();
-        assert_eq!(writes.len(), 1);
+        assert_eq!(writes.len(), 2, "{writes:?}");
         assert!(writes[0].contains("action=Set"));
+        assert!(writes[1].contains("action=Get"), "the write is read back");
         assert!(writes[0].contains("id=/lpc/nct6687d/control/0"));
         assert!(writes[0].contains("value=72"));
     }
@@ -484,6 +525,62 @@ mod tests {
         let err = adapter.discover().await.unwrap_err();
         assert_eq!(err.code(), "adapter_unavailable");
         assert!(!adapter.is_connected());
+    }
+
+    #[tokio::test]
+    async fn a_write_is_confirmed_by_reading_the_channel_back() {
+        let server = FakeLhm::start();
+        let adapter = adapter(&server);
+        let devices = adapter.discover().await.unwrap();
+        let fan = devices
+            .iter()
+            .find(|d| d.name.contains("Nuvoton") && d.name.contains("#1"))
+            .expect("chassis fan #1")
+            .clone();
+        let control = fan.capability_str(caps::FAN_SPEED_PERCENT).unwrap().clone();
+
+        let reads_before = server.reads();
+        let outcome = adapter
+            .write(&fan, &control, &Value::Number(64.0))
+            .await
+            .expect("the write is accepted");
+        assert!(outcome.is_applied());
+        assert_eq!(
+            outcome.applied,
+            Some(Value::Number(64.0)),
+            "the reported value is what the channel reports, not just what we asked for"
+        );
+        assert!(
+            server.reads() > reads_before,
+            "the adapter must read the channel back to confirm the write"
+        );
+        assert_eq!(server.channel_value(), 64.0);
+    }
+
+    #[tokio::test]
+    async fn a_channel_that_ignores_writes_is_reported_as_refused() {
+        // The failure this guards against: LHM answers 200, the SuperIO holds the
+        // old value, and the app would otherwise claim success.
+        let server = FakeLhm::start();
+        server.stick_channel_at(40.0);
+        let adapter = adapter(&server);
+        let devices = adapter.discover().await.unwrap();
+        let fan = devices
+            .iter()
+            .find(|d| d.name.contains("Nuvoton") && d.name.contains("#1"))
+            .expect("chassis fan #1")
+            .clone();
+        let control = fan.capability_str(caps::FAN_SPEED_PERCENT).unwrap().clone();
+
+        let error = adapter
+            .write(&fan, &control, &Value::Number(90.0))
+            .await
+            .expect_err("a value that did not take must not be reported as applied");
+        assert_eq!(error.code(), "write_rejected");
+        let message = error.to_string();
+        assert!(message.contains("90.0"), "{message}");
+        assert!(message.contains("40.0"), "{message}");
+        assert!(message.contains("not applied"), "{message}");
     }
 
     #[tokio::test]

@@ -48,7 +48,7 @@ describe('the “only when…” gate in the rule form', () => {
     await openNewRuleForm();
 
     // The switch is off, and the form says so in plain language.
-    const toggle = screen.getByLabelText('Gate this rule on a reading') as HTMLInputElement;
+    const toggle = screen.getByLabelText(/Gate this rule on a reading/) as HTMLInputElement;
     expect(toggle.checked).toBe(false);
     expect(screen.getByTestId('gate-summary').textContent).toContain('No condition');
 
@@ -65,7 +65,7 @@ describe('the “only when…” gate in the rule form', () => {
   it('serialises op, threshold and otherwise when the gate is on', async () => {
     await openNewRuleForm();
 
-    fireEvent.click(screen.getByLabelText('Gate this rule on a reading'));
+    fireEvent.click(screen.getByLabelText(/Gate this rule on a reading/));
     fireEvent.change(await screen.findByLabelText('Condition sensor'), {
       target: { value: LOAD_SOURCE },
     });
@@ -95,7 +95,7 @@ describe('the “only when…” gate in the rule form', () => {
   it('offers a temperature threshold in tenths of a degree and names the fail-safe duty', async () => {
     await openNewRuleForm();
 
-    fireEvent.click(screen.getByLabelText('Gate this rule on a reading'));
+    fireEvent.click(screen.getByLabelText(/Gate this rule on a reading/));
     fireEvent.change(await screen.findByLabelText('Condition sensor'), {
       target: { value: `${GPU_ID}|temperature.core` },
     });
@@ -125,7 +125,7 @@ describe('the “only when…” gate in the rule form', () => {
   it('refuses to save a gate with no sensor or a non-numeric threshold', async () => {
     await openNewRuleForm();
 
-    fireEvent.click(screen.getByLabelText('Gate this rule on a reading'));
+    fireEvent.click(screen.getByLabelText(/Gate this rule on a reading/));
     fireEvent.change(await screen.findByLabelText('Threshold (%)'), { target: { value: '' } });
     fireEvent.change(screen.getByLabelText('Condition sensor'), { target: { value: '' } });
 
@@ -158,7 +158,7 @@ describe('loading an existing rule back into the form', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Edit rule Fan A' }));
     await screen.findByLabelText('Rule name');
 
-    expect((screen.getByLabelText('Gate this rule on a reading') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText(/Gate this rule on a reading/) as HTMLInputElement).checked).toBe(true);
     expect((screen.getByLabelText('Condition sensor') as HTMLSelectElement).value).toBe(LOAD_SOURCE);
     expect((screen.getByLabelText('Comparison') as HTMLSelectElement).value).toBe('gte');
     expect((screen.getByLabelText('Threshold (%)') as HTMLInputElement).value).toBe('60');
@@ -180,7 +180,7 @@ describe('loading an existing rule back into the form', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Edit rule Fan A' }));
     await screen.findByLabelText('Rule name');
 
-    expect((screen.getByLabelText('Gate this rule on a reading') as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByLabelText(/Gate this rule on a reading/) as HTMLInputElement).checked).toBe(false);
 
     await save();
     await waitFor(() => expect(ipcMock().api.saveRule).toHaveBeenCalledTimes(1));
@@ -196,7 +196,7 @@ describe('loading an existing rule back into the form', () => {
       (ref) => `${ref.device_name} · ${ref.capability.name} (${ref.capability.unit})`,
     );
 
-    fireEvent.click(screen.getByLabelText('Gate this rule on a reading'));
+    fireEvent.click(screen.getByLabelText(/Gate this rule on a reading/));
     const ruleSource = screen.getByLabelText('Sensor') as HTMLSelectElement;
     const gateSource = (await screen.findByLabelText('Condition sensor')) as HTMLSelectElement;
 

@@ -22,11 +22,21 @@ export function usePolled<T>(
   fetcherRef.current = fetcher;
   const lastRun = useRef(0);
   const requestId = useRef(0);
+  /** Set by `reload()`: an explicit refresh is never swallowed by the throttle. */
+  const forced = useRef(false);
 
   useEffect(() => {
     if (!enabled) return;
     const now = Date.now();
-    if (tick !== undefined && throttleMs > 0 && now - lastRun.current < throttleMs && data !== null) {
+    const isForced = forced.current;
+    forced.current = false;
+    if (
+      !isForced &&
+      tick !== undefined &&
+      throttleMs > 0 &&
+      now - lastRun.current < throttleMs &&
+      data !== null
+    ) {
       return;
     }
     lastRun.current = now;
@@ -56,5 +66,13 @@ export function usePolled<T>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tick, enabled, throttleMs, nonce]);
 
-  return { data, error, loading, reload: () => setNonce((value) => value + 1) };
+  return {
+    data,
+    error,
+    loading,
+    reload: () => {
+      forced.current = true;
+      setNonce((value) => value + 1);
+    },
+  };
 }

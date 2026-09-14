@@ -762,9 +762,13 @@ function RuleCard({
           </span>
           <span className="switch__label">{rule.enabled ? 'Enabled' : 'Disabled'}</span>
         </label>
-        <button type="button" className="btn btn--sm" onClick={onEdit}>
+        <button
+          type="button"
+          className="btn btn--sm"
+          onClick={onEdit}
+          aria-label={`Edit rule ${rule.name}`}
+        >
           Edit
-          <span className="visually-hidden"> rule {rule.name}</span>
         </button>
         {confirming ? (
           <>

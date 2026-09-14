@@ -8,7 +8,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 
@@ -23,6 +23,14 @@ pub struct FakeLhm {
     writes: Arc<Mutex<Vec<String>>>,
     fail_writes: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
+    /// What a `Get` answers. Updated by successful writes, so a read-back test
+    /// sees what the channel "holds".
+    channel_value: Arc<Mutex<f64>>,
+    /// When set, writes are acknowledged but the channel keeps this value — the
+    /// signature of a board that silently ignores control writes.
+    stuck_at: Arc<Mutex<Option<f64>>>,
+    /// Number of `Get` requests, so a test can prove the adapter read back.
+    reads: Arc<AtomicU32>,
 }
 
 impl FakeLhm {
@@ -34,12 +42,18 @@ impl FakeLhm {
         let writes = Arc::new(Mutex::new(Vec::new()));
         let fail_writes = Arc::new(AtomicBool::new(false));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let channel_value = Arc::new(Mutex::new(40.0f64));
+        let stuck_at = Arc::new(Mutex::new(None::<f64>));
+        let reads = Arc::new(AtomicU32::new(0));
 
         {
             let requests = Arc::clone(&requests);
             let writes = Arc::clone(&writes);
             let fail_writes = Arc::clone(&fail_writes);
             let shutdown = Arc::clone(&shutdown);
+            let channel_value = Arc::clone(&channel_value);
+            let stuck_at = Arc::clone(&stuck_at);
+            let reads = Arc::clone(&reads);
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
                     if shutdown.load(Ordering::Relaxed) {
@@ -49,8 +63,19 @@ impl FakeLhm {
                     let requests = Arc::clone(&requests);
                     let writes = Arc::clone(&writes);
                     let fail_writes = Arc::clone(&fail_writes);
+                    let channel_value = Arc::clone(&channel_value);
+                    let stuck_at = Arc::clone(&stuck_at);
+                    let reads = Arc::clone(&reads);
                     std::thread::spawn(move || {
-                        handle(stream, &requests, &writes, &fail_writes);
+                        handle(
+                            stream,
+                            &requests,
+                            &writes,
+                            &fail_writes,
+                            &channel_value,
+                            &stuck_at,
+                            &reads,
+                        );
                     });
                 }
             });
@@ -62,7 +87,27 @@ impl FakeLhm {
             writes,
             fail_writes,
             shutdown,
+            channel_value,
+            stuck_at,
+            reads,
         }
+    }
+
+    /// Make the channel acknowledge writes while holding a fixed value, which is
+    /// what a board that ignores control writes looks like from the outside.
+    pub fn stick_channel_at(&self, value: f64) {
+        *self.stuck_at.lock() = Some(value);
+        *self.channel_value.lock() = value;
+    }
+
+    /// How many `Get` requests were served (i.e. how often a read-back happened).
+    pub fn reads(&self) -> u32 {
+        self.reads.load(Ordering::Relaxed)
+    }
+
+    /// What the channel currently reports.
+    pub fn channel_value(&self) -> f64 {
+        *self.channel_value.lock()
     }
 
     /// `http://127.0.0.1:<port>`
@@ -95,11 +140,15 @@ impl Drop for FakeLhm {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle(
     mut stream: TcpStream,
     requests: &AtomicUsize,
     writes: &Mutex<Vec<String>>,
     fail_writes: &AtomicBool,
+    channel_value: &Mutex<f64>,
+    stuck_at: &Mutex<Option<f64>>,
+    reads: &AtomicU32,
 ) {
     let mut reader = BufReader::new(match stream.try_clone() {
         Ok(clone) => clone,
@@ -134,9 +183,28 @@ fn handle(
         if fail_writes.load(Ordering::Relaxed) {
             reply(500, "text/plain", "could not reach the SuperIO\n")
         } else if path.contains("action=Set") {
-            reply(200, "text/plain", "55.0 %\n")
+            let requested = path
+                .split("value=")
+                .nth(1)
+                .and_then(|value| value.trim().parse::<f64>().ok());
+            // A channel stuck at a fixed value acknowledges the write and ignores it.
+            let effective = match *stuck_at.lock() {
+                Some(stuck) => stuck,
+                None => {
+                    if let Some(requested) = requested {
+                        *channel_value.lock() = requested;
+                    }
+                    *channel_value.lock()
+                }
+            };
+            reply(200, "text/plain", &format!("{effective:.1} %\n"))
         } else {
-            reply(200, "text/plain", "45.0 %\n")
+            reads.fetch_add(1, Ordering::Relaxed);
+            reply(
+                200,
+                "text/plain",
+                &format!("{:.1} %\n", *channel_value.lock()),
+            )
         }
     } else {
         reply(404, "text/plain", "not found\n")

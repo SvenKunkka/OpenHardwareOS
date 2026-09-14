@@ -150,7 +150,9 @@ export function Switch({
       </span>
       <span className="checkbox__text">
         <span className="checkbox__title">{label}</span>
-        {hint ? <span className="checkbox__hint">{hint}</span> : null}
+        {/* A separating space: without it the label and the hint run together in
+            the accessible name ("readingOff = …"). */}
+        {hint ? <span className="checkbox__hint">{' '}{hint}</span> : null}
       </span>
     </label>
   );
@@ -179,7 +181,7 @@ export function Checkbox({
       />
       <span className="checkbox__text">
         <span className="checkbox__title">{label}</span>
-        {hint ? <span className="checkbox__hint">{hint}</span> : null}
+        {hint ? <span className="checkbox__hint">{' '}{hint}</span> : null}
       </span>
     </label>
   );
