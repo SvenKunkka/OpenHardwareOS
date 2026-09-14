@@ -607,3 +607,178 @@ nothing was installed on the host. Nothing was pushed, published, tagged or trig
 The licence decisions (ADR 0002, ADR 0004) remain **Proposed**. No new architecture: no
 CPU native collector, no cross-adapter identity work, no plugin loading — CPU package
 power stays at the LHM support boundary.
+
+---
+
+## 2026-09-14 — round 4: who really owns a channel, responsibility that outlives the process, and a proven desktop
+
+**Revision: the commits `17ed274`, `067a2a4`, `9f993f4`, `2756ca3`, `82f687e`, `0f162e5`
+and the documentation commit that contains this entry.** The pass below was executed with
+a clean worktree, and the environment block it printed (`HEAD 0f162e5`, 477 Rust tests,
+42 frontend tests) is the authority for its own numbers; the documentation and harness
+fixes that followed change no code the pass exercised.
+
+Round 3 made the engine hand a channel over to the fail-safe duty. Round 4 is about the
+three ways that was still not true: a rule could *look* like it had taken the channel
+over when it had not, the record of an unfinished handover died with the process, and
+the desktop had never been shown to be connected to any of it at all.
+
+### 1. A declared owner was treated as a takeover
+
+* **Old behaviour.** Ownership was decided by declaration: if an enabled rule named the
+  channel as its target, the handover was marked `Superseded` — resolved, off the
+  record, done. The review's reproduction: R1 has written 55 % to fan A and is
+  retargeted to fan B, so A is owed a handover; R2 is enabled and targets A but its
+  sensor is gone with `on_sensor_missing: hold`, so R2 writes nothing at all; the next
+  tick sees R2's declaration, closes the handover, and fan A sits at R1's abandoned
+  55 % with nothing anywhere recording that it is unprotected.
+* **Trigger.** Enabling a rule that targets a channel while it produces no output, or
+  whose writes are unconfirmed or refused; retargeting a rule onto a channel another
+  disabled rule had been pointed at.
+* **Behaviour now.** A **claim** (an enabled rule targets the channel) is separated from
+  a **takeover** (that rule has driven the channel *and the device confirmed a value*).
+  A claim still stops the engine writing under a rule that owns the channel — the write
+  race of round 3 — but it no longer resolves anything. A claimed-but-undriven channel
+  becomes `AwaitingOwner`: still owed, still visible, naming the claimant and its own
+  last status, and saying in words that the channel is not known to be protected. It
+  waits a bounded `HANDOVER_OWNER_WAIT_TICKS` and then parks as `Failed` with a reason
+  naming the rule that never took control. When the claim disappears — the rule is
+  disabled, deleted, or retargeted away — the handover resumes by itself with a fresh
+  attempt budget, because the reason it stopped no longer exists; a handover parked by
+  its *own* failed writes still needs an explicit retry.
+* **Pre-fix evidence.** Of the 9 tests in `tests/tests/handover_owner.rs`, **8 failed**
+  against the previous code, each reporting `superseded — r2 owns it now` for a channel
+  R2 had never written to. The ninth pins the round-3 guarantee that a *confirmed* owner
+  is never overwritten by a stale handover.
+* **Tests.** `handover_owner.rs`: the three "owner has not taken over" cases (no output,
+  unconfirmed, refused), the bounded wait ending in a visible failure, the confirmed
+  takeover resolving without a write, recovery after the claimant is disabled, deleted
+  or retargeted, and the round-3 guarantee. One round-3 test needed a second tick: with
+  evidence required for resolution, the evidence only exists after the owner has written.
+  The desktop learns the new state exhaustively (`awaiting_owner` is *owed*, tone warn,
+  never ok) with a panel test checked by mutation.
+
+### 2. An unfinished handover died with the process
+
+* **Old behaviour.** The handover book and the per-rule control records lived in memory
+  only. Kill the app while a handover is pending and the next process had no pending
+  item, an empty `ohm-cli handovers`, and nothing on the Diagnostics panel — while the
+  rule that abandoned the channel might have been deleted in the meantime, so nothing
+  was left that knew the channel existed.
+* **Trigger.** Any unfinished handover, or any write whose result was never learned,
+  followed by a restart.
+* **Behaviour now.** `crates/ohm-automation/src/recovery.rs` writes exactly two things
+  to `<config>/control-state.json`: unresolved handovers, and writes that were issued
+  and never confirmed. Versioned, atomic (temp file in the same directory, then rename),
+  refusing a file from a newer version rather than guessing. What is deliberately *not*
+  stored matters as much: no confirmed values, no curve positions, no hysteresis
+  anchors, no gate state — a value read by a previous process is not evidence about now,
+  and a restored curve position would drive a fan to a value nobody asked for today.
+  Everything recovered comes back as `NeedsVerification`: checked against the device,
+  the capability, the current owner and the freshness of the data before the safety
+  policy applies, and never replayed. A channel that no longer exists fails visibly,
+  keeping the original cause; a resolved item leaves the record entirely. A write that
+  cannot be recorded is reported — `AutomationStats.persistence_error`,
+  `ohm-cli handovers` printing "NOT RECORDED", and an error notice on the Diagnostics
+  panel — because losing this file is the failure it exists to prevent.
+* **Two defects this work found in itself**, both caught by the restart tests rather
+  than by inspection: persisting *before* the rule's state was committed to the engine
+  wrote an empty record and then marked the books clean; and a handover queued by a
+  *reload* (a rule file removed while the app ran) was never flushed at all, so the
+  process could die with the responsibility unsaved. Both are fixed and both now have a
+  test that fails without the fix (`a_handover_queued_by_a_reload_is_recorded_immediately`
+  reads the record back *without ticking*, because the process could die at that moment).
+  Every mutation point now goes through one `flush_control_state()`.
+* **Tests.** `tests/tests/control_recovery.rs` (9) destroys an engine and builds a new
+  one over the same isolated config directory, covering a pending handover, a failed
+  one, an issued-but-unconfirmed write, a still-enabled rule that must *not* be
+  double-handled, a completed handover that must not be replayed, a damaged record, a
+  channel whose device is gone, a storage failure, and the reload path.
+  `apps/cli/tests/handover_recovery.rs` (4) runs the real CLI binary against a config
+  directory containing a previous session's record: the channel, the deleted rule's
+  name, the original cause, the attempt count and the way to re-arm all reach the
+  operator. `ohm-cli handovers` polls once and verifies before reporting, so the report
+  is about the machine rather than about a file that never advances.
+
+### 3. The desktop IPC path had never been shown to work
+
+* **Old behaviour.** Three kinds of evidence existed and none closed the loop: the Rust
+  tests assert the wire contract by serialising commands' return values; the frontend
+  tests render the real screens with the IPC module mocked; and `--selftest` returns
+  before the Tauri builder is constructed. All three can pass while the application —
+  window, webview, `invoke`, command, engine — is disconnected.
+* **Behaviour now.** `scripts/verify-ipc-roundtrip.sh` launches the **real** application
+  against an isolated `OHM_CONFIG_DIR` and the simulator, built the way the project
+  ships (`npx tauri build --no-bundle`). The backend asks the frontend to exercise the
+  command surface **over Tauri's own event channel** — the one that carries snapshots to
+  the UI, not injected `eval` — and the frontend, running in that webview, calls the same
+  `api` functions the UI uses and reports what it saw back through a real command, which
+  writes it next to the app's log and audit trail.
+* **What it found before it worked.** That a *debug* build points at `devUrl` and expects
+  the Vite dev server, so running the binary alone loads an empty page — no error, no
+  frontend, no IPC; and that a bare `cargo build --release` does not enable Tauri's
+  `custom-protocol` feature, so the release binary embeds no assets either. Only the
+  CLI's build produces an application whose webview runs the bundle. Both were invisible
+  from "the process started", which is exactly the conclusion the harness exists to
+  prevent.
+* **Evidence.** `IPC ROUND TRIP VERIFIED`, with 12 command steps all successful, the
+  webview reporting `tauri://localhost`, the handover states observed as
+  `fan.mock.1=pending -> fan.mock.1=failed -> fan.mock.1=confirmed`, the write returning
+  `unconfirmed` with `applied` absent, and the audit trail agreeing; the only devices
+  written to were `*.mock.*` and the simulated OpenFan. A new simulator fault
+  (`unconfirmed_writes_on`, injectable per channel through `mock_set_channel_fault`)
+  makes "accepted but never confirmed" producible end to end without a physical fan.
+* **Recorded, not smoothed over.** `mock_set_channel_fault`'s *return value* reached the
+  frontend as `undefined` while its effect was applied (proved by the unconfirmed write
+  that followed). The harness therefore asserts effects, not return values, and this
+  stays an open observation.
+
+### The verification pass
+
+Environment: macOS 26.6.2 (25G83) arm64, pinned `rustc 1.98.0` / `cargo 1.98.0` /
+`clippy 0.1.98`; the owner's default toolchain, `PATH` and shell configuration untouched;
+`cargo-deny 0.20.2`; Node 26.8.1 / npm 11.19.0.
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `rustup run 1.98.0 cargo fmt --all -- --check` | exit 0 |
+| 2 | `rustup run 1.98.0 cargo clippy --workspace --all-targets -- -D warnings` | **exit 0, no warnings** |
+| 3 | `rustup run 1.98.0 cargo build --workspace --all-targets` | exit 0 |
+| 4 | `rustup run 1.98.0 cargo test --workspace` | **477 passed, 0 failed, 0 ignored**, across 44 test binaries and doc-tests |
+| 5 | `cargo deny check` | `advisories ok, bans ok, licenses ok, sources ok` |
+| 6 | `npm run typecheck` / `npm run test` / `npm run build` | exit 0 / **5 files, 42 tests passed** / exit 0, `index-*.js` 393.71 kB |
+| 7 | `ohm-cli doctor --mock`, `demo --steps 60`, `audit`, `handovers`, `handovers --retry`, `protocol`, `ohm-desktop --selftest --mock` (and `--dry-run`), `rules check` on the four examples | all exit 0; the demo closed its loop at 48 % / 1169 RPM with 45 writes and 0 fallbacks |
+| 8 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** — 12 command steps succeeded, webview `tauri://localhost`, handover states `fan.mock.1=pending -> fan.mock.1=failed -> fan.mock.1=confirmed`, write `unconfirmed` with `applied` absent, audit trail agreed, only simulated devices written |
+| 9 | `docs/windows-validation/package/scripts/tests/run-script-tests.ps1` | **18 cases, 151 checks, 0 failures**; the harness states in its own header that doubles are not Windows evidence |
+| 10 | `scripts/make-acceptance-package.sh` | exit 0 on a clean tree; the package is described in §5 |
+
+Isolation: every run used `OHM_CONFIG_DIR` under a throwaway root. The first run of this
+pass reported that the **real** per-user config directory existed, which the round-3 pass
+had recorded as absent — a defect in this round's own harness: its version probe ran the
+application without `OHM_CONFIG_DIR`, so the app fell back to the real config directory
+and wrote mock-device audit records into it (`fan.mock.*` and the simulated OpenFan only —
+no real device was touched). The probe now gets its own throwaway directory, the harness
+checks before and after that the real directory has not appeared, the accidental directory
+was removed to restore the state round 3 verified, and its 104 audit lines are kept as the
+record of what happened. A final run then reported the real directory absent again.
+
+### What round 4 could **not** verify here
+
+* **Windows — still nothing.** No workflow was pushed or triggered, so every
+  `windows-latest` job remains **Prepared**, and no NSIS installer has been built
+  anywhere.
+* **A physical fan.** Unchanged and still the largest gap. The read-back confirms what a
+  *provider* reports as a channel's set point, never that air moved.
+* **The desktop on anything but this machine.** The round trip was verified on macOS with
+  the simulated provider. It says nothing about Windows, about a real GPU or SuperIO
+  chip, or about what the window looks like — no screenshot was taken, and the evidence
+  is the DOM-level account the frontend reported plus the app's own records.
+* **The `undefined` return value** noted above.
+
+### Deliberately **not** done in round 4
+
+No hardware was written to, no autostart or device-control setting was changed, and
+nothing was installed on the host. Nothing was pushed, published, tagged or triggered;
+no remote CI was touched. The licence decisions (ADR 0002, ADR 0004) remain **Proposed**.
+No new architecture: no CPU native collector, no cross-adapter identity work, no plugin
+loading.

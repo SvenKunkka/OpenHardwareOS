@@ -16,7 +16,7 @@ use ohm_adapter_api::HardwareAdapter;
 use ohm_automation::{AutomationEngine, HandoverState, RECOVERY_FILE, RuleStore};
 use ohm_core::ConfigPaths;
 use ohm_integration_tests::{
-    Behaviour, FAIL_SAFE, PERCENT, PWM, RIG0, RIG1, Rig, flat_rule as flat, rig_session,
+    Behaviour, FAIL_SAFE, PERCENT, RIG0, RIG1, Rig, flat_rule as flat, rig_session,
 };
 use ohm_runtime::{Runtime, Settings};
 use std::sync::Arc;

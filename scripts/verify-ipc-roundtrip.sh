@@ -62,6 +62,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+REAL_CONFIG="${HOME}/Library/Application Support/OpenHardwareOS"
+if [ -d "$REAL_CONFIG" ]; then REAL_CONFIG_BEFORE="present"; else REAL_CONFIG_BEFORE="absent"; fi
+
 step "Preparing an isolated configuration directory"
 mkdir -p "$CONFIG/rules"
 # The simulator, not the machine: `--mock` registers the simulated provider, and
@@ -129,8 +132,14 @@ fi
 step "Launching the real application"
 APP_BIN="$REPO_ROOT/target/release/ohm-desktop"
 [ -x "$APP_BIN" ] || { say "  missing $APP_BIN"; exit 1; }
+# The version probe runs the same binary, so it needs its own throwaway config
+# directory: `ConfigPaths::discover()` falls back to the *real* per-user config
+# directory, and an earlier version of this script therefore created one and wrote
+# mock-device audit records into it while claiming to be isolated.
+mkdir -p "$WORK/version-probe"
+VERSION="$(cd "$REPO_ROOT" && OHM_CONFIG_DIR="$WORK/version-probe" "$RUSTUP" run "$TOOLCHAIN" cargo run -q -p ohm-desktop -- --selftest --mock 2>/dev/null | head -1)"
 say "  binary : $APP_BIN"
-say "  version: $(cd "$REPO_ROOT" && "$RUSTUP" run "$TOOLCHAIN" cargo run -q -p ohm-desktop -- --selftest --mock 2>/dev/null | head -1)"
+say "  version: $VERSION"
 say "  args   : --mock --ipc-selftest"
 say "  env    : OHM_CONFIG_DIR=$CONFIG RUST_LOG=info"
 ( cd "$REPO_ROOT" && OHM_CONFIG_DIR="$CONFIG" RUST_LOG=info "$APP_BIN" --mock --ipc-selftest > "$APP_LOG" 2>&1 ) &
@@ -282,6 +291,12 @@ sys.exit(1 if failures else 0)
 PY
 CROSS_CODE=$?
 check "the frontend's account and the backend's records agree" "$([ "$CROSS_CODE" -eq 0 ] && echo 1 || echo 0)" "see the comparisons above"
+
+step "Checking that the run stayed inside its own directories"
+if [ -d "$REAL_CONFIG" ]; then REAL_CONFIG_AFTER="present"; else REAL_CONFIG_AFTER="absent"; fi
+check "the real per-user config directory is untouched" \
+  "$([ "$REAL_CONFIG_BEFORE" = "$REAL_CONFIG_AFTER" ] && echo 1 || echo 0)" \
+  "$REAL_CONFIG was $REAL_CONFIG_BEFORE before the run and is $REAL_CONFIG_AFTER after it$([ "$REAL_CONFIG_AFTER" = "present" ] && echo ' — something ran without OHM_CONFIG_DIR')"
 
 step "Summary"
 if [ "$FAILURES" -eq 0 ]; then
