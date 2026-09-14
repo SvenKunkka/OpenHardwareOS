@@ -1,0 +1,17 @@
+# Line endings are pinned so that what is committed is what is published.
+#
+# The v0.1.0 and v0.1.1 releases copied files out of a Windows checkout that had
+# been converted to CRLF by the host's core.autocrlf. The released install.ps1
+# therefore differed byte-for-byte from the committed script, and its published
+# SHA-256 could not be reproduced from the repository. `eol=lf` makes the
+# checkout reproduce the committed bytes on every platform, so a workspace copy
+# is the committed file. scripts/release/package-windows.ps1 still normalises and
+# verifies the script it publishes, because a guard is worth more than a setting.
+* text=auto eol=lf
+
+# Binary fixtures must never be converted.
+*.bin binary
+*.exe binary
+*.png binary
+*.ico binary
+*.zip binary

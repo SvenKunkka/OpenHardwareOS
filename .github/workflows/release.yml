@@ -84,6 +84,9 @@ jobs:
       - name: Test installer behavior with isolated fixtures
         shell: pwsh
         run: ./scripts/release/test-install.ps1
+      - name: Test packaging behavior with isolated fixtures
+        shell: pwsh
+        run: ./scripts/release/test-packaging.ps1
       - name: Package verified build outputs
         shell: pwsh
         run: ./scripts/release/package-windows.ps1 -Version $env:RELEASE_VERSION

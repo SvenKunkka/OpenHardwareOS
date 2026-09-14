@@ -41,16 +41,41 @@ try {
     } | ConvertTo-Json | Set-Content (Join-Path $stage 'release.json') -Encoding UTF8
     Compress-Archive -Path (Join-Path $stage '*') -DestinationPath (Join-Path $output "ohm-cli-$Version-windows-x86_64.zip")
     Copy-Item $installers[0].FullName (Join-Path $output "OpenHardwareOS-$Version-windows-x86_64-setup.exe")
-    Copy-Item (Join-Path $repo 'scripts/install.ps1') $output
     Copy-Item (Join-Path $repo 'LICENSE') $output
     Copy-Item $notices $output
     Copy-Item (Join-Path $stage 'release.json') $output
+
+    # install.ps1 is published as committed. A Windows checkout can hand out CRLF
+    # through core.autocrlf, and publishing that copy would make the released
+    # script's digest impossible to reproduce from the repository. Normalise the
+    # line endings, then prove the result is byte-for-byte the blob in this
+    # commit — a repository file that is genuinely CRLF fails here instead of
+    # being published as something nobody can trace.
+    $scriptSource = Join-Path $repo 'scripts/install.ps1'
+    $scriptTarget = Join-Path $output 'install.ps1'
+    $scriptText = ([IO.File]::ReadAllText($scriptSource)) -replace "`r`n", "`n"
+    if ($scriptText.Contains("`r")) { throw 'install.ps1 still holds a carriage return after normalisation.' }
+    [IO.File]::WriteAllText($scriptTarget, $scriptText, [Text.UTF8Encoding]::new($false))
+    $blob = (& git rev-parse 'HEAD:scripts/install.ps1').Trim()
+    if ($LASTEXITCODE -ne 0 -or $blob -notmatch '^[0-9a-f]{40}$') { throw 'Cannot read the committed install.ps1 blob.' }
+    $published = (& git hash-object -- $scriptTarget).Trim()
+    if ($LASTEXITCODE -ne 0 -or $published -notmatch '^[0-9a-f]{40}$') { throw 'Cannot hash the published install.ps1.' }
+    if ($published -cne $blob) { throw "Published install.ps1 ($published) is not the committed script ($blob)." }
+
+    # SHA256SUMS is read line by line by POSIX tooling: `shasum -c` on a CRLF
+    # file looks for a name with a trailing carriage return and reports every
+    # entry as missing. It is written with LF and verified.
     $sums = @(Get-ChildItem $output -File | Sort-Object Name | ForEach-Object {
         '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name
     })
-    [IO.File]::WriteAllLines((Join-Path $output 'SHA256SUMS'), $sums, [Text.UTF8Encoding]::new($false))
+    $sumsFile = Join-Path $output 'SHA256SUMS'
+    [IO.File]::WriteAllText($sumsFile, (($sums -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
+    if ([IO.File]::ReadAllText($sumsFile).Contains("`r")) {
+        throw 'SHA256SUMS holds a carriage return; shasum -c would fail on every entry.'
+    }
     Get-ChildItem $output | Select-Object Name, Length
     Write-Host "Source commit: $sha"
+    Write-Host "Published install.ps1 matches commit blob $blob; SHA256SUMS uses LF."
 } finally {
     Pop-Location
 }
