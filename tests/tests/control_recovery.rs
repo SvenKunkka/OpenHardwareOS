@@ -16,7 +16,7 @@ use ohm_adapter_api::HardwareAdapter;
 use ohm_automation::{AutomationEngine, HandoverState, RECOVERY_FILE, RuleStore};
 use ohm_core::ConfigPaths;
 use ohm_integration_tests::{
-    Behaviour, FAIL_SAFE, PERCENT, RIG0, RIG1, Rig, flat_rule as flat, rig_session,
+    Behaviour, FAIL_SAFE, PERCENT, PWM, RIG0, RIG1, Rig, flat_rule as flat, rig_session,
 };
 use ohm_runtime::{Runtime, Settings};
 use std::sync::Arc;
@@ -283,6 +283,72 @@ async fn an_unconfirmed_write_by_a_still_enabled_rule_is_not_double_handled() {
         "and the value on the channel is the rule's, not the fail-safe duty: {:?}",
         rig.requested(RIG0, PERCENT)
     );
+
+    engine2.stop().await;
+    let _ = runtime2.shutdown().await;
+}
+
+/// A rule moved to another control channel on the *same* device no longer drives the
+/// one it left unverified, so that channel's responsibility must still be recovered.
+///
+/// The move happens while the app is closed — a file edit, not a command — because a
+/// retarget through the engine would queue a handover of its own and settle the question
+/// before the restart.
+#[tokio::test]
+async fn a_hold_survives_a_retarget_across_capabilities_on_one_device() {
+    let (temp, runtime, engine, rig) = rig_session().await;
+    let paths = ConfigPaths::from_root(temp.path());
+
+    // An unconfirmed write to fan 0's percentage channel …
+    rig.set_behaviour(RIG0, PERCENT, Behaviour::Unconfirmed);
+    engine.save_rule(flat("r1", RIG0, PERCENT, 55.0)).unwrap();
+    tick(&runtime, &engine).await;
+    assert_eq!(engine.outcome("r1").unwrap().applied_output, None);
+    engine.stop().await;
+    let _ = runtime.shutdown().await;
+    drop(engine);
+    drop(runtime);
+
+    // … and, with the app closed, the rule file is edited to drive the *other* control
+    // channel of the same fan.
+    let edited = r#"
+name: Rule r1
+id: r1
+source: { device: fan.rig.0, capability: temperature.core }
+target: { device: fan.rig.0, capability: fan.pwm }
+curve:
+  - [0, 30]
+  - [100, 30]
+hysteresis: 0
+deadband: 0
+update_interval_ms: 1000
+"#;
+    std::fs::write(paths.rules_dir().join("r1.yaml"), edited).unwrap();
+
+    let (runtime2, engine2) = restart(&paths, &rig).await;
+    engine2.load_rules().unwrap();
+    assert_eq!(
+        engine2.rule("r1").map(|rule| rule.target.qualified_id()),
+        Some(format!("{RIG0}/fan.pwm")),
+        "the rule drives the other channel now"
+    );
+
+    let owed: Vec<_> = engine2
+        .handovers()
+        .into_iter()
+        .filter(|report| report.device.as_str() == RIG0 && report.capability.as_str() == PERCENT)
+        .collect();
+    assert_eq!(
+        owed.len(),
+        1,
+        "the channel it left unverified is still owed: {:?}",
+        engine2
+            .handovers()
+            .iter()
+            .map(|report| report.summary())
+            .collect::<Vec<_>>()
+    );
+    assert!(owed[0].state.is_unresolved());
 
     engine2.stop().await;
     let _ = runtime2.shutdown().await;

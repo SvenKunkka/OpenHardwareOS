@@ -1512,8 +1512,14 @@ impl AutomationEngine {
         // nobody is answerable for — that is owed the fail-safe duty.
         let rules = self.rules();
         for hold in record.holds {
+            // The *channel*, not just the device: a rule retargeted from one control
+            // channel to another on the same device no longer drives the one it left
+            // unverified, and dropping that hold would lose the responsibility.
             let still_driven = rules.iter().any(|rule| {
-                rule.enabled && rule.id == hold.rule_id && rule.target.device == hold.device
+                rule.enabled
+                    && rule.id == hold.rule_id
+                    && rule.target.device == hold.device
+                    && rule.target.capability == hold.capability
             });
             if still_driven {
                 continue;
