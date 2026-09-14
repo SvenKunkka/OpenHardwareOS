@@ -449,13 +449,13 @@ historical evidence, not the current release status.
 project one: the machine's `PATH` toolchain mixed `clippy-driver 0.1.92` with
 `rustc 1.98.0`, so clippy aborted with `rustc 1.92.0 is not supported by the
 following packages: … requires rustc 1.95` before reading any project code. A
-matched `1.98.0` toolchain was installed from the official channel and is
-addressed explicitly (`rustup run 1.98.0 cargo clippy --workspace --all-targets
--- -D warnings`), leaving the owner's default toolchain, `PATH` and shell
-configuration untouched; `--ignore-rust-version` is not used. It now exits 0 with
-no warnings across all fifteen crates, including `ohm-adapter-system` and
-`ohm-desktop`, which the mismatched pair could never see. That first clean run
-found real lints — a collapsible `if` in `adapters/system`, an unused parameter in
+matched toolchain was installed from the official channel; from round 6 the
+repository pins the exact release CI uses in `rust-toolchain.toml` (`1.98.1`), so
+a checkout, a local shell and a workflow all resolve the same compiler, and
+`--ignore-rust-version` is not used. It exits 0 with no warnings across all
+fifteen crates, including `ohm-adapter-system` and `ohm-desktop`, which the
+mismatched pair could never see. That first clean run found real lints — a
+collapsible `if` in `adapters/system`, an unused parameter in
 the automation engine, a needless lifetime, a field-reassign-on-default, a useless
 conversion, a collapsible `if` and an unused import in `apps/desktop`, and unused
 imports, a single-element loop and boolean comparisons in the test files — which
@@ -470,6 +470,8 @@ and at tick time. Both are described with evidence in `docs/automation.md`, as i
 the per-rule sensor grace period (`fallback.sensor_timeout_s`).
 
 **Still open, and honestly listed in `docs/requirements.md`:** real Windows
-hardware validation (nothing has run on Windows yet), CPU package power having no
-native collector, cross-adapter device identity, and the remaining reserved but
-unconsumed interface surface.
+*hardware* validation — the code has been built, tested and installed by CI on
+`windows-latest` since v0.1.0, but no fan or pump on a machine somebody uses has
+ever responded to a write from it — CPU package power having no native collector,
+cross-adapter device identity, and the remaining reserved but unconsumed interface
+surface.

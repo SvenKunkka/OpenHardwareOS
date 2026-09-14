@@ -1,0 +1,15 @@
+# The compiler the release is built and tested with.
+#
+# Pinning it here means a checkout, a local shell and a CI workflow resolve the
+# same release, so `cargo` in this directory cannot silently be a different
+# compiler than the one that produced a published artefact. CI also sets
+# RUSTUP_TOOLCHAIN explicitly; the two must agree.
+#
+# `rust-version` in Cargo.toml stays the *minimum* the crates compile with
+# (1.95); this file is the *exact* toolchain used for release verification.
+# An explicit `-Toolchain <name>` in the Windows acceptance scripts still wins,
+# because RUSTUP_TOOLCHAIN takes precedence over this file.
+[toolchain]
+channel = "1.98.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

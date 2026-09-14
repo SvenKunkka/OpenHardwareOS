@@ -10,11 +10,11 @@ still missing. The rule from here on:
 > the app or the CLI, and is covered by a test that would fail if it broke.
 > Anything else is **Partial**, **Missing**, or **Unverified on hardware**.
 
-Last reviewed: 2026-09-14 (round 5), against the commit that contains this file
-(no release tag yet). Test baseline at that revision: see the round-3 entry of
-`docs/verification-log.md`, which records the command, the environment and the
-result — that file is the authority for any number quoted here, and numbers in this
-file are not carried over from an earlier round.
+Last reviewed: 2026-09-14 (round 6, preparing **v0.1.2**). Test baseline at that
+revision: see the round-6 entry of `docs/verification-log.md`, which records the
+command, the environment and the result — that file is the authority for any
+number quoted here, and numbers in this file are not carried over from an earlier
+round. Earlier rounds are kept in the same file as history, not as current status.
 
 ## Status vocabulary
 
@@ -233,7 +233,13 @@ Ordered by what blocks a defensible Windows MVP:
 
 1. **Windows real-hardware validation** (scenario D, NVML, LHM, WMI storage,
    tray, autostart, NSIS install/uninstall). Everything is *Prepared*;
-   `docs/windows-validation/` is the kit. Nothing has run on Windows yet.
+   `docs/windows-validation/` is the kit. **Software on Windows has run since
+   v0.1.0**: GitHub Actions runs the workspace tests, Clippy, the NSIS bundle and a
+   public PowerShell 5.1 download-install-check on `windows-latest` (v0.1.1:
+   490 Rust tests, all eight CI jobs green — see the release evidence in
+   `docs/versions.json`). What has *not* run is this code on a Windows machine
+   somebody actually uses, with real fans to read and drive. A CI runner is not
+   that machine, and its "install passed" is not hardware acceptance.
 2. **A physical fan has never responded to a write from this code.** Scenario D
    is unverified in two independent ways — no Windows machine has run it, and no
    fan's **audible or tachometer response** to a commanded duty has ever been
@@ -282,9 +288,24 @@ Ordered by what blocks a defensible Windows MVP:
    content and missed the application window, so the file was deleted and the approach is
    opt-in only. Until a person looks at the window and keeps a picture, the interface rests
    on the frontend's own account of what it rendered — which is not a substitute.
-10. **Two external dependencies, and nothing else.** Everything still open needs either a
-   Windows machine someone may use, or a person with a tachometer next to a real fan. No
-   further work on this repository moves either one, which is why the project is at a
-   deliverable stop rather than mid-task: see `docs/windows-validation/ACCEPTANCE-ENTRY.md`.
-11. **Deferred by design**: plugin loading, scenes/profiles, app and game
+10. **Two external dependencies, and nothing else blocks a release.** Everything
+    that still needs *hardware evidence* needs either a Windows machine someone may use,
+    or a person with a tachometer next to a real fan; no further work on this repository
+    moves either one. That is a limit on **hardware acceptance**, not a claim that the
+    repository is finished: since the v0.1.1 publication it has gained the version
+    catalogue and tree, versioned six-stage planning
+    (`docs/plans/hardware-support/`), the Windows CI defects below, and the release
+    packaging fixes in v0.1.2. Statement by statement, what each gate still needs is in
+    `docs/windows-validation/ACCEPTANCE-ENTRY.md`.
+11. ~~The Windows code path had never been compiled in this repository.~~
+    **Closed in round 6**: `adapters/system/src/windows.rs` sits behind
+    `#[cfg(windows)]`, so no macOS or Linux build ever read it, and the first
+    GitHub CI run (on round 5's commit) failed to compile it against `wmi` 0.18 —
+    `wmi::COMLibrary` no longer exists and `WMIConnection::new()` takes no
+    argument. A round-2 test also asserted that a read-only *directory* blocks a
+    write, which is true on Unix and false on Windows. Both were fixed (in
+    `34db43b` and `6e37954`) before v0.1.1, and round 6 added the missing local
+    gate: `cargo check --target x86_64-pc-windows-msvc` now runs as part of the
+    full pass, so a Windows-only file can no longer rot unseen between releases.
+12. **Deferred by design**: plugin loading, scenes/profiles, app and game
    detection, natural-language rules, OpenHub/OpenFan hardware, release signing.

@@ -51,21 +51,22 @@ Two rules that follow from this:
 
 ## Status of this repository today
 
-**Everything in this kit is Prepared. Nothing is Build/run passed. Nothing is
-Verified on real hardware.**
-
-No output produced by any of these commands on a Windows machine exists in this
-repository, because the project was developed on macOS. Concretely:
+**Everything in this kit is Prepared for the machine it is meant for.** Since
+v0.1.0 the code is also built, tested and installed by GitHub Actions on
+`windows-latest` — that is a real Windows run and it is recorded on GitHub, but it
+is a CI runner with no fans to drive and no NVIDIA GPU, so it is **not** hardware
+acceptance and it is **not** the operator's machine. Concretely:
 
 | Area | Level today | Why |
 |---|---|---|
-| `cargo test --workspace` on Windows | **Prepared** | `docs/verification-log.md` records the passing run as 444 tests at the round-3 revision, on macOS aarch64 with the pinned `rustc 1.98.0`. No Windows run is recorded, and a macOS pass says nothing about the `cfg(windows)` code paths. |
-| `cargo build --workspace --all-targets` on Windows (compiles `cfg(windows)` code) | **Prepared** | `.github/workflows/ci.yml` declares a `windows-latest` job, but this repository holds no captured output from it, and a CI job definition is not a run. |
-| `adapters/system/src/windows.rs` (WMI `MSFT_StorageReliabilityCounter`) | **Prepared** | Never executed on Windows. Its `#[cfg(test)]` tests do not touch WMI; they test the variant/`temperature_for` helpers. |
+| `cargo test --workspace` on Windows | **Build/run passed on CI; not on a target machine** | v0.1.1 CI ran **490 Rust tests** on `windows-latest` with all eight jobs green ([run 34825301892](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34825301892)). The number is the CI's; this repository cannot reproduce it on macOS, where the same revision passes 488 tests. No test has ever run on the machine this kit is for. |
+| `cargo build --workspace --all-targets` on Windows (compiles `cfg(windows)` code) | **Build/run passed on CI; not on a target machine** | The `windows-latest` CI job compiles it on every push. Before the first CI run this had *never* happened: round 5's commit failed to compile `adapters/system/src/windows.rs` against `wmi` 0.18 ([round 6 of the log](../verification-log.md)). Round 6 added a local gate that needs no Windows SDK — `cargo check --locked --target x86_64-pc-windows-msvc -p ohm-adapter-system`, the crate that broke. The rest of the workspace cannot be checked for Windows from macOS: `ohm-adapters` → `ureq`/`rustls` → `ring` compiles C for MSVC, so the desktop crate's Windows files (`autostart.rs`, `shell.rs`) are covered by the CI job only. |
+| `adapters/system/src/windows.rs` (WMI `MSFT_StorageReliabilityCounter`) | **Build/run passed on CI; not on a target machine** | The code path now executes on the CI runner during `cargo test` (storage is reached through `discover`/`read_state`, and an unavailable temperature is tolerated *with a reason*), which is how the `wmi` 0.18 breakage was found. It has never run against the owner's actual drives, and a CI runner's virtual disk is not evidence about an NVMe. |
 | `apps/desktop/src-tauri/src/autostart.rs` (per-user `Run` value) | **Prepared** | Never executed on Windows. The `not(windows)` test is compiled out there. |
-| NSIS bundle, install, uninstall | **Prepared** | Never built or installed on Windows. |
+| NSIS bundle | **Built on CI** | The release workflow runs `npx tauri build --ci --target x86_64-pc-windows-msvc` and its output was published for v0.1.0 and v0.1.1 ([run 34825296140](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34825296140)). |
+| NSIS install, uninstall, and the installed desktop app | **Prepared** | The published installer has never been run. The public install check installs the *CLI* from a ZIP, not the desktop package ([run 34826241020](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34826241020)), and the fixture test that exercises `-Desktop` uses a double. |
 | Tray, close-to-tray, minimize-to-tray | **Prepared** | Never launched on Windows. |
-| NVML telemetry and fan write (`adapters/nvidia`) | **Prepared** | Never executed on a machine with an NVIDIA driver. |
+| NVML telemetry and fan write (`adapters/nvidia`) | **Prepared** | Never executed on a machine with an NVIDIA driver; the CI runners have none. |
 | LibreHardwareMonitor web-server integration against a real LHM + SuperIO chip | **Prepared** | Only ever exercised against the in-process `fake_server.rs` and a synthetic `data.json` fixture. Since round 2 the adapter reads the channel back after a write and reports `Unconfirmed` when it cannot, so a wrong claim about a write is much harder — but a fake server is still not a SuperIO chip. |
 | Per-device fan write / tachometer response | **Prepared** | No write has ever reached a real fan through this code, and no fan's RPM response has ever been measured. This is a **separate** gap from the Windows gap: a Windows run and a tachometer measurement are two different pieces of evidence, and neither substitutes for the other. |
 

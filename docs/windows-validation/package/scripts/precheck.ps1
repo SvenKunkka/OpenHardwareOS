@@ -27,7 +27,7 @@
     Any output from such a run must not be presented as a Windows result.
 
 .PARAMETER Toolchain
-    A rustup toolchain name to check and build with, e.g. `1.98.0`. When given, every
+    A rustup toolchain name to check and build with, e.g. `1.98.1`. When given, every
     Rust check runs through `rustup run <name>`, and RUSTUP_TOOLCHAIN is set in this
     process so that a child process this script does not launch itself — the cargo
     inside `npx tauri build` — uses the same toolchain. Without it, whatever `rustc` is
@@ -45,7 +45,7 @@
 
 .EXAMPLE
     PS> .\scripts\precheck.ps1
-    PS> .\scripts\precheck.ps1 -Toolchain 1.98.0
+    PS> .\scripts\precheck.ps1 -Toolchain 1.98.1
     PS> .\scripts\precheck.ps1 -WorkDir D:\ohm-build
 #>
 #Requires -Version 7.0
