@@ -77,6 +77,7 @@
 - [GitHub 已发布版本与构建来源](https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.2)
 - [持续集成全部通过：Windows 全量测试、前端、NSIS 打包与版本清单检查](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34839421686)
 - [Windows CLI 与桌面安装包构建、两组夹具测试与打包验证](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34839424804)
+- [Windows PowerShell 5.1 公开下载、校验、版本化安装、诊断与模拟运行通过](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34840668305)
 
 ## v0.2.0 · 水泵支持
 

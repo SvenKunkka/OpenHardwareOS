@@ -111,6 +111,10 @@
         {
           "title": "Windows CLI 与桌面安装包构建、两组夹具测试与打包验证",
           "url": "https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34839424804"
+        },
+        {
+          "title": "Windows PowerShell 5.1 公开下载、校验、版本化安装、诊断与模拟运行通过",
+          "url": "https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34840668305"
         }
       ],
       "hardware_validation": "not_verified",
