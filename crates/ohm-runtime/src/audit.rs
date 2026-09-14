@@ -100,6 +100,10 @@ impl WriteReport {
                 "{} simulated {} = {}",
                 self.device_name, self.capability_name, value
             ),
+            WriteStatus::Unconfirmed => format!(
+                "{} accepted {} = {} but the value is unconfirmed",
+                self.device_name, self.capability_name, self.requested
+            ),
             WriteStatus::Rejected => format!(
                 "{} rejected {} = {} ({})",
                 self.device_name,
@@ -110,7 +114,11 @@ impl WriteReport {
         }
     }
 
-    /// `true` when the hardware actually changed.
+    /// `true` when the hardware is **known** to have changed.
+    ///
+    /// An unconfirmed write is deliberately excluded: the request may well have
+    /// taken effect, but nobody verified it, and this project reports what it
+    /// knows rather than what it hopes.
     pub fn changed_hardware(&self) -> bool {
         matches!(self.status, WriteStatus::Applied | WriteStatus::Simulated)
     }
@@ -168,6 +176,14 @@ impl AuditLog {
                 capability = %report.capability,
                 origin = report.origin.as_str(),
                 "hardware write simulated"
+            ),
+            WriteStatus::Unconfirmed => tracing::warn!(
+                device = %report.device_id,
+                capability = %report.capability,
+                requested = %report.requested,
+                origin = report.origin.as_str(),
+                detail = report.detail.as_deref().unwrap_or(""),
+                "hardware write accepted but unconfirmed"
             ),
             WriteStatus::Rejected => tracing::warn!(
                 device = %report.device_id,

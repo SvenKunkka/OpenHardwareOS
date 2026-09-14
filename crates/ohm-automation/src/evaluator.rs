@@ -35,6 +35,9 @@ pub enum RuleStatus {
     /// The rule's `when` condition is false: it is standing down, and the
     /// configured `otherwise` duty is in force.
     Gated,
+    /// The device accepted the write but the resulting value is unknown. The rule
+    /// holds no confirmed output, and will retry on its next evaluation.
+    Unconfirmed,
     /// Control was released back to the firmware.
     Released,
     /// The last write failed.
@@ -50,6 +53,7 @@ impl RuleStatus {
             Self::Held => "held",
             Self::Fallback => "fallback",
             Self::Gated => "gated",
+            Self::Unconfirmed => "unconfirmed",
             Self::Released => "released",
             Self::Error => "error",
         }
@@ -64,6 +68,12 @@ impl RuleStatus {
     /// output is still safe, it is just not being driven by the curve.
     pub fn is_standing_down(&self) -> bool {
         matches!(self, Self::Gated | Self::Fallback | Self::Released)
+    }
+
+    /// `true` when the rule cannot vouch for its output: the device took the
+    /// request but never confirmed the value.
+    pub fn is_unconfirmed(&self) -> bool {
+        matches!(self, Self::Unconfirmed)
     }
 }
 
@@ -98,6 +108,11 @@ pub struct RuleState {
     pub fallbacks: u64,
     /// `true` while the rule has deliberately given up control.
     pub released: bool,
+    /// Writes the device accepted but never confirmed, since the rule started.
+    pub unconfirmed_writes: u64,
+    /// Unconfirmed writes in a row. Reset by any confirmed write, and by the
+    /// failure policy so the fallback is re-attempted on a bounded cadence.
+    pub consecutive_unconfirmed: u32,
 }
 
 impl RuleState {
@@ -121,6 +136,8 @@ impl RuleState {
             skipped: 0,
             fallbacks: 0,
             released: false,
+            unconfirmed_writes: 0,
+            consecutive_unconfirmed: 0,
         }
     }
 
@@ -131,6 +148,7 @@ impl RuleState {
         self.released = false;
         self.gate_open = false;
         self.gate_announced = false;
+        self.consecutive_unconfirmed = 0;
     }
 }
 
@@ -179,7 +197,10 @@ pub struct Evaluation {
     pub should_write: bool,
     pub message: String,
     pub next_due_ms: i64,
-    /// Set when the fallback asked for a release.
+    /// Always `false` in this build: `release` is refused by validation and
+    /// sanitised on load, and a rule that still carries it is stood down at the
+    /// fail-safe duty instead. The field remains because the evaluation contract
+    /// needs to express it once an adapter can genuinely release a channel.
     pub release: bool,
 }
 
@@ -547,16 +568,31 @@ fn evaluate_fallback(
                 ),
             )
         }
-        FallbackAction::Release => (
-            RuleStatus::Released,
-            None,
-            false,
-            true,
-            format!(
-                "{} is missing: releasing control to the firmware",
-                input.source_label
-            ),
-        ),
+        // Defence in depth. `release` cannot be saved or loaded (see
+        // `FallbackAction::Release`), but if a rule reaches evaluation carrying it
+        // — a hand-built rule, a future import path — it must not silently do
+        // nothing. It stands the rule down at the fail-safe duty instead, and says
+        // why.
+        FallbackAction::Release => {
+            let duty = input
+                .safe_default_duty
+                .clamp(input.target_min, input.target_max);
+            let changed = state
+                .applied_output
+                .map(|applied| (duty - applied).abs() >= f64::EPSILON)
+                .unwrap_or(true);
+            (
+                RuleStatus::Fallback,
+                Some(duty),
+                changed,
+                false,
+                format!(
+                    "{} is missing: `release` is not supported by any adapter in this build, so \
+                     the {:.0} % fail-safe duty was applied instead",
+                    input.source_label, duty
+                ),
+            )
+        }
     };
 
     state.released = release || state.released;
@@ -593,6 +629,8 @@ pub struct RuleOutcome {
     pub writes: u64,
     pub skipped: u64,
     pub fallbacks: u64,
+    /// Writes the device accepted but never confirmed.
+    pub unconfirmed: u64,
     pub at_ms: i64,
 }
 
@@ -618,6 +656,7 @@ impl RuleOutcome {
             writes: state.writes,
             skipped: state.skipped,
             fallbacks: state.fallbacks,
+            unconfirmed: state.unconfirmed_writes,
             at_ms,
         }
     }
@@ -1030,7 +1069,9 @@ mod tests {
         assert_eq!(evaluation.output, Some(100.0));
         assert!(evaluation.should_write);
 
-        // Release gives control back and says so.
+        // `release` is refused by validation and sanitised on load. If it reaches
+        // evaluation anyway, it must NOT be a no-op: the fail-safe duty is applied
+        // and the message says why. Nothing may claim a release happened.
         let release = rule().with_fallback(Fallback {
             on_sensor_missing: FallbackAction::Release,
             ..Fallback::default()
@@ -1038,15 +1079,18 @@ mod tests {
         let mut state = RuleState::new(release.id.clone());
         state.applied_output = Some(45.0);
         let evaluation = evaluate(&release, &mut state, input(None, 1_000));
-        assert_eq!(evaluation.status, RuleStatus::Released);
-        assert!(evaluation.release);
-        assert!(!evaluation.should_write);
-        assert!(state.released);
+        assert_eq!(evaluation.status, RuleStatus::Fallback);
+        assert!(!evaluation.release, "no adapter can release a channel here");
+        assert!(
+            evaluation.should_write,
+            "the output must actually be driven"
+        );
+        assert_eq!(evaluation.output, Some(70.0));
+        assert!(evaluation.message.contains("not supported"));
 
         // When the sensor comes back the rule takes over again.
         let recovery = evaluate(&release, &mut state, input(Some(70.0), 2_000));
         assert_eq!(recovery.status, RuleStatus::Applied);
-        assert!(!state.released);
     }
 
     #[test]

@@ -52,6 +52,8 @@ const RULE_STATUS_TONE: Record<RuleStatus, Tone> = {
   // Standing down because a "when" condition is false is normal operation, not a
   // fault: it gets the calm neutral tone and its own label.
   gated: 'neutral',
+  // Unknown is its own state, and it is worth looking at: warn, not danger.
+  unconfirmed: 'warn',
   fallback: 'warn',
   released: 'neutral',
   disabled: 'neutral',

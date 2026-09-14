@@ -217,7 +217,15 @@ pub enum FallbackAction {
     SafeDefault,
     /// Drive the output to an explicit percentage.
     Fixed { percent: f64 },
-    /// Stop controlling and say so, leaving the firmware in charge.
+    /// **Rejected.** Handing one channel back to the firmware while the app keeps
+    /// running is not something any adapter in this build can do: the only release
+    /// that exists is `LibreHardwareMonitorAdapter::shutdown`, which releases
+    /// *every* channel as the runtime exits.
+    ///
+    /// The variant stays in the schema so an existing rule file still parses and
+    /// can be reported on, but it validates as an error (so no save path accepts
+    /// it) and is substituted with [`FallbackAction::SafeDefault`] when such a file
+    /// is loaded.
     Release,
 }
 
@@ -238,6 +246,14 @@ impl FallbackAction {
             Self::SafeDefault => Some(safe_default),
             Self::Fixed { percent } => Some(*percent),
         }
+    }
+
+    /// `true` for an action this build cannot perform.
+    ///
+    /// Used to refuse it on save and to substitute it on load; see the variant's
+    /// documentation for why it is not simply deleted.
+    pub fn is_unsupported(&self) -> bool {
+        matches!(self, Self::Release)
     }
 }
 
@@ -776,6 +792,25 @@ impl Rule {
         }
         // Both policies are checked separately so the error names the one that
         // is wrong.
+        // `release` cannot be performed by any adapter in this build, so it must
+        // not be saved. Keeping it would mean a rule that silently does nothing at
+        // the moment it matters — when the sensor is already gone.
+        for (name, action) in [
+            (
+                "fallback.on_sensor_missing",
+                self.fallback.on_sensor_missing,
+            ),
+            ("fallback.on_write_failure", self.fallback.on_write_failure),
+        ] {
+            if action.is_unsupported() {
+                return Err(OhmError::Automation(format!(
+                    "{name}: `release` is not supported — no adapter in this build can hand a \
+                     channel back while the app runs. Use `safe_default` (the runtime's fail-safe \
+                     duty) or `fixed: {{ percent: N }}`."
+                )));
+            }
+        }
+
         if let FallbackAction::Fixed { percent } = self.fallback.on_sensor_missing
             && !(0.0..=100.0).contains(&percent)
         {

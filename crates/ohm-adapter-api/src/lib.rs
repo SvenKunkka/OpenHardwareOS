@@ -271,8 +271,19 @@ impl AdapterStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WriteStatus {
-    /// The hardware accepted the value.
+    /// The hardware accepted the value **and the adapter confirmed it** — either
+    /// by reading the channel back, or because it owns the state (simulated
+    /// hardware).
     Applied,
+    /// The request was accepted but the resulting value is **unknown**: the
+    /// channel could not be read back, or answered with nothing usable.
+    ///
+    /// This exists because "the write request succeeded" and "the device is at
+    /// this value" are different claims, and collapsing them is how an
+    /// application ends up reporting a fan speed it never verified. An
+    /// `Unconfirmed` outcome carries **no** `applied` value: filling it in with
+    /// the requested number would be a lie.
+    Unconfirmed,
     /// The adapter simulated the write (mock devices, dry-run mode).
     Simulated,
     /// The hardware refused; `detail` explains why.
@@ -315,8 +326,30 @@ impl WriteOutcome {
         }
     }
 
+    /// The request reached the device, but the value could not be confirmed.
+    ///
+    /// `applied` is deliberately `None`: the honest answer is "unknown".
+    pub fn unconfirmed(detail: impl Into<String>) -> Self {
+        Self {
+            status: WriteStatus::Unconfirmed,
+            applied: None,
+            detail: Some(detail.into()),
+        }
+    }
+
+    /// The write is confirmed: the device is known to be at `applied`.
     pub fn is_applied(&self) -> bool {
         matches!(self.status, WriteStatus::Applied)
+    }
+
+    /// The write was accepted but the resulting value is unknown.
+    pub fn is_unconfirmed(&self) -> bool {
+        matches!(self.status, WriteStatus::Unconfirmed)
+    }
+
+    /// Did the hardware (or the simulation) end up in a known state?
+    pub fn is_confirmed(&self) -> bool {
+        matches!(self.status, WriteStatus::Applied | WriteStatus::Simulated)
     }
 }
 

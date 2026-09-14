@@ -294,21 +294,25 @@ impl HardwareAdapter for LhmAdapter {
                         ),
                     });
                 }
-                Ok(WriteOutcome::applied(Value::Number(read_back)))
+                let mut outcome = WriteOutcome::applied(Value::Number(read_back));
+                outcome.detail = Some(format!(
+                    "channel set point read back as {read_back:.1} % (the fan's actual speed is a \
+                     separate reading, not implied by this)"
+                ));
+                Ok(outcome)
             }
-            // A channel that answers `N/A` cannot confirm the value. Report the
-            // write as applied but say the confirmation is missing, rather than
-            // implying we verified something we did not.
-            Ok(None) => Ok(WriteOutcome::applied(Value::Number(applied))),
-            Err(error) => Ok(WriteOutcome {
-                status: ohm_adapter_api::WriteStatus::Applied,
-                applied: Some(Value::Number(applied)),
-                detail: Some(format!(
-                    "the write was accepted but could not be read back ({}); treat the value as \
-                     requested, not confirmed",
-                    error.detail(self.base_url())
-                )),
-            }),
+            // A channel that answers `N/A` holds no value we can trust, so the
+            // honest result is "unknown", not "applied".
+            Ok(None) => Ok(WriteOutcome::unconfirmed(format!(
+                "LibreHardwareMonitor accepted the request, but the channel answers `N/A` when read \
+                 back, so the set point could not be confirmed (it is neither known to be \
+                 {applied:.1} % nor known to be something else)"
+            ))),
+            Err(error) => Ok(WriteOutcome::unconfirmed(format!(
+                "LibreHardwareMonitor accepted the request, but reading the channel back failed \
+                 ({}), so the set point could not be confirmed",
+                error.detail(self.base_url())
+            ))),
         }
     }
 
@@ -555,6 +559,83 @@ mod tests {
             "the adapter must read the channel back to confirm the write"
         );
         assert_eq!(server.channel_value(), 64.0);
+    }
+
+    /// A read-back that cannot confirm the value must NOT be reported as applied
+    /// with the requested value: nobody knows what the channel holds.
+    #[tokio::test]
+    async fn an_unreadable_channel_does_not_claim_the_requested_value() {
+        for (label, configure) in [
+            ("N/A", FakeLhm::read_not_available as fn(&FakeLhm)),
+            ("HTTP error", FakeLhm::read_errors),
+        ] {
+            let server = FakeLhm::start();
+            let adapter = adapter(&server);
+            let devices = adapter.discover().await.unwrap();
+            let fan = devices
+                .iter()
+                .find(|d| d.name.contains("Nuvoton") && d.name.contains("#1"))
+                .expect("chassis fan #1")
+                .clone();
+            let control = fan.capability_str(caps::FAN_SPEED_PERCENT).unwrap().clone();
+
+            configure(&server);
+            let outcome = adapter
+                .write(&fan, &control, &Value::Number(73.0))
+                .await
+                .unwrap_or_else(|error| panic!("{label}: the write was accepted: {error}"));
+
+            assert_ne!(
+                outcome.status,
+                ohm_adapter_api::WriteStatus::Applied,
+                "{label}: an unconfirmed write must not be reported as applied"
+            );
+            assert_eq!(
+                outcome.applied, None,
+                "{label}: an unknown value must not be filled in with the requested one"
+            );
+            assert!(
+                outcome
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("not confirmed")
+                        || detail.contains("unconfirmed")
+                        || detail.contains("could not be confirmed")),
+                "{label}: the detail must say the value is unconfirmed, got {:?}",
+                outcome.detail
+            );
+        }
+    }
+
+    /// Confirming the set point is not the same as observing the fan respond.
+    #[tokio::test]
+    async fn a_confirmed_set_point_says_nothing_about_airflow() {
+        let server = FakeLhm::start();
+        let adapter = adapter(&server);
+        let devices = adapter.discover().await.unwrap();
+        let fan = devices
+            .iter()
+            .find(|d| d.name.contains("Nuvoton") && d.name.contains("#1"))
+            .expect("chassis fan #1")
+            .clone();
+        let control = fan.capability_str(caps::FAN_SPEED_PERCENT).unwrap().clone();
+
+        let outcome = adapter
+            .write(&fan, &control, &Value::Number(66.0))
+            .await
+            .unwrap();
+        assert_eq!(outcome.status, ohm_adapter_api::WriteStatus::Applied);
+        let detail = outcome.detail.clone().unwrap_or_default().to_lowercase();
+        for forbidden in ["rpm", "spun", "airflow", "responded"] {
+            assert!(
+                !detail.contains(forbidden),
+                "the adapter may only speak about the set point it read back, not about {forbidden}: {detail}"
+            );
+        }
+        assert!(
+            detail.contains("set point") || detail.contains("channel"),
+            "the confirmation should name what was confirmed: {detail}"
+        );
     }
 
     #[tokio::test]

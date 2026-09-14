@@ -57,7 +57,7 @@ import type {
   Source,
 } from '../types';
 
-type FallbackChoice = 'hold' | 'safe_default' | 'release' | 'fixed';
+type FallbackChoice = 'hold' | 'safe_default' | 'fixed';
 
 interface CurveRow {
   key: string;
@@ -228,8 +228,6 @@ function fallbackAction(choice: FallbackChoice, fixedPercent: string): FallbackA
       return 'hold';
     case 'safe_default':
       return 'safe_default';
-    case 'release':
-      return 'release';
     case 'fixed':
       return { fixed: { percent: Number(fixedPercent) || 0 } };
     default:
@@ -1515,7 +1513,10 @@ function RuleForm({
             >
               <option value="hold">Hold the last output</option>
               <option value="safe_default">Use the fail-safe output</option>
-              <option value="release">Release control to the hardware</option>
+              {/* "Release control to the hardware" is deliberately absent: no
+                  adapter in this build can hand a single channel back while the
+                  app runs, so offering it would configure a rule that does
+                  nothing exactly when it matters. */}
               <option value="fixed">Force a fixed percentage</option>
             </select>
           </Field>
@@ -1528,7 +1529,6 @@ function RuleForm({
             >
               <option value="hold">Hold the last output</option>
               <option value="safe_default">Use the fail-safe output</option>
-              <option value="release">Release control to the hardware</option>
               <option value="fixed">Force a fixed percentage</option>
             </select>
           </Field>

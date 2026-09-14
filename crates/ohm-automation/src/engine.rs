@@ -23,7 +23,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::time::Duration;
 
-use ohm_core::{OhmError, Result, RuleId};
+use ohm_adapter_api::WriteStatus;
+use ohm_core::{CapabilityId, DeviceId, OhmError, Result, RuleId};
 use ohm_device_model::Value;
 use ohm_runtime::{Runtime, WriteOrigin};
 use parking_lot::{Mutex, RwLock};
@@ -34,6 +35,14 @@ use tokio::task::JoinHandle;
 use crate::evaluator::{EvaluationInput, RuleOutcome, RuleState, RuleStatus, evaluate};
 use crate::rule::{Aggregate, FallbackAction, OtherwiseAction, Rule};
 use crate::store::{LoadReport, RuleStore};
+
+/// How many unconfirmed writes in a row are tolerated before the rule's
+/// write-failure policy runs.
+///
+/// A channel that accepts requests without ever confirming them is a control
+/// failure, but retrying is also the only way to notice it has recovered, so the
+/// retries are bounded and then the safety fallback takes over.
+pub const MAX_CONSECUTIVE_UNCONFIRMED: u32 = 3;
 
 /// How often the engine wakes up to look for due rules.
 pub const TICK_INTERVAL_MS: u64 = 100;
@@ -93,6 +102,74 @@ impl RuleConflict {
     }
 }
 
+/// What changed about a rule, expressed in the terms that matter to its control
+/// memory.
+///
+/// The distinction is deliberate: a change to what the rule *means* invalidates
+/// cached state (a value measured for a different output or a different sensor is
+/// not evidence about this one), while a metadata-only change must not interrupt
+/// control at all.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct RuleChange {
+    /// The output the rule used to drive, when it changed.
+    previous_target: Option<(DeviceId, CapabilityId)>,
+    source_changed: bool,
+    condition_changed: bool,
+    /// The mapping itself changed: curve, hysteresis, deadband, limits or fallback.
+    control_changed: bool,
+}
+
+impl RuleChange {
+    fn between(previous: &Rule, next: &Rule) -> Self {
+        let previous_target = (previous.target.device != next.target.device).then(|| {
+            (
+                previous.target.device.clone(),
+                previous.target.capability.clone(),
+            )
+        });
+        Self {
+            previous_target,
+            source_changed: previous.source != next.source,
+            condition_changed: previous.when != next.when,
+            control_changed: previous.curve != next.curve
+                || previous.hysteresis != next.hysteresis
+                || previous.deadband != next.deadband
+                || previous.min_output != next.min_output
+                || previous.max_output != next.max_output
+                || previous.fallback != next.fallback,
+        }
+    }
+
+    /// Does anything need invalidating?
+    fn is_semantic(&self) -> bool {
+        self.previous_target.is_some()
+            || self.source_changed
+            || self.condition_changed
+            || self.control_changed
+    }
+
+    /// One line for the log, or `None` when only metadata moved.
+    fn summary(&self) -> Option<String> {
+        if !self.is_semantic() {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if let Some((device, capability)) = &self.previous_target {
+            parts.push(format!("target changed from {device}/{capability}"));
+        }
+        if self.source_changed {
+            parts.push("source changed".to_string());
+        }
+        if self.condition_changed {
+            parts.push("condition changed".to_string());
+        }
+        if self.control_changed {
+            parts.push("mapping changed".to_string());
+        }
+        Some(parts.join(", "))
+    }
+}
+
 /// Engine counters, shown in Diagnostics.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AutomationStats {
@@ -120,6 +197,25 @@ struct EngineInner {
     last_tick_ms: AtomicI64,
     /// Unresolved-by-the-user conflicts found when loading rule files.
     conflicts: RwLock<Vec<RuleConflict>>,
+    /// Rule files that loaded but had to be adjusted in memory (a `release`
+    /// fallback substituted with `safe_default`). Surfaced so the substitution is
+    /// visible instead of silent.
+    compatibility_notes: RwLock<Vec<crate::store::RuleFileNote>>,
+    /// Outputs a rule stopped driving and that still need handing over.
+    ///
+    /// `save_rule` is synchronous, so it cannot await the handover write itself;
+    /// queuing it here means every save path — the form, the CLI, a reloaded file —
+    /// gets the same treatment, performed at the start of the next tick.
+    pending_handovers: Mutex<Vec<PendingHandover>>,
+}
+
+/// An output a rule abandoned, waiting to be driven to the fail-safe duty.
+#[derive(Debug, Clone, PartialEq)]
+struct PendingHandover {
+    rule_id: RuleId,
+    device: DeviceId,
+    capability: CapabilityId,
+    reason: String,
 }
 
 /// The automation engine.
@@ -144,6 +240,8 @@ impl AutomationEngine {
                 ticks: AtomicU64::new(0),
                 last_tick_ms: AtomicI64::new(0),
                 conflicts: RwLock::new(Vec::new()),
+                compatibility_notes: RwLock::new(Vec::new()),
+                pending_handovers: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -169,6 +267,9 @@ impl AutomationEngine {
     /// Load rules from disk, replacing the in-memory set.
     pub fn load_rules(&self) -> Result<LoadReport> {
         let report = self.inner.store.load_report();
+        // The rules as they were, so a file that changed on disk is treated exactly
+        // like an edit through the form.
+        let previous: Vec<Rule> = self.rules();
         {
             let mut rules = self.inner.rules.write();
             *rules = report.rules.clone();
@@ -187,6 +288,29 @@ impl AutomationEngine {
             self.inner.runtime.log(
                 "warn",
                 format!("{} rule file(s) could not be loaded", report.errors.len()),
+            );
+        }
+        // A rule whose file changed meaningfully gets the same treatment as an
+        // edited one: the old output is handed over and stale state is dropped.
+        for loaded in &report.rules {
+            if let Some(before) = previous.iter().find(|rule| rule.id == loaded.id) {
+                let change = RuleChange::between(before, loaded);
+                if change.is_semantic() {
+                    self.apply_rule_change(&loaded.name, before, &change);
+                }
+            }
+        }
+
+        *self.inner.compatibility_notes.write() = report.notes.clone();
+        for note in &report.notes {
+            self.inner.runtime.log(
+                "warn",
+                format!("automation rule `{}`: {}", note.rule_id, note.message),
+            );
+            self.inner.runtime.publish_automation(
+                Some(note.rule_id.clone()),
+                "rule_compatibility_note",
+                note.message.clone(),
             );
         }
         self.resolve_loaded_conflicts();
@@ -257,6 +381,63 @@ impl AutomationEngine {
         self.tick_inner(true).await
     }
 
+    /// Perform the handovers queued by rule edits.
+    ///
+    /// Runs before any rule is evaluated, so an output nobody drives any more is
+    /// safe before the engine starts moving the one that replaced it.
+    async fn perform_pending_handovers(&self) {
+        let pending: Vec<PendingHandover> = {
+            let mut queue = self.inner.pending_handovers.lock();
+            std::mem::take(&mut *queue)
+        };
+        for handover in pending {
+            let duty = self.inner.runtime.settings().safety.fail_safe_duty_percent;
+            let origin = WriteOrigin::Safety {
+                reason: handover.reason.clone(),
+            };
+            match self
+                .inner
+                .runtime
+                .write_value(
+                    handover.device.as_str(),
+                    handover.capability.as_str(),
+                    Value::Number(duty),
+                    origin,
+                )
+                .await
+            {
+                Ok(report) => {
+                    let how = match report.status {
+                        WriteStatus::Applied | WriteStatus::Simulated => {
+                            format!("set to {duty:.0} %")
+                        }
+                        WriteStatus::Unconfirmed => {
+                            format!("set to {duty:.0} %, not confirmed")
+                        }
+                        WriteStatus::Rejected => "refused".to_string(),
+                    };
+                    self.inner.runtime.publish_automation(
+                        Some(handover.rule_id.clone()),
+                        "rule_handover",
+                        format!(
+                            "{}/{} {how} after the rule stopped driving it",
+                            handover.device, handover.capability
+                        ),
+                    );
+                }
+                Err(error) => {
+                    self.inner.runtime.log(
+                        "warn",
+                        format!(
+                            "could not hand {}/{} over to the fail-safe duty: {error}",
+                            handover.device, handover.capability
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
     async fn tick_inner(&self, force: bool) -> Vec<RuleOutcome> {
         let now = ohm_core::now_ms();
         self.inner.ticks.fetch_add(1, Ordering::Relaxed);
@@ -266,6 +447,9 @@ impl AutomationEngine {
         if !settings.automation_enabled {
             return Vec::new();
         }
+
+        // Outputs abandoned by a rule edit are made safe before anything else.
+        self.perform_pending_handovers().await;
 
         // A stalled runtime means stale sensors: fall back rather than act on
         // numbers that may be minutes old.
@@ -396,30 +580,89 @@ impl AutomationEngine {
                 )
                 .await
             {
-                Ok(report) => {
-                    wrote = true;
-                    state.applied_output = report
-                        .applied
-                        .as_ref()
-                        .and_then(Value::as_f64)
-                        .or(Some(output));
-                    state.writes = state.writes.saturating_add(1);
-                    state.last_write_ms = now;
-                    // Keep the evaluation's verdict: a fail-safe write is still
-                    // a fallback, not a normal `Applied`.
-                    state.last_status = evaluation.status;
-                    state.last_message = format!("{} (wrote {:.0} %)", evaluation.message, output);
-                    self.inner.runtime.publish_automation(
-                        Some(rule.id.clone()),
-                        "rule_applied",
-                        format!(
-                            "{} -> {:.0} % on {}",
-                            rule.source.label(),
+                Ok(report) => match report.status {
+                    // The device is known to be at a value.
+                    WriteStatus::Applied | WriteStatus::Simulated => {
+                        wrote = true;
+                        // Never fall back to the requested value: a confirmed write
+                        // carries a confirmed value, and if it somehow does not, the
+                        // honest answer is "unknown" rather than the request.
+                        state.applied_output = report.applied.as_ref().and_then(Value::as_f64);
+                        state.writes = state.writes.saturating_add(1);
+                        state.consecutive_unconfirmed = 0;
+                        state.last_write_ms = now;
+                        // Keep the evaluation's verdict: a fail-safe write is still
+                        // a fallback, not a normal `Applied`.
+                        state.last_status = evaluation.status;
+                        let confirmed = report
+                            .applied
+                            .as_ref()
+                            .map(Value::to_string)
+                            .unwrap_or_else(|| "unknown".into());
+                        state.last_message = format!("{} (wrote {confirmed})", evaluation.message);
+                        self.inner.runtime.publish_automation(
+                            Some(rule.id.clone()),
+                            "rule_applied",
+                            format!(
+                                "{} -> {confirmed} on {}",
+                                rule.source.label(),
+                                rule.target.qualified_id()
+                            ),
+                        );
+                    }
+                    // Accepted, but nobody knows what the device is at now.
+                    WriteStatus::Unconfirmed => {
+                        state.unconfirmed_writes = state.unconfirmed_writes.saturating_add(1);
+                        state.consecutive_unconfirmed =
+                            state.consecutive_unconfirmed.saturating_add(1);
+                        // Forget the output state: we must not dedupe against a value
+                        // we never verified, and the next evaluation has to try again.
+                        state.applied_output = None;
+                        state.last_write_ms = now;
+                        state.last_status = RuleStatus::Unconfirmed;
+                        state.last_message = format!(
+                            "{} — accepted {:.0} % but not confirmed: {}",
+                            evaluation.message,
                             output,
-                            rule.target.qualified_id()
-                        ),
-                    );
-                }
+                            report.detail.as_deref().unwrap_or("no reason given")
+                        );
+                        self.inner.runtime.publish_automation(
+                            Some(rule.id.clone()),
+                            "rule_unconfirmed",
+                            state.last_message.clone(),
+                        );
+                        self.inner
+                            .runtime
+                            .log("warn", format!("{}: {}", rule.name, state.last_message));
+
+                        if state.consecutive_unconfirmed >= MAX_CONSECUTIVE_UNCONFIRMED {
+                            // Bounded retries, then the rule's own failure policy —
+                            // which is what attempts the safety fail-safe duty.
+                            let detail = format!(
+                                "{:.0} % was requested {MAX_CONSECUTIVE_UNCONFIRMED} times and never confirmed; control cannot be verified",
+                                output
+                            );
+                            state.consecutive_unconfirmed = 0;
+                            let error = OhmError::WriteRejected {
+                                device: device.id.to_string(),
+                                capability: capability.id.to_string(),
+                                detail,
+                            };
+                            self.handle_write_failure(
+                                rule,
+                                &mut state,
+                                &error,
+                                &device,
+                                &capability,
+                                now,
+                            )
+                            .await;
+                        }
+                    }
+                    // `Rejected` never reaches here: the runtime returns it as an
+                    // error, and the `Err` arm below handles it.
+                    WriteStatus::Rejected => {}
+                },
                 Err(err) => {
                     self.handle_write_failure(rule, &mut state, &err, &device, &capability, now)
                         .await;
@@ -492,26 +735,18 @@ impl AutomationEngine {
         );
 
         match rule.fallback.on_write_failure {
-            FallbackAction::Release => {
-                state.released = true;
-                state.last_status = RuleStatus::Released;
-                state.last_message =
-                    "write failed: released control back to the firmware".to_string();
-                self.inner.runtime.publish_automation(
-                    Some(rule.id.clone()),
-                    "rule_released",
-                    state.last_message.clone(),
-                );
-            }
+            // Unreachable through config (refused on save, sanitised on load), and
+            // deliberately folded into the safe branch rather than left as a no-op:
+            // an action that cannot be performed must never be reported as done.
             FallbackAction::Hold => {}
-            FallbackAction::SafeDefault | FallbackAction::Fixed { .. } => {
-                let Some(duty) = rule
+            FallbackAction::SafeDefault
+            | FallbackAction::Fixed { .. }
+            | FallbackAction::Release => {
+                let duty = rule
                     .fallback
                     .on_write_failure
                     .duty(self.inner.runtime.settings().safety.fail_safe_duty_percent)
-                else {
-                    return;
-                };
+                    .unwrap_or_else(|| self.inner.runtime.settings().safety.fail_safe_duty_percent);
                 let origin = WriteOrigin::Safety {
                     reason: format!("automation rule {} write failure", rule.id),
                 };
@@ -528,10 +763,17 @@ impl AutomationEngine {
                 {
                     Ok(report) => {
                         state.applied_output = report.applied.as_ref().and_then(Value::as_f64);
-                        state.last_message = format!(
-                            "write failed, fell back to {:.0} % (runtime fail-safe)",
-                            duty
-                        );
+                        // The original cause must survive: "we fell back" without
+                        // saying why is how a real problem gets hidden behind a
+                        // reassuring message. The fail-safe write is also reported
+                        // for what it was — attempted, and confirmed or not.
+                        let outcome = match report.status {
+                            WriteStatus::Applied | WriteStatus::Simulated => "applied",
+                            WriteStatus::Unconfirmed => "accepted but not confirmed",
+                            WriteStatus::Rejected => "rejected",
+                        };
+                        state.last_message =
+                            format!("{error} — fail-safe duty of {duty:.0} % {outcome}");
                         self.inner.runtime.publish_automation(
                             Some(rule.id.clone()),
                             "rule_fallback",
@@ -540,8 +782,7 @@ impl AutomationEngine {
                     }
                     Err(second) => {
                         state.last_message = format!(
-                            "write failed and the {:.0} % fallback failed too: {second}",
-                            duty
+                            "{error} — the {duty:.0} % fail-safe duty failed too: {second}"
                         );
                         self.inner.runtime.log(
                             "error",
@@ -662,6 +903,14 @@ impl AutomationEngine {
     /// Conflicts found in the rule files, resolved but not silently rewritten.
     pub fn conflicts(&self) -> Vec<RuleConflict> {
         self.inner.conflicts.read().clone()
+    }
+
+    /// Rules that loaded with an in-memory adjustment, with the reason.
+    ///
+    /// The rule files are never rewritten; this is how the user finds out that the
+    /// machine is running something other than what the file says.
+    pub fn compatibility_notes(&self) -> Vec<crate::store::RuleFileNote> {
+        self.inner.compatibility_notes.read().clone()
     }
 
     /// The one wording used for a clash, wherever it is reported (form, import,
@@ -930,10 +1179,80 @@ impl AutomationEngine {
         *self.inner.conflicts.write() = conflicts;
     }
 
+    /// React to a rule whose meaning changed.
+    ///
+    /// Two things happen, in this order:
+    ///
+    /// 1. If the output moved, the **old** output is driven to the safety fail-safe
+    ///    duty and the attempt is audited. Abandoning it at whatever the curve last
+    ///    said would leave a fan nobody manages, at a speed nobody chose.
+    /// 2. The cached state that no longer applies is dropped: an output value
+    ///    measured on a different channel, a reading from a different sensor, a gate
+    ///    that was opened by a different condition.
+    ///
+    /// Metadata-only changes take neither step, so renaming a rule cannot interrupt
+    /// control.
+    fn apply_rule_change(&self, rule_name: &str, previous: &Rule, change: &RuleChange) {
+        let Some(summary) = change.summary() else {
+            return;
+        };
+        tracing::info!(
+            rule = previous.id.as_str(),
+            change = summary.as_str(),
+            "rule meaning changed, invalidating control memory"
+        );
+
+        // 1. Queue the handover of the old output. It is performed at the start of
+        //    the next tick, because this path is synchronous and the write is not.
+        if let Some((device, capability)) = &change.previous_target {
+            let duty = self.inner.runtime.settings().safety.fail_safe_duty_percent;
+            let _ = duty;
+            self.inner.pending_handovers.lock().push(PendingHandover {
+                rule_id: previous.id.clone(),
+                device: device.clone(),
+                capability: capability.clone(),
+                reason: format!(
+                    "rule `{}` was retargeted; {device}/{capability} is no longer driven by any rule",
+                    previous.id
+                ),
+            });
+        }
+
+        // 2. Drop the memory that no longer describes this rule.
+        if let Some(state) = self.inner.states.lock().get_mut(&previous.id) {
+            if change.previous_target.is_some() {
+                // A value written to another output is not evidence about this one.
+                state.applied_output = None;
+                state.armed_input = f64::NAN;
+            }
+            if change.source_changed {
+                // Including the grace-period anchor: a reading from the old sensor
+                // must not stand in for the new one.
+                state.last_input = None;
+                state.last_input_ms = 0;
+                state.armed_input = f64::NAN;
+            }
+            if change.condition_changed {
+                state.last_condition = None;
+                state.last_condition_ms = 0;
+                state.gate_open = false;
+                state.gate_announced = false;
+            }
+            if change.control_changed {
+                // The hysteresis anchor referred to the old mapping.
+                state.armed_input = f64::NAN;
+            }
+            state.next_due_ms = 0;
+        }
+    }
+
     /// Validate and persist a rule, then make it live.
     pub fn save_rule(&self, mut rule: Rule) -> Result<Rule> {
         let check = self.check_rule(&rule);
         check.into_result()?;
+        // The version being replaced, so a semantic change can be detected after
+        // the write succeeds (see `RuleChange`).
+        let previous = self.rule(rule.id.as_str());
         // Refuse a second enabled rule on an owned output, whatever route it came
         // in through (the form, a hand-written file, an import, an API call).
         if rule.enabled
@@ -967,6 +1286,13 @@ impl AutomationEngine {
 
         // The active set changed: this save may have fixed a reported conflict.
         self.refresh_conflicts_for_active_set();
+
+        // A change to what the rule means invalidates the state that described the
+        // old meaning — and hands the old output over on the way.
+        if let Some(previous) = previous {
+            let change = RuleChange::between(&previous, &rule);
+            self.apply_rule_change(&rule.name.clone(), &previous, &change);
+        }
         self.inner
             .runtime
             .publish_automation(Some(rule.id.clone()), "rule_saved", rule.summary());
@@ -1094,7 +1420,7 @@ pub fn aggregate_label(aggregate: Aggregate) -> &'static str {
 mod tests {
     use super::*;
     use crate::rule::{Fallback, Source, Target};
-    use ohm_adapter_api::HardwareAdapter;
+    use ohm_adapter_api::{HardwareAdapter, WriteStatus};
     use ohm_adapter_mock::{LoadProfile, MockAdapter, MockConfig, MockFaults};
     use ohm_core::ConfigPaths;
     use ohm_device_model::DeviceType;
@@ -1289,55 +1615,78 @@ mod tests {
         assert_eq!(recovered[0].status, RuleStatus::Applied);
     }
 
+    /// `release` used to set a flag, publish an event and leave the fan exactly
+    /// where it was. It is now refused outright, so nothing can configure it.
     #[tokio::test]
-    async fn release_fallback_gives_control_back() {
-        let (_tmp, engine, mock) = engine_with_mock().await;
+    async fn release_cannot_be_saved_or_enabled() {
+        let (_tmp, engine, _mock) = engine_with_mock().await;
+
         let rule = gpu_rule().with_fallback(Fallback {
             on_sensor_missing: FallbackAction::Release,
             ..Fallback::default()
         });
-        engine.save_rule(rule).unwrap();
-        engine.tick().await;
+        let check = engine.check_rule(&rule);
+        assert!(!check.is_ok(), "release must be a validation error");
+        assert!(
+            check.errors.iter().any(|error| error.contains("release")),
+            "{:?}",
+            check.errors
+        );
+        assert!(engine.save_rule(rule).is_err());
 
+        // The same applies to the write-failure policy.
+        let rule = gpu_rule().with_fallback(Fallback {
+            on_write_failure: FallbackAction::Release,
+            ..Fallback::default()
+        });
+        assert!(engine.save_rule(rule).is_err());
+    }
+
+    /// Defence in depth: if a rule carrying `release` reaches the evaluator anyway
+    /// (a hand-built rule, a future import path), the machine must still be
+    /// protected, and nothing may claim a release happened.
+    #[tokio::test]
+    async fn a_stray_release_rule_still_protects_the_machine() {
+        let (_tmp, engine, mock) = engine_with_mock().await;
+        mock.set_gpu_load(0.2);
+        let rule = gpu_rule().with_fallback(Fallback {
+            on_sensor_missing: FallbackAction::Release,
+            ..Fallback::default()
+        });
+        {
+            // Bypass validation on purpose, which is the only way this is reachable.
+            let mut rules = engine.inner.rules.write();
+            rules.push(rule.clone());
+        }
+        engine.runtime().poll_once().await.unwrap();
+        engine.tick_force().await;
+
+        // The sensor disappears.
         mock.set_faults(MockFaults::sensor_disconnected(
             "gpu.mock.0",
             "temperature.core",
         ));
         engine.runtime().poll_once().await.unwrap();
-        let outcomes = engine.tick_force().await;
-        assert_eq!(outcomes[0].status, RuleStatus::Released);
-    }
+        engine.tick_force().await;
 
-    #[tokio::test]
-    async fn write_failure_is_reported_and_falls_back() {
-        let (_tmp, engine, mock) = engine_with_mock().await;
-        mock.set_gpu_load(0.9);
-        engine.save_rule(gpu_rule()).unwrap();
-        mock.set_faults(MockFaults::writes_fail());
-
-        let outcomes = engine.tick_force().await;
-        assert_eq!(outcomes[0].status, RuleStatus::Error);
-        assert!(
-            outcomes[0].message.contains("failed"),
-            "{}",
-            outcomes[0].message
+        let outcome = engine.outcome("test-gpu").unwrap();
+        assert_ne!(
+            outcome.status,
+            RuleStatus::Released,
+            "nothing was released, so nothing may say it was"
         );
-        assert_eq!(engine.stats().failures, 1);
-    }
-
-    #[tokio::test]
-    async fn write_failure_with_release_fallback() {
-        let (_tmp, engine, mock) = engine_with_mock().await;
-        mock.set_gpu_load(0.9);
-        let rule = gpu_rule().with_fallback(Fallback {
-            on_write_failure: FallbackAction::Release,
-            ..Fallback::default()
-        });
-        engine.save_rule(rule).unwrap();
-        mock.set_faults(MockFaults::writes_fail());
-
-        let outcomes = engine.tick_force().await;
-        assert_eq!(outcomes[0].status, RuleStatus::Released);
+        assert_eq!(outcome.status, RuleStatus::Fallback);
+        assert!(
+            outcome.message.contains("not supported"),
+            "the message must say release is unsupported: {}",
+            outcome.message
+        );
+        assert_eq!(
+            outcome.applied_output,
+            Some(70.0),
+            "the fail-safe duty must actually have been applied"
+        );
+        assert_eq!(mock.status().fan_duties[0], 70.0, "the fan really moved");
     }
 
     #[tokio::test]

@@ -2621,6 +2621,7 @@ dependencies = [
 name = "ohm-integration-tests"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "ohm-adapter-api",
  "ohm-adapter-mock",
  "ohm-adapter-opd",

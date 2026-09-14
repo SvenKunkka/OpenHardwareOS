@@ -18,11 +18,24 @@ pub struct RuleFileError {
     pub message: String,
 }
 
+/// A rule file that loaded, but whose content had to be adjusted in memory.
+///
+/// The file itself is never rewritten: the user decides what to do with it. This
+/// exists so that a substitution is never silent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuleFileNote {
+    pub path: PathBuf,
+    pub rule_id: RuleId,
+    pub message: String,
+}
+
 /// Result of loading the rules directory.
 #[derive(Debug, Clone, Default)]
 pub struct LoadReport {
     pub rules: Vec<Rule>,
     pub errors: Vec<RuleFileError>,
+    /// Loaded, but adjusted in memory — currently only `release` substitutions.
+    pub notes: Vec<RuleFileNote>,
     pub directory: PathBuf,
 }
 
@@ -100,7 +113,10 @@ impl RuleStore {
 
         for path in paths {
             match self.load_file(&path) {
-                Ok(rule) => report.rules.push(rule),
+                Ok((rule, notes)) => {
+                    report.rules.push(rule);
+                    report.notes.extend(notes);
+                }
                 Err(err) => {
                     tracing::warn!(path = %path.display(), error = %err, "skipping unreadable rule file");
                     report.errors.push(RuleFileError {
@@ -120,7 +136,7 @@ impl RuleStore {
         Ok(self.load_report().rules)
     }
 
-    fn load_file(&self, path: &Path) -> Result<Rule> {
+    fn load_file(&self, path: &Path) -> Result<(Rule, Vec<RuleFileNote>)> {
         let raw = std::fs::read_to_string(path).map_err(|e| OhmError::io(path, e))?;
         let mut rule: Rule = serde_yaml_ng::from_str(&raw)
             .map_err(|e| OhmError::Config(format!("{}: {e}", path.display())))?;
@@ -142,8 +158,39 @@ impl RuleStore {
                 rule.id = file_id;
             }
         }
+        // An action this build cannot perform is substituted here, in memory, and
+        // reported: refusing to load the file would leave a machine unmanaged, and
+        // rewriting it would make the change invisible.
+        let mut notes = Vec::new();
+        for (field, action) in [
+            ("on_sensor_missing", rule.fallback.on_sensor_missing),
+            ("on_write_failure", rule.fallback.on_write_failure),
+        ] {
+            if action.is_unsupported() {
+                let message = format!(
+                    "fallback.{field}: `release` is not supported — no adapter in this build can \
+                     hand a channel back while the app runs. Running with `safe_default` instead. \
+                     The file was not modified."
+                );
+                tracing::warn!(path = %path.display(), rule = rule.id.as_str(), "{message}");
+                match field {
+                    "on_sensor_missing" => {
+                        rule.fallback.on_sensor_missing = crate::rule::FallbackAction::SafeDefault;
+                    }
+                    _ => {
+                        rule.fallback.on_write_failure = crate::rule::FallbackAction::SafeDefault;
+                    }
+                }
+                notes.push(RuleFileNote {
+                    path: path.to_path_buf(),
+                    rule_id: rule.id.clone(),
+                    message,
+                });
+            }
+        }
+
         rule.validate()?;
-        Ok(rule)
+        Ok((rule, notes))
     }
 
     /// Write a rule to disk atomically.

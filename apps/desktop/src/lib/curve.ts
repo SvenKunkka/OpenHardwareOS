@@ -97,8 +97,18 @@ export function describeFallbackAction(action: FallbackAction): string {
   return `Force ${action.fixed.percent} %`;
 }
 
-export function isSimpleFallback(action: FallbackAction): 'hold' | 'safe_default' | 'release' | 'fixed' {
-  return typeof action === 'string' ? action : 'fixed';
+/**
+ * The action as a single choice, for the editor's `<select>`.
+ *
+ * `release` is a legal wire value (an old rule file may contain it) but it is not
+ * something this build can perform, so a rule that loaded with it is shown as the
+ * fail-safe default — which is what the runtime actually runs after sanitising the
+ * file. Offering it as an option would let a user configure an action that does
+ * nothing.
+ */
+export function isSimpleFallback(action: FallbackAction): 'hold' | 'safe_default' | 'fixed' {
+  if (typeof action !== 'string') return 'fixed';
+  return action === 'release' ? 'safe_default' : action;
 }
 
 /** An unsaved-but-valid id; the backend is free to replace it. */

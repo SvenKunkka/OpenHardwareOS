@@ -787,7 +787,14 @@ impl Runtime {
 
         match outcome {
             Ok(outcome) => {
-                let applied = outcome.applied.clone().unwrap_or_else(|| value.clone());
+                // Only a confirmed outcome may carry a value. Filling an unknown
+                // result in with the requested number is how a report ends up
+                // claiming a fan speed that was never verified — the same mistake
+                // the adapter layer had, one layer down.
+                let applied = match outcome.status {
+                    WriteStatus::Applied | WriteStatus::Simulated => outcome.applied.clone(),
+                    WriteStatus::Unconfirmed | WriteStatus::Rejected => None,
+                };
                 let report = WriteReport {
                     at_ms: ohm_core::now_ms(),
                     device_id: device.id.clone(),
@@ -796,9 +803,9 @@ impl Runtime {
                     capability: capability.id.clone(),
                     capability_name: capability.name.clone(),
                     requested,
-                    applied: Some(applied.clone()),
+                    applied: applied.clone(),
                     status: outcome.status,
-                    clamped: clamped || applied != value,
+                    clamped: clamped || applied.as_ref().is_some_and(|applied| applied != &value),
                     error_code: None,
                     detail: outcome.detail.clone().or_else(|| note.clone()),
                     origin,

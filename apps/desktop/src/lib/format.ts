@@ -314,6 +314,10 @@ export function ruleStatusLabel(status: RuleStatus): string {
     case 'gated':
       // Standing down is deliberate and safe: the label must not read as a fault.
       return 'Standing down';
+    case 'unconfirmed':
+      // The device took the request but never confirmed the value. That is not
+      // success and not failure: the label has to say exactly that.
+      return 'Unconfirmed';
     case 'fallback':
       return 'Fallback';
     case 'released':
@@ -330,6 +334,8 @@ export function ruleStatusHint(status: RuleStatus): string | undefined {
   switch (status) {
     case 'gated':
       return 'The rule’s “when” condition is not met, so it has stood down and the configured otherwise duty is in force. This is normal, not a fault.';
+    case 'unconfirmed':
+      return 'The device accepted the write but did not confirm the value, so the rule cannot vouch for its output. It will retry, and after a few attempts the fail-safe duty is applied.';
     case 'fallback':
       return 'The source sensor is missing or stale, so the rule is following its fallback policy.';
     case 'applied':

@@ -80,7 +80,7 @@ export type RuleStatus =
   | 'applied'
   | 'held'
   /** The rule's `when` condition is false: it is standing down on purpose. */
-  | 'gated'
+  | 'gated' | 'unconfirmed'
   | 'fallback'
   | 'released'
   | 'error';

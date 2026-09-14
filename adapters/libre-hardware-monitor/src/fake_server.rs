@@ -31,6 +31,20 @@ pub struct FakeLhm {
     stuck_at: Arc<Mutex<Option<f64>>>,
     /// Number of `Get` requests, so a test can prove the adapter read back.
     reads: Arc<AtomicU32>,
+    /// How `Get` answers: normally the channel value, or a refusal/N-A that makes
+    /// the confirmation impossible.
+    read_mode: Arc<Mutex<ReadMode>>,
+}
+
+/// How the fake channel answers a read-back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadMode {
+    /// Answer with the value the channel holds.
+    Value,
+    /// Answer `N/A`, which LHM does for a channel that reports nothing.
+    NotAvailable,
+    /// Answer HTTP 500, as LHM does when it cannot reach the chip.
+    Error,
 }
 
 impl FakeLhm {
@@ -45,6 +59,7 @@ impl FakeLhm {
         let channel_value = Arc::new(Mutex::new(40.0f64));
         let stuck_at = Arc::new(Mutex::new(None::<f64>));
         let reads = Arc::new(AtomicU32::new(0));
+        let read_mode = Arc::new(Mutex::new(ReadMode::Value));
 
         {
             let requests = Arc::clone(&requests);
@@ -54,6 +69,7 @@ impl FakeLhm {
             let channel_value = Arc::clone(&channel_value);
             let stuck_at = Arc::clone(&stuck_at);
             let reads = Arc::clone(&reads);
+            let read_mode = Arc::clone(&read_mode);
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
                     if shutdown.load(Ordering::Relaxed) {
@@ -66,6 +82,7 @@ impl FakeLhm {
                     let channel_value = Arc::clone(&channel_value);
                     let stuck_at = Arc::clone(&stuck_at);
                     let reads = Arc::clone(&reads);
+                    let read_mode = Arc::clone(&read_mode);
                     std::thread::spawn(move || {
                         handle(
                             stream,
@@ -75,6 +92,7 @@ impl FakeLhm {
                             &channel_value,
                             &stuck_at,
                             &reads,
+                            &read_mode,
                         );
                     });
                 }
@@ -90,7 +108,23 @@ impl FakeLhm {
             channel_value,
             stuck_at,
             reads,
+            read_mode,
         }
+    }
+
+    /// Make read-backs answer `N/A` (the channel reports nothing).
+    pub fn read_not_available(&self) {
+        *self.read_mode.lock() = ReadMode::NotAvailable;
+    }
+
+    /// Make read-backs fail with HTTP 500.
+    pub fn read_errors(&self) {
+        *self.read_mode.lock() = ReadMode::Error;
+    }
+
+    /// Restore normal read-backs.
+    pub fn read_normally(&self) {
+        *self.read_mode.lock() = ReadMode::Value;
     }
 
     /// Make the channel acknowledge writes while holding a fixed value, which is
@@ -149,6 +183,7 @@ fn handle(
     channel_value: &Mutex<f64>,
     stuck_at: &Mutex<Option<f64>>,
     reads: &AtomicU32,
+    read_mode: &Mutex<ReadMode>,
 ) {
     let mut reader = BufReader::new(match stream.try_clone() {
         Ok(clone) => clone,
@@ -200,11 +235,15 @@ fn handle(
             reply(200, "text/plain", &format!("{effective:.1} %\n"))
         } else {
             reads.fetch_add(1, Ordering::Relaxed);
-            reply(
-                200,
-                "text/plain",
-                &format!("{:.1} %\n", *channel_value.lock()),
-            )
+            match *read_mode.lock() {
+                ReadMode::Value => reply(
+                    200,
+                    "text/plain",
+                    &format!("{:.1} %\n", *channel_value.lock()),
+                ),
+                ReadMode::NotAvailable => reply(200, "text/plain", "N/A\n"),
+                ReadMode::Error => reply(500, "text/plain", "could not read the chip\n"),
+            }
         }
     } else {
         reply(404, "text/plain", "not found\n")

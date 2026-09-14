@@ -73,25 +73,24 @@ async fn sensor_disconnect_falls_back_to_a_safe_duty() {
     session.shutdown().await;
 }
 
-/// A rule configured to release control must give the channel back instead of
-/// guessing.
+/// `release` is refused by every path that could configure it. It used to be
+/// accepted and then, when it mattered, do nothing at all — see
+/// `tests/tests/fallback_release.rs` for the legacy-file behaviour.
 #[tokio::test]
-async fn release_fallback_hands_control_back() {
+async fn a_release_fallback_cannot_be_configured() {
     let session = Session::simulated().await;
     let rule = session.gpu_rule().with_fallback(Fallback {
         on_sensor_missing: FallbackAction::Release,
         ..Fallback::default()
     });
-    session.engine.save_rule(rule).unwrap();
-    session.step(1_000).await;
 
-    session.mock.set_faults(gpu_sensor_disconnected());
-    session.step(1_000).await;
-    session.engine.tick_force().await;
+    let error = session
+        .engine
+        .save_rule(rule)
+        .expect_err("a release fallback must not be savable");
+    assert!(error.to_string().contains("release"), "{error}");
+    assert_eq!(session.engine.rule_count(), 0, "nothing was stored");
 
-    let outcome = session.engine.outcome("gpu-cooling").unwrap();
-    assert_eq!(outcome.status, RuleStatus::Released);
-    assert!(outcome.message.contains("releasing control"));
     session.shutdown().await;
 }
 

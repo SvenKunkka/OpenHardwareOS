@@ -18,6 +18,7 @@ ohm-protocol.workspace = true
 ohm-adapters.workspace = true
 ohm-adapter-mock.workspace = true
 ohm-adapter-opd.workspace = true
+async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true

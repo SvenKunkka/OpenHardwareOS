@@ -74,7 +74,8 @@ pub mod store;
 
 pub use curve::{ControlPoint, Curve, gpu_cooling_curve};
 pub use engine::{
-    AutomationEngine, AutomationStats, RuleCheck, RuleConflict, TICK_INTERVAL_MS, merge_suggestions,
+    AutomationEngine, AutomationStats, MAX_CONSECUTIVE_UNCONFIRMED, RuleCheck, RuleConflict,
+    TICK_INTERVAL_MS, merge_suggestions,
 };
 pub use evaluator::{Evaluation, EvaluationInput, RuleOutcome, RuleState, RuleStatus, evaluate};
 pub use rule::{
@@ -82,4 +83,4 @@ pub use rule::{
     DEFAULT_UPDATE_INTERVAL_MS, Fallback, FallbackAction, MIN_UPDATE_INTERVAL_MS, OtherwiseAction,
     Rule, SensorRef, Source, Target,
 };
-pub use store::{LoadReport, RuleFileError, RuleStore};
+pub use store::{LoadReport, RuleFileError, RuleFileNote, RuleStore};
