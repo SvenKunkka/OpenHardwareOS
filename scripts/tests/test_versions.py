@@ -231,7 +231,7 @@ class FilesTests(unittest.TestCase):
         path = self.root / "Cargo.toml"
         path.write_text(path.read_text().replace('version = "0.1.0"\n', 'version = "0.1.0" # original version\n'))
         updates = versions.prepare(self.root, catalogue(), "v0.1.1")
-        self.assertIn('version = "0.1.1" # original version\n', updates[Path("Cargo.toml")])
+        self.assertIn('version = "0.1.1" # original version', updates[Path("Cargo.toml")].splitlines())
         versions.write_files(self.root, updates)
         self.assertEqual(versions.check_application_versions(self.root, catalogue()), "0.1.1")
 
