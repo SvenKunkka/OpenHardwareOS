@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "repository": "SvenKunkka/OpenHardwareOS",
-  "development": "v0.1.7",
+  "development": null,
   "versions": [
     {
       "id": "v0.1.0",
@@ -237,15 +237,15 @@
     {
       "id": "v0.1.7",
       "parent": "v0.1.6",
-      "status": "development",
+      "status": "released",
       "channel": "preview",
       "title": "服务能说明它在做什么",
       "summary": "状态文件报告每条规则的状态与原因；服务写日志文件；传感器失联与进程挂起恢复在服务层有测试。",
-      "tag": null,
-      "commit": null,
-      "branch": "codex/v0.1.7",
-      "release_url": null,
-      "published_at": null,
+      "tag": "v0.1.7",
+      "commit": "1c427e798846a7e5030f84be6640e642d21790b6",
+      "branch": null,
+      "release_url": "https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.7",
+      "published_at": "2026-09-15T10:12:03Z",
       "changes": [
         "service status 打印每条规则的状态、确认值与它自己的说明——只报「3 条规则」分不清正常降温与停在失效保护",
         "服务把日志写进配置目录的 logs/：没有终端的进程必须留下记录",
@@ -254,7 +254,12 @@
         "OHM_HWMON_ROOT 作为只读诊断开关公开，服务测试与排障共用它",
         "文档说明「恢复后先保持失效保护值直到读数越过滞回锚点」是设计行为，而不是恢复失败"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "title": "GitHub 已发布版本与构建来源",
+          "url": "https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.7"
+        }
+      ],
       "hardware_validation": "not_verified",
       "plan": null
     },

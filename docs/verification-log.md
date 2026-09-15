@@ -1925,3 +1925,139 @@ value was changed (the systemd unit on the page is a template a user installs, n
 something this build does); nothing was installed on the host; no licence was approved
 on the user's behalf (ADR 0002 and ADR 0004 remain **Proposed**); `Prospector/` and
 `k10max-prospector/` were left exactly as found.
+
+---
+
+## 2026-09-15 — round 12: the service learns to say what it is doing, and the outages get tested
+
+**Revision: `1c427e7`** — the pass below ran at that commit, which is the commit the tag
+points at. The commits carrying this entry follow it and change documentation only.
+
+### 1. "3 rules loaded" is not a status report
+
+Round 11 gave the machine a background service. What it could not do was answer the
+question the person running it actually has: *is this machine being cooled the way I
+asked?* The state file said how many rules existed, which cannot distinguish cooling
+along the curve from sitting on a fail-safe because a sensor went away.
+
+The state file now carries every rule's status, its confirmed value and its own
+sentence, and `service status` prints them:
+
+```text
+rules:
+  chassis      fallback  at 70  fan.system.fakechip_fan1/fan.rpm is missing: falling back to 70 %
+  gpu-cooling  held      at 64  no change worth writing (0.00 % within the 0.00 % deadband)
+```
+
+### 2. Two gaps the tests found on the way
+
+* **The service wrote no log file.** The CLI initialised logging without paths, which is
+  right for a command that prints a report and wrong for a process nobody watches:
+  started by a service manager, its output goes to a journal nobody configured. It now
+  logs into the config directory's `logs/`, and its banner names the state file and the
+  log directory.
+* **`OHM_HWMON_ROOT`**, a read-only override that points a whole process at another
+  hwmon tree. This build writes no `pwm<N>`, so it changes what is read and never what
+  is written — and it is what makes "a fan channel disappears while the process keeps
+  running" something a test can do rather than something a person has to imagine.
+
+### 3. The two outage paths the goal asks for, now covered at the service level
+
+`apps/cli/tests/service_resilience.rs` drives the real binary against a prepared tree:
+
+* **sensor loss and recovery.** The rule reads a tachometer from that tree and drives
+  the simulated fan. Delete the tachometer: the state file reports `fallback`, the
+  fail-safe 70 %, and names `fan.system.fakechip_fan1/fan.rpm` as the sensor that went
+  away. Put it back: the rule reads again — the status leaves `fallback` and the message
+  returns to that reading.
+* **suspend and resume.** After `SIGSTOP` for longer than the heartbeat window,
+  `service status` reports "not running" and names whose stale file it is: the state in
+  which another process may take the channels over, which is what a sleeping machine
+  looks like. After `SIGCONT` the same process is still the owner, with the heartbeat
+  and the cycle counter moving again.
+
+### 4. An hour spent on a rule that was working
+
+The first version of the sensor test waited for a new *write* after the tachometer came
+back, and timed out. The rule, it turned out, was evaluating the restored reading
+perfectly well and had decided to **hold** the fail-safe 70 % rather than step to the
+curve's 65 % — its hysteresis rule, holding until the reading passes the anchor, and
+holding the *higher* (safer) value while it does. The lesson is in the outcome of §1:
+with nothing reporting what a rule was doing, "no write for 20 seconds" and "the rule
+never recovered" look identical. The page now states the behaviour, with the message
+that says it, so the next person reads it instead of rediscovering it.
+
+### 5. The same mistake, three times, and what is now written down
+
+Every CI failure this round and last has one shape: **an assertion or a helper whose
+meaning depends on the machine it is compiled or run on.** In order: unit fixtures that
+named made-up pids (liveness is exact on Linux, so the tests passed on macOS for the
+wrong reason); test helpers used only by a `#[cfg(unix)]` test, which are dead code on
+Windows under `clippy -D warnings`; twice more of the same, in the new file; and a test
+asserting a *clean* shutdown on a platform where it can only kill the process, because
+Windows offers no way to deliver a console CTRL+C to another process.
+
+Two things came out of the third occurrence. The rule is written in the file where it
+keeps happening — *a helper used only by a `cfg`-gated test carries the same `cfg`* —
+and the limits of the local pass are recorded rather than assumed: the pass runs on
+macOS, where these helpers are used, and the one cross-target gate checks a crate with
+no platform-specific tests, so no local run can see this class at all. It is worth
+saying that the CI is doing its job here: each failure was a real difference in
+behaviour between the platforms, not noise.
+
+### 6. Publication
+
+v0.1.7 = `1c427e7`, tagged and published as a preview with 12 assets. Both checksum
+lists verify as a whole from the download, `install.ps1` is byte-identical to the tagged
+blob, and both metadata files name the tagged commit. The public Windows install check
+passed against the tag
+([run 34956723135](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34956723135)),
+`main` was fast-forwarded so the version-tree page names v0.1.7, and the acceptance
+source package was rebuilt from the release commit
+(`dist/acceptance/OpenHardwareOS-1c427e7-windows-acceptance.zip`, 263 files).
+
+### The verification pass (all commands re-run at `1c427e7`, nothing carried over)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `rustup run 1.98.1 cargo fmt --all -- --check` | exit 0 |
+| 2 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0 |
+| 3 | `cargo test --workspace --locked` | **541 passed, 0 failed**, 49 test-result lines |
+| 4 | `cargo deny check` | advisories ok, bans ok, licenses ok, sources ok |
+| 5 | `scripts/versions.py check --remote --generated` | OK; 9 catalogue entries |
+| 6 | `scripts/tests/test_versions.py` | 30 tests, OK |
+| 7 | `npm run typecheck` / `npm test` / `npm run build` | clean / 44 tests / clean |
+| 8 | `scripts/tests/make-acceptance-package.test.sh` | 4 cases, 0 failures |
+| 9 | `scripts/release/test-packaging.ps1` | 6 cases, 0 failures |
+| 10 | `scripts/tests/package-linux.test.sh` | 10 cases, 54 checks, 0 failures |
+| 11 | `scripts/tests/linux-install-doc.test.sh` | 6 cases, 32 checks, 0 failures |
+| 12 | `scripts/tests/verify-linux-readings.test.sh` | 6 cases, 21 checks, 0 failures |
+| 13 | `docs/windows-validation/.../run-script-tests.ps1` | 18 cases, 151 checks, 0 failures (doubles only) |
+| 14 | cross-target `cargo check` (Windows and Linux targets) | exit 0, plus Linux-target Clippy |
+| 15 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** |
+| 16 | delivered packages still match their manifests | every file |
+| 17 | `scripts/verify-linux-readings.sh` against the kernel's own sources | every comparable reading `AGREE` |
+
+Three tests were added this round (`apps/cli/tests/service_resilience.rs`): sensor loss
+with recovery, suspend with resume, and the `OHM_HWMON_ROOT` override those two depend
+on. The runtime's service module also gained the outcome reporting, covered by the
+existing heartbeat unit test.
+
+### What round 12 could **not** verify
+
+* **Real hardware**, still: the "sensor" is a file in a prepared tree and the fan is the
+  simulated one. Nothing in this project has touched a real fan.
+* **A real suspend**: `SIGSTOP` is the process-level equivalent, not the kernel path
+  (devices re-initialising, drivers reloading, the clock jumping).
+* **A real driver's channel disappearing and returning** — the same file trick stands in
+  for it.
+* **Windows service supervision**: `service run` works in a console there; nothing
+  installs or supervises it.
+* **Permissions**: still nothing to verify, because this build writes no `pwm<N>`.
+
+### Deliberately **not** done in round 12
+
+No hardware was written to; no autostart entry was created and no global environment
+value was changed; nothing was installed on the host; no licence was approved on the
+user's behalf (ADR 0002 and ADR 0004 remain **Proposed**); `Prospector/` and
+`k10max-prospector/` were left exactly as found.
