@@ -59,7 +59,19 @@ function renderDevice() {
   );
 }
 
-/** Type a value into the fan-duty control and click Apply, like a user would. */
+/**
+ * Type a value into the fan-duty control and click Apply, like a user would.
+ *
+ * The button is queried *after* the change, and re-queried again before the click,
+ * because a re-render between the two replaces the DOM node: a reading arriving, a
+ * value committed, any state change. Clicking a node that has been replaced
+ * invokes the handler it was rendered with — the draft as it was *then* — so the
+ * write goes out carrying the device's old value while the test blames the
+ * component. That is a defect in this helper, and it cost two release builds: the
+ * assertion said `expected 80, received 45`, which reads exactly like the input
+ * being clobbered. `isConnected` is checked explicitly so a detached node is
+ * reported as a detached node.
+ */
 async function applyFanDuty(value: string): Promise<void> {
   const input = await screen.findByLabelText('Fan duty value');
   // The change has to be committed before the button is clicked: Apply is
@@ -70,12 +82,28 @@ async function applyFanDuty(value: string): Promise<void> {
   await act(async () => {
     fireEvent.change(input, { target: { value } });
   });
-  const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement;
-  await waitFor(() => expect(apply.disabled).toBe(false));
+  // Wait until the *edit itself* has landed, and say what the field holds when it
+  // has not. Clicking before React committed the change, or clicking a node a
+  // re-render replaced, submits the value the field had before — which reads in the
+  // assertion as "the component wrote the device's old duty", a product bug, when
+  // the run had simply not got there yet. This does not retry the edit: if the
+  // field really was reset, the wait times out and reports it, and the dedicated
+  // case for that behaviour ("does not replace the value the user typed") is what
+  // decides whether the product is at fault.
+  await waitFor(() => {
+    const field = screen.getByLabelText('Fan duty value') as HTMLInputElement;
+    expect(field.isConnected, 'the duty field is still in the document').toBe(true);
+    expect(field.value, 'the field holds the value the user typed').toBe(value);
+  });
+  await waitFor(() => {
+    const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement;
+    expect(apply.isConnected, 'the Apply button is still in the document').toBe(true);
+    expect(apply.disabled).toBe(false);
+  });
   // Awaiting inside `act` lets the submit's own promise settle before the
   // assertions run, so the test sees the finished state, not a half-open one.
   await act(async () => {
-    fireEvent.click(apply);
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
   });
   // Prove the click reached the handler before the caller asserts on the result:
   // on a loaded CI runner the click could otherwise be observed before React had
