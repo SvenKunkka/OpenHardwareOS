@@ -85,8 +85,8 @@ if [ -z "$READINGS" ]; then
 fi
 [ -s "$READINGS" ] || { echo "empty readings file: $READINGS" >&2; exit 2; }
 
-if [ "$ROOT" != "/" ]; then
-  echo "comparing against the tree at $ROOT (not the live system)"
+if [ -n "$PREFIX" ]; then
+  echo "comparing against the tree at $PREFIX (not the live system)"
 fi
 echo
 printf '%-11s %-34s %s\n' "VERDICT" "READING" "COMPARED WITH"
@@ -181,14 +181,14 @@ meminfo() { # key -> bytes
 
 our_total="$(to_int "$(value_of 'memory.system.0' 'memory.total')")"
 platform_total="$(meminfo MemTotal || true)"
-if [ -z "$our_total" ]; then
+if [ -z "$platform_total" ]; then
+  report NO-SOURCE "memory.total" "no $ROOT/proc/meminfo on this machine"
+elif [ -z "$our_total" ]; then
   if [ -n "$(reason_of 'memory.system.0' 'memory.total')" ]; then
     report NO-SOURCE "memory.total" "we report nothing: $(reason_of 'memory.system.0' 'memory.total')"
   else
     report DIFFER "memory.total" "we report nothing and give no reason for it"
   fi
-elif [ -z "$platform_total" ]; then
-  report NO-SOURCE "memory.total" "no $ROOT/proc/meminfo on this machine"
 elif [ "$our_total" = "$platform_total" ]; then
   report AGREE "memory.total" "ours $our_total B = /proc/meminfo MemTotal"
 else

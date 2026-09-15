@@ -130,28 +130,89 @@ SH
 chmod +x "$WORK/bin/sha256sum" "$WORK/bin/sudo" "$WORK/bin/apt-get" "$WORK/bin/dpkg" "$WORK/bin/ohm-cli"
 export OHM_TEST_READINGS="$WORK/readings.json"
 python3 - "$OHM_TEST_READINGS" <<'PYINNER'
-import json, sys
+"""Readings for the `ohm-cli` shim — read from *this* host, not invented.
 
-def device(device_id, name, kind, readings):
+An earlier version of this fixture hard-coded plausible numbers. On Linux the
+documented cross-check then ran against the real /proc and /sys, found the invented
+values wrong, and failed — correctly: a check whose entire purpose is to catch a
+reading that does not match the machine caught the fixture. A fixture for a
+cross-check has to tell the truth about the host it runs on, or it is testing the
+opposite of what it claims.
+"""
+import glob
+import json
+import os
+import subprocess
+import sys
+
+devices = []
+
+
+def device(device_id, name, kind, readings, metadata=None):
     return {"device": {"id": device_id, "name": name, "type": kind, "adapter": "system",
                        "transport": "system", "model": None, "vendor": None,
-                       "capabilities": [], "metadata": {}},
+                       "capabilities": [], "metadata": metadata or {}},
             "enabled": True, "status": "online",
             "state": {"device": device_id, "timestamp_ms": 1, "online": True,
                       "readings": readings},
             "adapter": "system", "first_seen_ms": 1, "last_seen_ms": 2}
 
-# One reading a host can compare (memory) and one it usually cannot (a fan channel),
-# so the cross-check has something to agree about and something to explain.
+
+def ok(capability, value):
+    return {"capability": capability, "status": "ok", "value": value}
+
+
+# Memory, exactly as /proc/meminfo reports it (Linux). Absent elsewhere, and the
+# check says "no platform source" rather than inventing a comparison.
+try:
+    meminfo = {}
+    with open("/proc/meminfo", encoding="utf-8") as handle:
+        for line in handle:
+            key, _, rest = line.partition(":")
+            meminfo[key.strip()] = rest.strip().split()[0]
+    total = int(meminfo["MemTotal"]) * 1024
+    readings = [ok("memory.total", total)]
+    if "MemAvailable" in meminfo:
+        readings.append(ok("memory.used", total - int(meminfo["MemAvailable"]) * 1024))
+    devices.append(device("memory.system.0", "Memory", "memory", readings))
+except (OSError, KeyError, ValueError, IndexError):
+    pass
+
+# Any fan channel the kernel exposes, under the ids this build derives from the
+# chip name and channel number.
+for directory in sorted(glob.glob("/sys/class/hwmon/hwmon*")):
+    try:
+        with open(os.path.join(directory, "name"), encoding="utf-8") as handle:
+            chip = handle.read().strip()
+    except OSError:
+        continue
+    for path in sorted(glob.glob(os.path.join(directory, "fan*_input"))):
+        channel = os.path.basename(path)[len("fan"):-len("_input")]
+        try:
+            rpm = float(open(path, encoding="utf-8").read().strip())
+        except (OSError, ValueError):
+            continue
+        readings = [ok("fan.rpm", rpm)]
+        pwm_path = os.path.join(directory, f"pwm{channel}")
+        try:
+            readings.append(ok("fan.pwm", float(open(pwm_path, encoding="utf-8").read().strip())))
+        except (OSError, ValueError):
+            pass
+        devices.append(device(f"fan.system.{chip}_fan{channel}", f"{chip} fan {channel}",
+                              "fan", readings))
+
+# Free space on the root filesystem, from df column 4.
+try:
+    output = subprocess.run(["df", "-k", "/"], capture_output=True, text=True, check=True).stdout
+    free_kb = int(output.strip().splitlines()[-1].split()[3])
+    devices.append(device("storage.system.0", "Root filesystem", "storage",
+                          [ok("storage.free", free_kb * 1024)], {"mount_point": "/"}))
+except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+    pass
+
 json.dump({"generated_at_ms": 1, "started_at_ms": 0, "adapters": [], "settings": {},
-           "stats": {}, "has_controllable_hardware": False,
-           "devices": [
-               device("memory.system.0", "Memory", "memory",
-                      [{"capability": "memory.total", "status": "ok",
-                        "value": 17179869184}]),
-               device("fan.system.nct6798d_fan1", "Chassis fan", "fan",
-                      [{"capability": "fan.rpm", "status": "ok", "value": 1245.0}]),
-           ]}, open(sys.argv[1], "w", encoding="utf-8"))
+           "stats": {}, "has_controllable_hardware": False, "devices": devices},
+          open(sys.argv[1], "w", encoding="utf-8"))
 PYINNER
 export OHM_TEST_APT_LOG="$WORK/apt.log"
 export OHM_TEST_BINDIR="$WORK/bin"
