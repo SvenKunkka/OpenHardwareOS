@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "repository": "SvenKunkka/OpenHardwareOS",
-  "development": null,
+  "development": "v0.1.5",
   "versions": [
     {
       "id": "v0.1.0",
@@ -178,8 +178,32 @@
       "plan": null
     },
     {
-      "id": "v0.2.0",
+      "id": "v0.1.5",
       "parent": "v0.1.4",
+      "status": "development",
+      "channel": "preview",
+      "title": "读数可核对",
+      "summary": "CLI 增加机器可读输出（status/doctor --json），并给出与系统自身来源逐项对照的检查与说明。",
+      "tag": null,
+      "commit": null,
+      "branch": "codex/v0.1.5",
+      "release_url": null,
+      "published_at": null,
+      "changes": [
+        "`ohm-cli status --json` / `doctor --json`：一条 JSON，包含每个读数的值、状态与缺失原因",
+        "`scripts/verify-linux-readings.sh`：把每个读数与内核自己的文件（sysfs、/proc、df）逐项对照，输出 AGREE/DIFFER/NO-SOURCE/NOT-CHECKED",
+        "内存对照 /proc/meminfo，风扇转速与 PWM 对照同一个 hwmon 文件，温度对照平台报告的范围，磁盘对照 df 的同一挂载点",
+        "没有独立来源的读数（cpu.load、cpu.frequency）明确标注为无法核对，而不是假装核对过",
+        "安装页新增用户可自行执行的对照命令与对应关系表；CI 与发布流程在真实内核上运行该检查",
+        "读数为 JSON 浮点（如 82222657536.0）时不再破坏比较；磁盘对照改用可移植的 df 第 4 列"
+      ],
+      "evidence": [],
+      "hardware_validation": "not_verified",
+      "plan": null
+    },
+    {
+      "id": "v0.2.0",
+      "parent": "v0.1.5",
       "status": "planned",
       "channel": "preview",
       "title": "水泵支持",

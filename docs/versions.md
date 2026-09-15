@@ -10,7 +10,8 @@
       └─ v0.1.2 · 已发布 · 预览版 · 发布打包修复
          └─ v0.1.3 · 已发布 · 预览版 · 控制基础修复与 Linux 监测预览
             └─ v0.1.4 · 已发布 · 预览版 · Linux 桌面预览包
-               └─ v0.2.0 · 计划中 · 水泵支持
+               └─ v0.1.5 · 开发中 · 预览版 · 读数可核对
+                  └─ v0.2.0 · 计划中 · 水泵支持
 ```
 
 预览版已发布不代表真实硬件兼容性已完成验收。
@@ -119,6 +120,20 @@
 验证记录：
 
 - [GitHub 已发布版本与构建来源](https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.4)
+
+## v0.1.5 · 读数可核对
+
+CLI 增加机器可读输出（status/doctor --json），并给出与系统自身来源逐项对照的检查与说明。
+
+- 状态：开发中
+- 开发分支：`codex/v0.1.5`
+
+- `ohm-cli status --json` / `doctor --json`：一条 JSON，包含每个读数的值、状态与缺失原因
+- `scripts/verify-linux-readings.sh`：把每个读数与内核自己的文件（sysfs、/proc、df）逐项对照，输出 AGREE/DIFFER/NO-SOURCE/NOT-CHECKED
+- 内存对照 /proc/meminfo，风扇转速与 PWM 对照同一个 hwmon 文件，温度对照平台报告的范围，磁盘对照 df 的同一挂载点
+- 没有独立来源的读数（cpu.load、cpu.frequency）明确标注为无法核对，而不是假装核对过
+- 安装页新增用户可自行执行的对照命令与对应关系表；CI 与发布流程在真实内核上运行该检查
+- 读数为 JSON 浮点（如 82222657536.0）时不再破坏比较；磁盘对照改用可移植的 df 第 4 列
 
 ## v0.2.0 · 水泵支持
 

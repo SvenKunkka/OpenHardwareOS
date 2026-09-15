@@ -3,6 +3,29 @@
 实际发行状态见 [版本树](docs/versions.md) 和 [GitHub Releases](https://github.com/SvenKunkka/OpenHardwareOS/releases)。
 应用版本、规划节点和发布证据由 [版本清单](docs/versions.json) 管理。
 
+## v0.1.5 · 2026-09-15 · 读数可核对
+
+Linux 预览的最后一条完成标准是"读数能与系统来源核对"。此前唯一的答案是"相信代码"：
+读数确实来自 sysfs、/proc 与 sysinfo，但没有任何东西把它们与操作系统自己报告的值比过。
+**尚未发布**：条目先写在此处，公开发布后由版本工具登记版本树。
+
+- **机器可读输出。** `ohm-cli status --json` 与 `ohm-cli doctor --json` 只打印一条 JSON：
+  提供方及其状态与原因、每个设备及其读数、每个缺失读数的理由、能力说明。用的是桌面端同一份
+  snapshot，因此两者不可能对"运行时报告了什么"给出不同答案；`crates/ohm-runtime/src/snapshot.rs`
+  把脚本读取的字段路径写成了测试，因为改个字段名就是悄悄改变被比较的东西。
+- **逐项对照检查。** `scripts/verify-linux-readings.sh` 把每个读数与平台自己的答案比较，逐行给出
+  四种结论：`AGREE`、`DIFFER`（退出码 1）、`NO-SOURCE`（并说明原因）、`NOT-CHECKED`（本质上没有
+  独立来源）。内存对 `/proc/meminfo`，风扇转速与 PWM 对**读数来源的那个 hwmon 文件**，温度对平台
+  报告的温度范围，磁盘对同一挂载点的 `df`。一台没有风扇转速可读的机器是**正常结果**而不是失败，
+  但必须说出来——`cpu.load` 与 `cpu.frequency` 也明确标注为单次采样无法核对。
+- **在真实内核上运行。** CI 与发布流程都会运行它并把输出留在日志里。ubuntu-latest 上的实测结果：
+  `memory.total` 与 `/proc/meminfo` 完全相等，三个挂载点的剩余空间与 `df` 相差 0/0/16384 字节，
+  温度落在平台报告的范围内；该 runner 没有风扇驱动，因此 hwmon 一项如实报 `NO-SOURCE`。
+- **安装页给出用户自己能跑的命令**：每个读数对应哪个系统文件、用什么命令看、以及不一致意味着什么。
+  页面里每一段 bash 都被夹具套件执行（含这段），需要一个已安装的 CLI。
+- 两处实现细节：读数可能是 JSON 浮点（`82222657536.0`），此前会让比较的算术出错；磁盘对照改用
+  可移植的 `df -k` 第 4 列，而不是 GNU 专有的 `--output=avail`，这样它在 Linux 之外也能被测试。
+
 ## v0.1.4 · 2026-09-15 · Linux 桌面预览包
 
 在 Linux 上补上另一半交付：可安装的**桌面应用**（`.deb` 与 AppImage），与现有的 Linux CLI 归档
