@@ -283,6 +283,16 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// The pid these fixtures name.
+    ///
+    /// Our own: liveness is checked for real on Linux (`/proc/<pid>`), so a made-up
+    /// number makes a "fresh" state file look abandoned there and the test passes for
+    /// the wrong reason — which is exactly what happened on CI while macOS, where the
+    /// check is deliberately skipped, was green.
+    fn live_pid() -> u32 {
+        std::process::id()
+    }
+
     fn state(pid: u32, interval_ms: u64) -> ServiceState {
         ServiceState {
             pid,
@@ -308,12 +318,12 @@ mod tests {
     fn a_fresh_state_file_means_the_service_is_running() {
         let path = temp_path("fresh");
         let now = ohm_core::now_ms();
-        let mut written = state(4242, 1_000);
+        let mut written = state(live_pid(), 1_000);
         written.heartbeat_at_ms = now;
         fs::write(&path, serde_json::to_string(&written).unwrap()).unwrap();
 
         let found = running(&path).expect("running");
-        assert_eq!(found.pid, 4242);
+        assert_eq!(found.pid, live_pid());
         assert_eq!(found.ticks, 0);
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
@@ -337,13 +347,15 @@ mod tests {
     #[test]
     fn a_second_service_is_refused_and_told_who_holds_the_file() {
         let path = temp_path("second");
-        let first = ServiceGuard::acquire(&path, state(5001, 1_000)).expect("first acquires");
-        match ServiceGuard::acquire(&path, state(5002, 1_000)) {
-            Err(ServiceError::AlreadyRunning { state, .. }) => assert_eq!(state.pid, 5001),
+        let first = ServiceGuard::acquire(&path, state(live_pid(), 1_000)).expect("first acquires");
+        // The second attempt is from this same process, and is still refused: the
+        // rule is about the *file*, not about who is asking.
+        match ServiceGuard::acquire(&path, state(live_pid(), 1_000)) {
+            Err(ServiceError::AlreadyRunning { state, .. }) => assert_eq!(state.pid, live_pid()),
             other => panic!("expected a refusal, got {other:?}"),
         }
         // And the file still belongs to the first one.
-        assert_eq!(read_state(&path).unwrap().pid, 5001);
+        assert_eq!(read_state(&path).unwrap().pid, live_pid());
         drop(first);
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
@@ -351,13 +363,13 @@ mod tests {
     #[test]
     fn an_abandoned_file_is_taken_over() {
         let path = temp_path("takeover");
-        let mut dead = state(6001, 1_000);
+        let mut dead = state(live_pid(), 1_000);
         dead.heartbeat_at_ms = ohm_core::now_ms() - 60_000;
         fs::write(&path, serde_json::to_string(&dead).unwrap()).unwrap();
 
-        let guard = ServiceGuard::acquire(&path, state(6002, 1_000)).expect("takeover");
-        assert_eq!(guard.state().pid, 6002);
-        assert_eq!(read_state(&path).unwrap().pid, 6002);
+        let guard = ServiceGuard::acquire(&path, state(live_pid(), 1_000)).expect("takeover");
+        assert_eq!(guard.state().pid, live_pid());
+        assert_eq!(read_state(&path).unwrap().pid, live_pid());
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -365,8 +377,8 @@ mod tests {
     fn a_corrupt_file_does_not_block_the_service() {
         let path = temp_path("corrupt");
         fs::write(&path, b"{ this is not json").unwrap();
-        let guard = ServiceGuard::acquire(&path, state(7001, 1_000)).expect("takeover");
-        assert_eq!(guard.state().pid, 7001);
+        let guard = ServiceGuard::acquire(&path, state(live_pid(), 1_000)).expect("takeover");
+        assert_eq!(guard.state().pid, live_pid());
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
