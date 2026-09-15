@@ -89,13 +89,18 @@ SH
   printf 'notices fixture\n' > "$dir/stage/THIRD_PARTY_NOTICES.txt"
   printf '{"version":"%s","platform":"%s"}\n' "$VERSION" "$PLATFORM" > "$dir/stage/release-$PLATFORM.json"
   tar -czf "$dir/$ASSET" -C "$dir/stage" ohm-cli LICENSE THIRD_PARTY_NOTICES.txt "release-$PLATFORM.json"
+  # The published assets are the archive and the metadata — exactly what the
+  # packager lists. `LICENSE` and `THIRD_PARTY_NOTICES.txt` travel *inside* the
+  # archive; naming them here (as this fixture first did) would have copied the
+  # packager's own defect instead of catching it, so the fixture stages only what
+  # a downloader really receives.
+  cp "$dir/stage/release-$PLATFORM.json" "$dir/"
   # The list is written from the pristine archive; only then is a tampered
   # fixture made, so the checksum no longer describes the bytes on disk — which
   # is the case the documented commands have to refuse.
   {
     printf '%s  %s\n' "$(shasum -a 256 "$dir/$ASSET" | cut -d' ' -f1)" "$ASSET"
-    printf '%s  %s\n' "$(shasum -a 256 "$dir/stage/LICENSE" | cut -d' ' -f1)" "LICENSE"
-    printf '%s  %s\n' "$(shasum -a 256 "$dir/stage/THIRD_PARTY_NOTICES.txt" | cut -d' ' -f1)" "THIRD_PARTY_NOTICES.txt"
+    printf '%s  %s\n' "$(shasum -a 256 "$dir/release-$PLATFORM.json" | cut -d' ' -f1)" "release-$PLATFORM.json"
   } > "$dir/$SUMS"
   if [ "$tamper" = "yes" ]; then
     printf 'tampered' >> "$dir/$ASSET"
@@ -190,6 +195,27 @@ else
 fi
 check "the existing file is untouched" \
   "$([ "$(cat "$WORK/install-existing/ohm-cli")" = "keep me" ] && echo 1 || echo 0)"
+
+# ---------------------------------------------------------------- case 5
+echo
+echo "--- a list naming a file that was never published is refused"
+CASES=$((CASES + 1))
+fixture="$WORK/release-unpublished"
+build_fixture "$fixture"
+# This is the defect the real v0.1.3 Linux build shipped first: the list named
+# `LICENSE`, which only exists inside the archive. A hidden fixture file would
+# make this pass, so nothing is staged for it.
+printf '%s  %s\n' "$(shasum -a 256 "$fixture/stage/LICENSE" | cut -d' ' -f1)" "LICENSE" >> "$fixture/$SUMS"
+scoped_block "$fixture" "$WORK/install-unpublished" "$WORK/unpublished.sh"
+if run_block "$WORK/unpublished.sh"; then
+  bad "the block refuses a list that names an unpublished file"
+else
+  ok "the block refuses a list that names an unpublished file"
+  grep -qi "No such file\|FAILED open" "$WORK/last.log" \
+    && ok "  and the checksum tool says which file is missing" \
+    || bad "  and the checksum tool says which file is missing"
+fi
+[ ! -e "$WORK/install-unpublished/ohm-cli" ] && ok "nothing was installed" || bad "nothing was installed"
 
 echo
 echo "================================================================================"

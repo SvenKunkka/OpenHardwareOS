@@ -14,7 +14,10 @@
 #     entry as a missing file on the very platform this package targets;
 #   * verify before delivering: the archive must contain the binary, the sums
 #     must describe the files that are there, and the list must be readable by
-#     POSIX tooling.
+#     POSIX tooling;
+#   * list only the assets that are actually published beside the list, so a
+#     plain `sha256sum -c` on a download is a check of the download and not a
+#     report of files that were never meant to be there.
 #
 # `--run-binary` additionally executes the packaged CLI and checks its version.
 # Only the Linux CI job passes it; the fixture test runs everywhere and checks
@@ -144,9 +147,16 @@ if [ "$RUN_BINARY" = "1" ]; then
   echo "binary reports: $reported"
 fi
 
-# LF only, and every entry must describe a file that exists here.
+# LF only, and every entry must describe a file that is **published next to this
+# list**: the archive and the metadata. `LICENSE` and `THIRD_PARTY_NOTICES.txt`
+# are inside the archive — they are not separate Linux assets (the Windows build
+# publishes its own copies, and a Release holds one asset per name), so naming
+# them here made a plain `sha256sum -c` report two missing files on a download
+# that was in fact intact. The archive's contents are checked by the listing
+# above; this list is about the bytes a user downloads.
+PUBLISHED=("$ARCHIVE" "$METADATA_PATH")
 {
-  for file in "$ARCHIVE" "$METADATA_PATH" "$REPO/LICENSE" "$NOTICES"; do
+  for file in "${PUBLISHED[@]}"; do
     printf '%s  %s\n' "$(hash_file "$file" | cut -d' ' -f1)" "$(basename "$file")"
   done
 } > "$OUT/$SUMS.tmp"
@@ -155,13 +165,12 @@ if grep -q $'\r' "$OUT/$SUMS.tmp"; then
 fi
 mv "$OUT/$SUMS.tmp" "$OUT/$SUMS"
 
-# Check the list the way the target platform will: line by line, by name.
+# Check the list the way the target platform will: line by line, by name, in a
+# directory holding **only what is published**. Staging anything else here would
+# hide exactly the defect this check exists for.
 SIDE="$OUT/.side-$$"
 mkdir -p "$SIDE"
-cp "$ARCHIVE" "$SIDE/"
-cp "$METADATA_PATH" "$SIDE/"
-cp "$REPO/LICENSE" "$SIDE/"
-cp "$NOTICES" "$SIDE/"
+for file in "${PUBLISHED[@]}"; do cp "$file" "$SIDE/"; done
 cp "$OUT/$SUMS" "$SIDE/"
 ( cd "$SIDE" && verify_sums "$SUMS" >/dev/null ) \
   || die "the checksum list does not verify against the files it names"

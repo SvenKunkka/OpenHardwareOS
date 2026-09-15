@@ -12,6 +12,7 @@ set -euo pipefail
 ohm_version=v0.1.3
 ohm_platform=linux-x86_64
 ohm_asset="ohm-cli-$ohm_version-$ohm_platform.tar.gz"
+ohm_meta="release-$ohm_platform.json"
 # Linux 的校验和清单带平台后缀：同一个 Release 里 Windows 资产已经占用了
 # 名字 `SHA256SUMS`（一个 Release 里同名资产只能有一个）。
 ohm_sums="SHA256SUMS-$ohm_platform"
@@ -23,19 +24,23 @@ trap 'rm -rf "$ohm_tmp"' EXIT
 
 # 用资产的真实文件名下载：`sha256sum -c` 是按文件名核对的，改名会让它找不到文件。
 curl -fsSL -o "$ohm_tmp/$ohm_asset" "$ohm_base/$ohm_asset"
+curl -fsSL -o "$ohm_tmp/$ohm_meta" "$ohm_base/$ohm_meta"
 curl -fsSL -o "$ohm_tmp/$ohm_sums" "$ohm_base/$ohm_sums"
-# 恰好一条匹配记录：多一条、少一条都停下。
+# 清单只列**发布出来**的文件（压缩包与元数据；LICENSE 与依赖声明在压缩包内），
+# 所以整份核对即可：缺文件、摘要不符都会在这里失败。
+(cd "$ohm_tmp" && sha256sum -c "$ohm_sums")
+# 再确认清单里恰好有一条是关于我们要装的压缩包：多一条、少一条都停下。
 ohm_pattern="^[0-9a-f]{64}  $ohm_asset\$"
 ohm_matches="$(grep -cE "$ohm_pattern" "$ohm_tmp/$ohm_sums" || true)"
 test "$ohm_matches" = "1" || { echo "$ohm_sums 中应有且仅有一条匹配记录，实际 $ohm_matches 条" >&2; exit 1; }
-(cd "$ohm_tmp" && grep -E "$ohm_pattern" "$ohm_sums" | sha256sum -c -)
 mkdir -p "$ohm_dir"
 tar -xzf "$ohm_tmp/$ohm_asset" -C "$ohm_dir"
 "$ohm_dir/ohm-cli" --version
 "$ohm_dir/ohm-cli" doctor
 ```
 
-校验和清单先核对再解压；校验失败 `set -e` 会直接中止。CLI 装在当前用户目录下，
+校验和清单先核对再解压；校验失败 `set -e` 会直接中止。清单里只有发布出来的文件，
+所以不需要挑行——直接 `sha256sum -c` 得到的就是"这份下载是否完整"的答案。CLI 装在当前用户目录下，
 不需要 root，也不修改 `PATH`。目标目录已存在时会停止并保留原有文件。
 `doctor` 打印这台机器上每个来源的可用性与不可用的原因。
 
