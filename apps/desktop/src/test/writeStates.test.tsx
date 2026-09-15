@@ -76,6 +76,10 @@ async function applyFanDuty(value: string): Promise<void> {
   await act(async () => {
     fireEvent.click(apply);
   });
+  // Prove the click reached the handler before the caller asserts on the result:
+  // on a loaded CI runner the click could otherwise be observed before React had
+  // run it, and the failure looked like a product defect.
+  await waitFor(() => expect(ipcMock().api.writeCapability).toHaveBeenCalled());
 }
 
 /** The row of a feed whose text contains `needle`. */
