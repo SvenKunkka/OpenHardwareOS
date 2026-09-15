@@ -1270,3 +1270,198 @@ Publication — tag, GitHub Release and the CI dispatches — **was** this round
 first time anything left this machine. It was confined to the project's own release flow, from a
 reviewed build whose `release.json` names the commit the tag points at, and the two packages the
 maintainer already published (v0.1.0, v0.1.1) were left untouched.
+
+---
+
+## 2026-09-15 — round 8: Linux monitoring, the first release that ships Linux, and two defects the release build found
+
+**Revision: `29f1c34`.** Every number below comes from a pass run at that commit
+(`~/.local/share/ohm-verify/pass-r12.log`), the commit the tag points at. The entry
+follows it and changes documentation only.
+
+### 1. Linux fan tachometers, from the kernel's own interface
+
+The system adapter had declared no fan capability on any platform, with a reason: "no OS API
+exposes chassis tachometers or PWM control on consumer hardware". On Linux that is not true — the
+kernel's **hwmon** subsystem exposes `fan<N>_input` (and `pwm<N>`) for every board whose driver
+implements it, which is exactly the interface the platform hands us.
+
+`adapters/system/src/hwmon.rs` reads it. The module takes the directory as an argument
+(`/sys/class/hwmon` in production, a fixture tree in the tests) and does pure path and parse work,
+so the whole path is exercised on macOS — the pattern the LHM adapter already uses for its fake
+server.
+
+* **Read-only, deliberately.** Writing `pwm<N>` needs root, and which `pwm` maps to which physical
+  header depends on the board and driver; a wrong value there is the classic "fans stop" failure.
+  The current duty is exposed as a *sensor* (`fan.pwm`), and `pwm<N>_enable` is reported as words —
+  "the driver controls this channel", "software is expected to set this channel", or the number
+  verbatim when this build does not recognise it.
+* **Identity is the chip name and channel number** (`fan.system.nct6798d_fan1`), never an
+  enumeration index. A kernel that renumbers `hwmon*` cannot move a rule's target — which is the
+  requirement from round 7, met here by construction rather than by repair.
+* **Every absence carries a reason**: a missing file (`NotPresent`), non-numeric content
+  (`ReadError`), a chip without a `name` (skipped, with a note), a channel that vanishes after
+  discovery (offline with its reason), and an unreadable control mode.
+* Zero RPM is a *reading*, not a missing sensor — a fan the driver reports as stopped is exactly
+  what a user needs to see.
+
+Memory joins as `memory.system.0` with `memory.used` and `memory.total` in bytes: one device,
+because the OS reports totals and inventing per-module devices from a total would be a guess.
+
+The cross-target gate now covers Linux as well as Windows
+(`cargo check --target x86_64-unknown-linux-gnu -p ohm-adapter-system`): the
+`#[cfg(target_os = "linux")]` wiring is invisible to a macOS build, which is the mistake that hid
+the Windows compile error for five rounds.
+
+Nine hwmon tests plus four adapter tests; 25 in the crate.
+
+### 2. The two defects the release build found
+
+Both were found by *running the release build more than once* and reading what came back, and both
+are the kind this project exists to remove: the software did something other than what it said.
+
+**A reading arriving after an edit replaced what the user typed.** `WriteControl` followed the
+device's reported value on every change, and the first snapshot always arrives asynchronously — a
+moment after the window opens. Type 80 into the duty field, and the arriving reading put the
+device's own 45 back in the box; Apply then wrote **45 %**, the value the device was already at,
+while the screen looked entirely normal. The window is a race, so it passed every local run and
+failed on a loaded CI runner, whose assertion said it in one line: `expected 80, received 45`.
+
+The field now follows the device only until the user touches it, shows "your change is not applied
+yet" while an edit is outstanding, and follows the device again after a confirmed write. An
+*unconfirmed* write keeps the request on screen next to a value that is still unknown, which is
+the whole point of that panel. The regression test forces the order CI produced — edit first, then
+deliver a snapshot — instead of waiting for a slow machine to reproduce it.
+
+**A slow disk was reported as a missing sensor.** The engine asked "are my readings too old?"
+*after* doing the tick's own file I/O (persisting handover records and control state). The window
+is three poll intervals — 300 ms at the shipped 100 ms — so any filesystem slower than that, which
+is what a CI runner scanning every new file is, made every rule fall back to the fail-safe duty.
+Both Windows failures were this single cause: a rule reloaded from disk wrote 70 % (the fail-safe)
+instead of its curve's 55 %, and a gated rule's verdict read as a missing sensor. Reproduced on
+purpose — a blocking 400 ms gap between the poll and the evaluation flips the outcome to `Fallback`
+with duty 100 and a message that no longer contains "condition not met", which is the CI failure
+reproduced in one process.
+
+The question is now asked **before** the tick does any work of its own, so what the window detects
+is the *runtime* falling behind, which is what it was always for. The fallback duty itself is
+unchanged: falling back is the safe direction, and the safety supervisor lives in the poll loop
+being watched.
+
+**And it says which of the two it is.** Readings that stopped arriving are now reported as "the
+runtime has not refreshed … recently, so its readings are too old to act on" rather than as a
+missing sensor. One is a runtime fact, the other is hardware or a driver; one sentence for both
+sent the user looking for the wrong thing.
+
+The shared test sessions now use a 2 s poll interval, so a test that polls and asserts in one
+breath is no longer decided by the host's scheduler; staleness itself stays pinned against a
+runtime deliberately configured with a tight interval. This is also why the earlier "CI flake, re-run
+green" note was wrong as a *category*: both "flaky" tests were reporting real defects, and labelling
+them races cost two rounds.
+
+### 3. A release pipeline that ships Linux, and what its four earlier failures taught
+
+`scripts/release/package-linux.sh` builds the Linux CLI the way the Windows packager does — refuse
+an existing output, take the source commit from git, verify before delivering, refuse anything that
+is not a 64-bit x86_64 ELF — and the release workflow gained a `linux` job that runs it after the
+workspace tests, Clippy, the frontend tests and two fixture suites.
+
+The job had never run, and its first runs failed. Each failure was mine, and each is now a test:
+
+1. **`glib-sys` build failure** — the workspace contains the desktop crate, so a Linux build needs
+   GTK/WebKit development packages. Nothing in the repository could have caught this: it happens in
+   a dependency's build script.
+2. **The notices path** — the generator writes `artifacts/THIRD_PARTY_NOTICES.txt`; the Linux
+   packager looked at the repository root. The fixture suite had created its fixtures at the root
+   *because the script looked there* — a fixture that copies the mistake it is meant to catch.
+3. **`tar -tzf … | grep -q`** — `grep -q` exits on its first match, so tar's next write lands in a
+   closed pipe: GNU tar reports a write error and exits non-zero, and `pipefail` failed a check
+   that had just passed. BSD tar does not report it, which is why the same script passed here. The
+   listing now goes to a file, and the fixture reproduces the GNU behaviour with a `tar` shim that
+   writes line by line with a pause — verified by mutation.
+4. **Frontend tests "timing out" on the Windows runner** — the 5 s default was measuring the
+   machine, and one of the four was not a timeout at all but the defect in §2. `testTimeout` and
+   `hookTimeout` are 30 s now; the defect needed a fix, not a longer wait.
+
+A fifth finding came from the pass rather than the release: **RUSTSEC-2026-0285** against
+`rustls 0.23.44` (via `ureq`, in the LibreHardwareMonitor adapter), fixed by 0.23.45. The pass also
+reported "non-zero steps: 0" while that failure was real — the step piped `runcmd` into `tail`,
+which runs it in a subshell where the failure counter is invisible. The harness pipes inside the
+command now.
+
+### 4. Publication, and two more faults found by verifying the download
+
+v0.1.3 = `29f1c34`, tagged and published as a preview with Windows **and Linux** assets. Verifying
+the downloaded artefacts rather than trusting the job that produced them found two more defects:
+
+* **The Linux checksum list was named `SHA256SUMS`** — the name the Windows assets already use,
+  and a GitHub Release holds one asset per name. It is `SHA256SUMS-linux-x86_64` now, and so is the
+  name the install page tells users to fetch.
+* **The list named files that are never published.** `LICENSE` and `THIRD_PARTY_NOTICES.txt` travel
+  *inside* the archive, so a user running the natural `sha256sum -c SHA256SUMS-linux-x86_64` on a
+  perfectly intact download was told two files were missing, which reads as tampering. The list now
+  contains exactly the published assets (the archive and `release-linux-x86_64.json`), the
+  packager's own post-write check stages *only* those files next to it, and the documented route
+  runs a whole-list `sha256sum -c` instead of picking the one line it hoped was right.
+
+The Linux archive was verified from the download: an x86_64 ELF, both checksum entries OK under a
+whole-list `sha256sum -c`, and `release-linux-x86_64.json` naming the tagged commit. The documented
+Linux commands were then run against those real downloaded bytes — download by asset name, verify,
+extract — and stopped exactly where they must on macOS: `cannot execute binary file`. The public
+Windows install check ran against this tag and passed
+([run 34928385056](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34928385056)), and the
+acceptance source package for the release commit is
+`dist/acceptance/OpenHardwareOS-29f1c34-windows-acceptance.zip`,
+`26c99521ac54e1222dafa8c7066c3f64629a2bb3956470d431b7fca7135002e1`. Exact run links and digests are
+in `docs/versions.json` and on the release page.
+
+### The verification pass (all commands re-run at `29f1c34`, nothing carried over)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `rustup run 1.98.1 cargo fmt --all -- --check` | exit 0 |
+| 2 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0 |
+| 3 | `cargo test --workspace --locked` | **522 passed, 0 failed**, 46 test-result lines |
+| 4 | `cargo deny check` | advisories ok, bans ok, licenses ok, sources ok |
+| 5 | `scripts/versions.py check --remote --generated` | OK; published releases verified on GitHub |
+| 6 | `scripts/tests/test_versions.py` | 30 tests, OK |
+| 7 | `npm run typecheck` / `npm test` / `npm run build` | clean / 43 tests / clean |
+| 8 | `scripts/tests/make-acceptance-package.test.sh` | 4 cases, 0 failures |
+| 9 | `scripts/release/test-packaging.ps1` | 6 cases, 0 failures |
+| 10 | `scripts/tests/package-linux.test.sh` | 6 cases, 28 checks, 0 failures |
+| 11 | `scripts/tests/linux-install-doc.test.sh` | 5 cases, 15 checks, 0 failures |
+| 12 | `docs/windows-validation/.../run-script-tests.ps1` | 18 cases, 151 checks, 0 failures (doubles only) |
+| 13 | cross-target `cargo check` for `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu` | exit 0, plus Linux-target Clippy |
+| 14 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** |
+| 15 | delivered packages still match their manifests | every file |
+
+### What round 8 could **not** verify
+
+* **A Linux machine.** Everything above is macOS, CI runners and fixtures. No reading has been
+  cross-checked against `sensors`/sysfs on a real distribution or kernel, and no fan has been read
+  from a real board's hwmon.
+* **A Linux desktop package** (`.deb`, AppImage): not built yet. v0.1.3 ships the CLI.
+* **Writing PWM on Linux**, and therefore Linux fan *control* — deliberately absent (§1).
+* **A physical fan or pump**, on any platform: unchanged.
+* **The positional device ids in the LHM path** (`fan.lhm.<n>`), the other half of round 7's identity
+  work: the Linux path is stable by construction, the LHM path still is not.
+* **NVML handing nothing back on exit** (requirements item 12): reported, not fixed.
+* **Visual acceptance of the desktop**: unchanged. The §2 input defect was found by an assertion,
+  not by looking at the screen; a screenshot check would have caught it earlier.
+* **Whether the engine's 3 × poll-interval staleness window is the right size.** It is now asked at
+  the right moment, but the question "how old may a reading be before a rule stops following its
+  curve" is a safety policy decision that deserves its own analysis rather than a number chosen to
+  make a test pass. Recorded as open.
+
+### Deliberately **not** done in round 8
+
+No hardware was written to; no autostart or global environment value was changed; nothing was
+installed on the host beyond a portable PowerShell under `~/.local/share/ohm-verify/`; no licence
+was approved on the user's behalf; ADR 0002 and ADR 0004 remain **Proposed**; the untracked
+directories `k10max-prospector/` and `Prospector/` were left exactly as found (the second appeared
+during this round and is not mine).
+
+One process note, recorded because it cost a pass: a verification pass was invalidated by editing
+files while it ran — the harness read the new script with the old test in the same step and
+reported a failure that belonged to neither revision. Verification and editing are now sequenced,
+and the pass's log names the revision it read.

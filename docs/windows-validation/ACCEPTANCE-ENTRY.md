@@ -28,9 +28,12 @@
 | Windows 全量测试 **490 项**、八个 job 全部通过 | v0.1.1 | [run 34825301892](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34825301892) |
 | CLI 与 NSIS 安装包构建、13 项安装夹具、实际安装包验证 | v0.1.1 | [run 34825296140](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34825296140) |
 | 公开下载、校验、安装、诊断与模拟运行（PowerShell 5.1） | v0.1.1 | [run 34826241020](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34826241020) |
-| CI 八个 job 全部通过（首次有一个前端行为测试竞态失败，重跑通过；该测试的竞态已在 v0.1.3 修复） | v0.1.2 | [run 34839421686](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34839421686) |
+| CI 八个 job 全部通过（首次有一个前端行为测试失败，当时记为竞态并重跑通过；v0.1.3 查明它是产品缺陷——读数到达会覆盖用户输入——并已修复，见 `docs/verification-log.md` 第 8 轮） | v0.1.2 | [run 34839421686](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34839421686) |
 | CLI 与 NSIS 安装包构建、两组夹具测试、打包与打包后 CLI 冒烟安装 | v0.1.2 | [run 34839424804](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34839424804) |
 | 公开下载、校验、版本化安装、源码提交核对、诊断与模拟运行（PowerShell 5.1） | v0.1.2 | [run 34840668305](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34840668305) |
+| CI 八个 job 全部通过（Windows 侧 522 项 Rust 测试、43 项前端测试） | v0.1.3 | [run 34927741795](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34927741795) |
+| Windows CLI 与 NSIS 安装包构建、两组夹具测试、打包后 CLI 冒烟安装；**同一 run 的 Linux 作业**产出 Linux x86_64 CLI 归档并执行其版本自检 | v0.1.3 | [run 34927739625](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34927739625) |
+| 公开下载、校验、版本化安装、源码提交核对、诊断与模拟运行（PowerShell 5.1） | v0.1.3 | [run 34928385056](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34928385056) |
 
 这些 run 的**结论、提交与 job 明细**都在 GitHub 上可查，本页只引用，不复制数字。
 它们证明"代码能在 Windows 上编译、测试、打包、安装"，**不证明**任何一台真实机器上的风扇、水泵、
@@ -56,7 +59,8 @@
 | `4a72112`（第五轮） | `dist/acceptance/OpenHardwareOS-4a72112-windows-acceptance{,.zip}` | 204 | `453aeb2028e7d1318e2a77ab8750d6d99b24cbeda658e19c0ff02ac4089de774`（清单文件本身：`da4d9dfebf2a0bb589560aa252e21ab3837b4edd531b1dd0567bb132149ab030`） |
 | `499008c` | `dist/acceptance/OpenHardwareOS-499008c-windows-acceptance{,.zip}` | 204 | **请勿使用**：该包由有缺陷的打包器产出，旁边有 `.DO-NOT-USE.txt` |
 | `2a0391d`（v0.1.2 准备） | `dist/acceptance/OpenHardwareOS-2a0391d-windows-acceptance{,.zip}` | 245 | `db1a875770026568d8662577767905ade22b84320ce9baedbd86f2155384aaaf`（清单文件本身：`67abd843e699daa5cbb5b0965e758e930e6c8d3885564ffae7244a47c4ec027b`） |
-| `1219457`（**v0.1.2 发布提交**，推荐给操作者） | `dist/acceptance/OpenHardwareOS-1219457-windows-acceptance{,.zip}` | 245 | `c11c0849fcfc08b06de27d7ad6a29f273526412c5e8a64474f11f54d33580cd1`（清单文件本身：`a259c6f17899cd1de2bced370fd44828067b45eea46e9c31c0fc6a2ba447c118`） |
+| `1219457`（v0.1.2 发布提交） | `dist/acceptance/OpenHardwareOS-1219457-windows-acceptance{,.zip}` | 245 | `c11c0849fcfc08b06de27d7ad6a29f273526412c5e8a64474f11f54d33580cd1`（清单文件本身：`a259c6f17899cd1de2bced370fd44828067b45eea46e9c31c0fc6a2ba447c118`） |
+| `29f1c34`（**v0.1.3 发布提交**，推荐给操作者） | `dist/acceptance/OpenHardwareOS-29f1c34-windows-acceptance{,.zip}` | 254 | `26c99521ac54e1222dafa8c7066c3f64629a2bb3956470d431b7fca7135002e1`（清单文件本身：`f75cdbec8acb846322deb9487956e27f7e815e1d77a9bcbf33be517126e190dc`） |
 
 **你手上的这一包是哪一版**：看包根 `README-ACCEPTANCE.md` 顶部的 `Commit` 行（打包时写入），
 摘要看与压缩包同目录的 `<同名>.zip.sha256`（第一行是压缩包，第二行是包内清单文件）。
