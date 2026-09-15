@@ -26,7 +26,7 @@ import { DeviceDetail } from '../screens/DeviceDetail';
 import { Diagnostics } from '../screens/Diagnostics';
 import { ruleStatusHint, ruleStatusLabel } from '../lib/format';
 import { isSimpleFallback } from '../lib/curve';
-import type { FallbackAction, RuntimeEvent } from '../types';
+import type { FallbackAction, RuntimeEvent, RuntimeSnapshot } from '../types';
 import { renderWithProviders } from './helpers';
 import { ipcMock, resetIpcMock } from './ipcMock';
 import { ToastViewport } from '../hooks/useToast';
@@ -36,6 +36,7 @@ import {
   handoverFixture,
   ruleFileNoteFixture,
   ruleFixture,
+  snapshotFixture,
   writeAuditEntry,
   writeReportFixture,
 } from './fixtures';
@@ -657,6 +658,59 @@ describe('the unconfirmed rule status', () => {
     expect(badge.textContent).toBe('Unconfirmed');
     expect(badge.className).toContain('badge--warn');
     expect(badge.className).not.toContain('badge--ok');
+  });
+});
+
+describe('manual control: a reading that arrives after the user typed', () => {
+  beforeEach(() => {
+    resetIpcMock();
+    ipcMock().api.writeCapability.mockResolvedValue(
+      writeReportFixture({ status: 'applied', requested: 80, applied: 80 }),
+    );
+  });
+
+  /**
+   * The order a loaded CI runner produced, made explicit: the user edits the
+   * field, and *then* the backend pushes a snapshot — the device still reports
+   * its own 45 %, because nothing has been written yet.
+   *
+   * Before the fix the field followed every reading unconditionally, so it
+   * snapped back to 45 and Apply sent 45: the device's existing value, while the
+   * user watched the 80 they typed disappear with no message. Silent loss of
+   * input is worse than a failed write, because the screen still looks right.
+   */
+  it('does not replace the value the user typed, and never applies the old one', async () => {
+    renderDevice();
+    const input = (await screen.findByLabelText('Fan duty value')) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(input, { target: { value: '80' } });
+    });
+    expect(input.value).toBe('80');
+
+    const onSnapshot = ipcMock().subscribeRuntime.mock.calls[0]?.[0] as
+      | ((snapshot: RuntimeSnapshot) => void)
+      | undefined;
+    expect(onSnapshot, 'the screen subscribes to snapshots').toBeTypeOf('function');
+    await act(async () => {
+      onSnapshot?.(snapshotFixture());
+    });
+
+    // The reading really did arrive (the device still reports 45 %), and the
+    // user's request survived it.
+    expect(screen.getByText(/Current: 45/)).toBeTruthy();
+    expect(input.value).toBe('80');
+    expect(screen.getByText(/your change is not applied yet/)).toBeTruthy();
+
+    const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement;
+    await waitFor(() => expect(apply.disabled).toBe(false));
+    await act(async () => {
+      fireEvent.click(apply);
+    });
+    await waitFor(() => expect(ipcMock().api.writeCapability).toHaveBeenCalled());
+    expect(ipcMock().api.writeCapability).toHaveBeenCalledWith(GPU_ID, 'fan.speed_percent', 80);
+    // One call, with the typed value: not a first attempt at the old value and a
+    // retry with the right one.
+    expect(ipcMock().api.writeCapability).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -505,11 +505,29 @@ function WriteControl({
   const [pending, setPending] = useState(false);
   const toast = useToast();
 
+  /**
+   * Has the user touched this field?
+   *
+   * A reading that arrives *after* an edit must not overwrite it. The snapshot
+   * reaches the screen asynchronously — the first one lands a moment after the
+   * window opens — so following the reading unconditionally silently discarded
+   * what the user had typed and sent the device's *old* value with the click. A
+   * CI runner made the window wide enough to lose an 80 % request and write the
+   * 45 % the device was already at, which is exactly the kind of "it did
+   * something else and said nothing" this project is trying to remove.
+   */
+  const [edited, setEdited] = useState(false);
+  const edit = (next: CapabilityValue) => {
+    setEdited(true);
+    setDraft(next);
+  };
+
   useEffect(() => {
+    if (edited) return;
     if (typeof current === 'number' || typeof current === 'boolean' || typeof current === 'string') {
       setDraft(current);
     }
-  }, [current]);
+  }, [current, edited]);
 
   const submit = async () => {
     setPending(true);
@@ -518,6 +536,12 @@ function WriteControl({
     try {
       const result = await api.writeCapability(deviceId, capability.id, draft);
       setReport(result);
+      // A confirmed value is the new truth, so the field follows the device
+      // again. An unconfirmed or rejected write leaves the user's request in
+      // place: the panel is showing *that* request against an unknown value.
+      if (result.status === 'applied' || result.status === 'simulated') {
+        setEdited(false);
+      }
       if (result.status === 'rejected') {
         setFailure({
           code: result.error_code ?? 'rejected',
@@ -563,6 +587,7 @@ function WriteControl({
       <p className="small muted">
         Current: {currentReading} · Range {formatRange(capability.min, capability.max, capability.unit)}
         {capability.step !== undefined ? ` · step ${capability.step}` : ''}
+        {edited ? ' · your change is not applied yet' : ''}
       </p>
 
       <Field
@@ -580,7 +605,7 @@ function WriteControl({
             className="select"
             value={String(draft)}
             disabled={disabled || pending}
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => edit(event.target.value)}
           >
             {capability.values.map((value) => (
               <option key={value} value={value}>
@@ -595,7 +620,7 @@ function WriteControl({
               type="checkbox"
               checked={draft === true}
               disabled={disabled || pending}
-              onChange={(event) => setDraft(event.target.checked)}
+              onChange={(event) => edit(event.target.checked)}
             />
             <span className="checkbox__text">
               <span className="checkbox__title">{draft === true ? 'On' : 'Off'}</span>
@@ -611,7 +636,7 @@ function WriteControl({
               step={step}
               value={numeric}
               disabled={disabled || pending}
-              onChange={(event) => setDraft(Number(event.target.value))}
+              onChange={(event) => edit(Number(event.target.value))}
             />
             <input
               className="input input--number"
@@ -624,7 +649,7 @@ function WriteControl({
               aria-label={`${capability.name} value`}
               onChange={(event) => {
                 const next = Number(event.target.value);
-                setDraft(Number.isFinite(next) ? next : rangeMin);
+                edit(Number.isFinite(next) ? next : rangeMin);
               }}
             />
             <span className="slider__value">{formatValue(numeric, capability.unit)}</span>

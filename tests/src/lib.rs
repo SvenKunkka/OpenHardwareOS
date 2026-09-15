@@ -55,9 +55,20 @@ impl Session {
         adapters.retain(|adapter| adapter.info().id.as_str() != ohm_adapter_mock::ADAPTER_ID);
         adapters.push(mock.clone());
 
+        // The poll interval matters to these tests in one way only: the engine
+        // treats readings older than three intervals as too old to act on. At the
+        // shipped 100 ms that window is 300 ms, so a test that polls, evaluates and
+        // asserts in one breath depends on the *host* — a loaded CI runner's
+        // scheduler or filesystem delay flipped whole suites to the fail-safe duty,
+        // which then read as "the sensor is missing" while it was reporting fine.
+        // These sessions drive every poll explicitly (`step`), so the interval is a
+        // staleness window here, not a cadence: keeping it wide makes each test
+        // assert the branch it is about. Staleness itself is tested where it
+        // belongs, against a runtime configured with a tight interval (see
+        // `crates/ohm-automation`: `stale_runtime_forces_the_fallback_path`).
         let settings = Settings {
             dry_run: false,
-            polling_interval_ms: 100,
+            polling_interval_ms: 2_000,
             discovery_interval_ms: 500,
             ..Settings::default()
         };

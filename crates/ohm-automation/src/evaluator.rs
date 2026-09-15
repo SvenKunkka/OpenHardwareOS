@@ -205,6 +205,14 @@ pub struct EvaluationInput {
     pub safe_default_duty: f64,
     /// Human readable source description, used in messages.
     pub source_label: String,
+    /// The runtime's readings are too old to act on — the poll loop has not
+    /// refreshed them for longer than its own tolerance.
+    ///
+    /// Kept apart from a missing sensor because the two need different words: a
+    /// sensor that is not there is a hardware/driver fact, while readings that
+    /// stopped arriving are a runtime fact, and saying "missing" for the second
+    /// sends the user looking for the wrong thing.
+    pub source_stale: bool,
 }
 
 impl EvaluationInput {
@@ -218,6 +226,7 @@ impl EvaluationInput {
             target_max: 100.0,
             safe_default_duty: 70.0,
             source_label: "source".into(),
+            source_stale: false,
         }
     }
 }
@@ -597,10 +606,18 @@ fn evaluate_fallback(
                 Some(duty),
                 changed,
                 false,
-                format!(
-                    "{} is missing: falling back to {:.0} %",
-                    input.source_label, duty
-                ),
+                if input.source_stale {
+                    format!(
+                        "the runtime has not refreshed {} recently, so its readings are too old \
+                         to act on: falling back to {:.0} %",
+                        input.source_label, duty
+                    )
+                } else {
+                    format!(
+                        "{} is missing: falling back to {:.0} %",
+                        input.source_label, duty
+                    )
+                },
             )
         }
         // Defence in depth. `release` cannot be saved or loaded (see
@@ -728,7 +745,45 @@ mod tests {
             target_max: 100.0,
             safe_default_duty: 70.0,
             source_label: "gpu.mock.0/temperature.core".into(),
+            source_stale: false,
         }
+    }
+
+    /// The same input, but the readings stopped arriving rather than the sensor
+    /// being absent.
+    fn stale_input(now_ms: i64) -> EvaluationInput {
+        EvaluationInput {
+            source_stale: true,
+            ..input(None, now_ms)
+        }
+    }
+
+    #[test]
+    fn a_stale_runtime_is_not_reported_as_a_missing_sensor() {
+        // Both cases fall back to the same safe duty, but they are different
+        // facts: one is hardware/driver, the other is the runtime falling behind.
+        // Using one sentence for both sent the reader looking for a sensor that
+        // was there all along.
+        let rule = rule();
+        let mut missing = RuleState::new(rule.id.clone());
+        let absent = evaluate(&rule, &mut missing, input(None, 1_000));
+        assert_eq!(absent.status, RuleStatus::Fallback);
+        assert!(absent.message.contains("is missing"), "{}", absent.message);
+        assert!(!absent.message.contains("too old"), "{}", absent.message);
+
+        let mut stale = RuleState::new(rule.id.clone());
+        let behind = evaluate(&rule, &mut stale, stale_input(1_000));
+        assert_eq!(behind.status, RuleStatus::Fallback);
+        assert!(behind.message.contains("too old"), "{}", behind.message);
+        assert!(
+            behind.message.contains("has not refreshed"),
+            "{}",
+            behind.message
+        );
+        assert_eq!(
+            behind.output, absent.output,
+            "the duty is the same either way"
+        );
     }
 
     #[test]

@@ -839,12 +839,20 @@ impl AutomationEngine {
             return Vec::new();
         }
 
+        // A stalled runtime means stale sensors: fall back rather than act on
+        // numbers that may be minutes old. Asked *first*, before this tick does
+        // any work of its own: persisting handover records and control state is
+        // file I/O, and on a machine with a slow filesystem (a CI runner scanning
+        // every new file) it can easily outlast the whole tolerance window. The
+        // engine then distrusted readings that were fresh when the tick began,
+        // dropped every rule to the fail-safe duty, and reported a missing sensor
+        // that was reporting perfectly well. What the window is meant to detect is
+        // the *runtime* falling behind, not this tick taking a while.
+        let source_unavailable = self.inner.runtime.is_stale(3);
+
         // Outputs abandoned by a rule edit are made safe before anything else.
         self.perform_pending_handovers(tick, now).await;
 
-        // A stalled runtime means stale sensors: fall back rather than act on
-        // numbers that may be minutes old.
-        let source_unavailable = self.inner.runtime.is_stale(3);
         let safe_default_duty = settings.safety.fail_safe_duty_percent;
 
         let rules = self.rules();
@@ -955,6 +963,7 @@ impl AutomationEngine {
                 target_max: capability.max.unwrap_or(100.0),
                 safe_default_duty,
                 source_label: rule.source.label(),
+                source_stale: source_unavailable,
             },
         );
 
