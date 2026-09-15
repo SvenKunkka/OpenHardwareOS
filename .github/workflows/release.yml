@@ -173,8 +173,19 @@ jobs:
         run: ./scripts/tests/package-linux.test.sh
       - name: Test the documented install route with isolated fixtures
         run: ./scripts/tests/linux-install-doc.test.sh
+      - name: Test the readings cross-check with isolated fixtures
+        run: ./scripts/tests/verify-linux-readings.test.sh
       - name: Build CLI
         run: cargo build --locked --release -p ohm-cli
+      # Published evidence for one of the Linux preview's claims: that its readings
+      # can be checked against the machine's own sources. On this runner those are a
+      # real kernel's sysfs, /proc and df — not a fixture.
+      - name: Cross-check readings against the kernel's own sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          export OHM_CONFIG_DIR="$RUNNER_TEMP/ohm-release-crosscheck"
+          ./scripts/verify-linux-readings.sh --cli target/release/ohm-cli
       # The GUI stack is built here, not only compiled for tests: a desktop package
       # that has never been assembled is a promise, not a deliverable.
       - name: Build desktop bundles (Debian package and AppImage)

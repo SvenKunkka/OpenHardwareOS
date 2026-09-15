@@ -226,11 +226,21 @@ enum Command {
         /// Also register the simulated providers.
         #[arg(long)]
         mock: bool,
+        /// Print one JSON object instead of the human-readable report: every
+        /// provider with its status and reason, every device with its readings and
+        /// the reason for each missing one, and the capability notes. Nothing else
+        /// is written, so a script can read it directly — and so a reading can be
+        /// compared with the platform's own source by something other than my eyes.
+        #[arg(long)]
+        json: bool,
     },
     /// Print the current readings once.
     Status {
         #[arg(long)]
         mock: bool,
+        /// Print the runtime snapshot as JSON, and nothing else.
+        #[arg(long)]
+        json: bool,
     },
     /// Watch live values until interrupted.
     Watch {
@@ -376,8 +386,8 @@ async fn main() -> Result<()> {
     let _guard = ohm_core::logging::init(cli.log_level.into(), None)?;
 
     match &cli.command {
-        Command::Doctor { mock } => doctor(&cli, *mock).await,
-        Command::Status { mock } => status(&cli, *mock).await,
+        Command::Doctor { mock, json } => doctor(&cli, *mock, *json).await,
+        Command::Status { mock, json } => status(&cli, *mock, *json).await,
         Command::Watch {
             mock,
             interval,
@@ -409,7 +419,26 @@ fn paths(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-async fn doctor(cli: &Cli, use_mock: bool) -> Result<()> {
+/// The doctor report in machine-readable form.
+///
+/// Field names are part of the interface a cross-check script reads, so they are
+/// explicit rather than derived: `adapters[].info.id` is what `--json` consumers
+/// match on, and `devices[].state.readings[].status` is how "missing, and why" is
+/// expressed. A reading that is absent is absent, never 0.
+#[derive(Debug, serde::Serialize)]
+struct DoctorReport {
+    version: String,
+    os: String,
+    arch: String,
+    config_dir: String,
+    simulated: bool,
+    adapters: Vec<ohm_runtime::AdapterView>,
+    devices: Vec<ohm_runtime::DeviceView>,
+    capabilities: ohm_runtime::CapabilityIndex,
+    notes: Vec<String>,
+}
+
+async fn doctor(cli: &Cli, use_mock: bool, json: bool) -> Result<()> {
     let session = Session::open(cli, use_mock, None).await?;
     session.start().await?;
 
@@ -513,6 +542,23 @@ async fn doctor(cli: &Cli, use_mock: bool) -> Result<()> {
         notes
     };
 
+    if json {
+        let report = DoctorReport {
+            version: ohm_core::VERSION.to_string(),
+            os: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+            config_dir: session.paths.root().display().to_string(),
+            simulated: use_mock,
+            adapters: session.runtime.adapter_views(),
+            devices: session.runtime.devices(),
+            capabilities: session.runtime.capability_index(),
+            notes: notes.clone(),
+        };
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        session.stop().await?;
+        return Ok(());
+    }
+
     print_header("Capability notes");
     for note in notes {
         println!("  • {note}");
@@ -541,9 +587,19 @@ async fn doctor(cli: &Cli, use_mock: bool) -> Result<()> {
     Ok(())
 }
 
-async fn status(cli: &Cli, use_mock: bool) -> Result<()> {
+async fn status(cli: &Cli, use_mock: bool, json: bool) -> Result<()> {
     let session = Session::open(cli, use_mock, None).await?;
     session.start().await?;
+    if json {
+        // The same snapshot the desktop renders from, so the two cannot disagree
+        // about what the runtime reported.
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&session.runtime.snapshot())?
+        );
+        session.stop().await?;
+        return Ok(());
+    }
     print_header("Status");
     print_devices(&session.runtime);
     session.stop().await?;

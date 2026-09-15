@@ -89,6 +89,18 @@ cat > "$WORK/bin/sudo" <<'SH'
 #!/bin/sh
 exec "$@"
 SH
+# The cross-check section asks the *installed* CLI for machine-readable readings,
+# so the fixture provides one: a shim answering `status --json` with a small, valid
+# snapshot. The script then runs for real — on this host, where /proc and /sys do
+# not exist, it reports "no platform source" for every reading and exits 0, which is
+# the honest outcome the page describes.
+cat > "$WORK/bin/ohm-cli" <<'SH'
+#!/bin/sh
+if [ "${1:-}" = "status" ] && [ "${2:-}" = "--json" ]; then
+  cat "$OHM_TEST_READINGS"
+fi
+exit 0
+SH
 cat > "$WORK/bin/dpkg" <<'SH'
 #!/bin/sh
 # `dpkg -l <name>` / `dpkg -s <name>`: the fixture "installed" the package, so
@@ -115,7 +127,32 @@ if [ "${1:-}" = "install" ]; then
 fi
 exit 0
 SH
-chmod +x "$WORK/bin/sha256sum" "$WORK/bin/sudo" "$WORK/bin/apt-get" "$WORK/bin/dpkg"
+chmod +x "$WORK/bin/sha256sum" "$WORK/bin/sudo" "$WORK/bin/apt-get" "$WORK/bin/dpkg" "$WORK/bin/ohm-cli"
+export OHM_TEST_READINGS="$WORK/readings.json"
+python3 - "$OHM_TEST_READINGS" <<'PYINNER'
+import json, sys
+
+def device(device_id, name, kind, readings):
+    return {"device": {"id": device_id, "name": name, "type": kind, "adapter": "system",
+                       "transport": "system", "model": None, "vendor": None,
+                       "capabilities": [], "metadata": {}},
+            "enabled": True, "status": "online",
+            "state": {"device": device_id, "timestamp_ms": 1, "online": True,
+                      "readings": readings},
+            "adapter": "system", "first_seen_ms": 1, "last_seen_ms": 2}
+
+# One reading a host can compare (memory) and one it usually cannot (a fan channel),
+# so the cross-check has something to agree about and something to explain.
+json.dump({"generated_at_ms": 1, "started_at_ms": 0, "adapters": [], "settings": {},
+           "stats": {}, "has_controllable_hardware": False,
+           "devices": [
+               device("memory.system.0", "Memory", "memory",
+                      [{"capability": "memory.total", "status": "ok",
+                        "value": 17179869184}]),
+               device("fan.system.nct6798d_fan1", "Chassis fan", "fan",
+                      [{"capability": "fan.rpm", "status": "ok", "value": 1245.0}]),
+           ]}, open(sys.argv[1], "w", encoding="utf-8"))
+PYINNER
 export OHM_TEST_APT_LOG="$WORK/apt.log"
 export OHM_TEST_BINDIR="$WORK/bin"
 : > "$OHM_TEST_APT_LOG"

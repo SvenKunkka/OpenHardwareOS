@@ -127,6 +127,19 @@ jobs:
           cargo run -q -p ohm-cli -- demo --steps 60 --profile gaming
           cargo run -q -p ohm-cli -- doctor --mock
 
+      # The only check in this file that compares our numbers with something that
+      # did not come from this project: the kernel's own files, /proc and df, on a
+      # real distribution and kernel. A disagreement fails the job.
+      - name: Cross-check readings against the kernel's own sources
+        shell: bash
+        run: |
+          export OHM_CONFIG_DIR="$RUNNER_TEMP/ohm-ci-crosscheck"
+          cargo build -q --locked -p ohm-cli
+          ./scripts/verify-linux-readings.sh --cli target/debug/ohm-cli
+
+      - name: Readings cross-check fixture harness
+        run: ./scripts/tests/verify-linux-readings.test.sh
+
       - name: Desktop self test (headless launch, simulated hardware)
         shell: bash
         run: |

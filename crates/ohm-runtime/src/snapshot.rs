@@ -183,6 +183,63 @@ mod tests {
         }
     }
 
+    /// The JSON `ohm-cli status --json` prints is an interface: `scripts/verify-linux-readings.sh`
+    /// reads exactly these paths to compare a reading with the platform's own
+    /// source, and `docs/linux-install.md` tells users to run it. Renaming a field
+    /// here silently changes what that script compares, so the paths are pinned
+    /// where the type is.
+    #[test]
+    fn the_json_a_cross_check_script_reads_has_these_paths() {
+        let value = serde_json::to_value(snapshot()).expect("snapshot serialises");
+        let devices = value["devices"].as_array().expect("devices is an array");
+        let gpu = &devices[0];
+        assert!(gpu["device"]["id"].is_string(), "devices[].device.id");
+        assert!(gpu["device"]["type"].is_string(), "devices[].device.type");
+        // `metadata` is omitted when empty and an object when it is not: the
+        // cross-check reads `metadata.mount_point` off storage devices, so both
+        // shapes have to be what the script expects.
+        assert!(
+            gpu["device"].get("metadata").is_none(),
+            "an empty metadata map is omitted"
+        );
+        let with_metadata = serde_json::to_value(
+            Device::new(
+                DeviceId::new("storage.system.0").unwrap(),
+                "Root",
+                DeviceType::Storage,
+                Transport::System,
+                AdapterId::new("system").unwrap(),
+            )
+            .with_metadata("mount_point", "/"),
+        )
+        .expect("device serialises");
+        assert_eq!(with_metadata["metadata"]["mount_point"], "/");
+        assert!(gpu["adapter"].is_string(), "devices[].adapter");
+        let readings = gpu["state"]["readings"]
+            .as_array()
+            .expect("devices[].state.readings is an array");
+        assert!(
+            readings[0]["capability"].is_string(),
+            "readings[].capability"
+        );
+        assert_eq!(readings[0]["status"], "ok", "readings[].status");
+        assert_eq!(readings[0]["value"], 60.0, "readings[].value");
+
+        // A missing reading carries its reason, which is the other half of what the
+        // cross-check reports: "we report nothing" must always say why.
+        let unavailable = Reading::unavailable(
+            "temperature.hotspot",
+            ohm_device_model::UnavailableReason::Unsupported,
+            Some("no provider in this build exposes it".to_string()),
+        );
+        let state =
+            DeviceState::new(DeviceId::new("gpu.mock.0").unwrap(), 1).with_reading(unavailable);
+        let value = serde_json::to_value(state).expect("state serialises");
+        let reading = &value["readings"][0];
+        assert_eq!(reading["status"], "unavailable");
+        assert!(reading["reason"].is_string(), "readings[].reason");
+    }
+
     fn snapshot() -> RuntimeSnapshot {
         RuntimeSnapshot {
             generated_at_ms: 1,

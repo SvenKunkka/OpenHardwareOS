@@ -151,6 +151,56 @@ Linux 上每个读数的来源都写在 `doctor` 输出里，能读就给出值�
 接口取决于主板与驱动；在确认的通道映射与实机证据出现之前，这个项目只读不写。
 `pwm<N>_enable` 的值会显示出来，说明当前是驱动/固件在控制还是留给软件。
 
+## 读数如何与系统来源核对
+
+这一版的每一个读数都来自**这台机器自己的接口**，所以都能用系统工具独立核对。
+下面这段在 Linux 上逐项打印对照（非 Linux 会直接说明并退出，不做任何猜测）：
+
+```bash
+test "$(uname -s 2>/dev/null)" = Linux || { echo "这些对照命令是 Linux 专用。"; exit 0; }
+set -uo pipefail
+echo "== 我们报告的读数（机器可读）"
+ohm-cli status --json | grep -E '"capability"|"value"|"reason"' | head -40
+echo
+echo "== 内核自己的风扇与 PWM 文件"
+for dir in /sys/class/hwmon/hwmon*; do
+  [ -d "$dir" ] || continue
+  printf '%s: %s\n' "$dir" "$(cat "$dir/name" 2>/dev/null)"
+  for file in "$dir"/fan*_input "$dir"/pwm[0-9]; do
+    [ -f "$file" ] || continue
+    printf '  %s = %s\n' "$(basename "$file")" "$(cat "$file" 2>/dev/null)"
+  done
+done
+echo
+echo "== 内存：我们报的 total 应当等于 MemTotal"
+grep -E '^(MemTotal|MemAvailable):' /proc/meminfo 2>/dev/null || echo "  没有 /proc/meminfo"
+echo
+echo "== 磁盘：我们报的剩余空间应当等于同一挂载点的 df 可用值"
+df -k / 2>/dev/null | tail -2
+```
+
+每一项怎么对应：
+
+| 我们的读数 | 系统的同一个值 | 说明 |
+|---|---|---|
+| `fan.system.<芯片>_fan<N>/fan.rpm` | `/sys/class/hwmon/*/fan<N>_input`（`name` 等于 `<芯片>`） | 同一个文件，数值必须相等 |
+| `fan.system.<芯片>_fan<N>/fan.pwm` | `/sys/class/hwmon/*/pwm<N>` | 同上；只读展示当前占空比 |
+| `memory.system.0/memory.total` | `/proc/meminfo` 的 `MemTotal` | 字节数必须相等（kB × 1024） |
+| `memory.system.0/memory.used` | `MemTotal − MemAvailable` | 定义不同，允许 1 % 或 256 MB 的差 |
+| `storage.system.0/storage.free` | `df -k <挂载点>` 的第 4 列 | 时间差会造成小幅漂移 |
+| 温度 | `/sys/class/hwmon/*/temp*_input`、`/sys/class/thermal/thermal_zone*/temp` | 不是同一个传感器，因此只要求落在平台报告的温度范围内 |
+| `cpu.load`、`cpu.frequency` | 没有独立来源 | 占用率是两次采样之间的差值，频率由调频器随时改变——单次采样无法核对，因此不假装能核对 |
+
+仓库里还有把上表逐项自动化并给出结论的脚本，发布流程在真实内核上运行它：
+
+```bash
+./scripts/verify-linux-readings.sh            # 需要源码检出；结论逐行打印
+```
+
+它输出 `AGREE`（与平台一致）、`DIFFER`（不一致，退出码 1）、`NO-SOURCE`（平台没有可比的对象，
+并说明原因）、`NOT-CHECKED`（本质上没有独立来源）四种结论——**"这台机器没有风扇转速可读"
+是一个正常结果，不是失败**，但必须说出来。
+
 ## 更新与卸载
 
 - **CLI：** 更新时把 `ohm_version` 改成目标版本：新版本装进新的目录，旧版本保留。
