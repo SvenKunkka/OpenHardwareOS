@@ -221,6 +221,55 @@ else
   grep -q "THIRD_PARTY_NOTICES" "$ROOT/notices.log" && ok "  and names the file" || bad "  and names the file"
 fi
 
+# ---------------------------------------------------------------- case 6
+echo
+echo "--- a tar that reports an early-closed pipe does not fail a passing check"
+CASES=$((CASES + 1))
+# GNU tar reports a write error when its consumer closes the pipe early; BSD tar
+# (macOS) does not. `tar -tzf archive | grep -q name` therefore passed here and
+# failed the first Linux release build. This shim reproduces the GNU behaviour.
+mkdir -p "$ROOT/bin-gnu-tar"
+cat > "$ROOT/bin-gnu-tar/tar" <<'SH'
+#!/bin/sh
+# Write the listing one line at a time with a pause between them, so a consumer
+# that exits on its first match (`grep -q`) is gone before the next write — which
+# is what makes GNU tar report "stdout: write error" on the Linux runner. A single
+# buffered write of the whole listing would slip into the pipe buffer and hide it.
+real=/usr/bin/tar
+[ -x "$real" ] || real=$(command -v tar)
+scratch="$(mktemp)"
+"$real" "$@" > "$scratch" || { rc=$?; rm -f "$scratch"; exit $rc; }
+status=0
+while IFS= read -r line; do
+  printf '%s\n' "$line" || { status=2; break; }
+  sleep 0.05
+done < "$scratch"
+rm -f "$scratch"
+exit $status
+SH
+chmod +x "$ROOT/bin-gnu-tar/tar"
+repo="$(new_repo gnu-tar)"
+if ( export PATH="$ROOT/bin-gnu-tar:$PATH"; run_packager "$repo" ) > "$ROOT/gnu-tar.log" 2>&1; then
+  ok "the packager still delivers"
+else
+  bad "the packager still delivers ($(tail -1 "$ROOT/gnu-tar.log"))"
+fi
+[ -f "$repo/artifacts/release/ohm-cli-v0.1.3-linux-x86_64.tar.gz" ] \
+  && ok "the archive exists" || bad "the archive exists"
+if [ -f "$repo/artifacts/release/SHA256SUMS" ]; then
+  side="$ROOT/side-gnu-tar"
+  mkdir -p "$side"
+  cp "$repo/artifacts/release/ohm-cli-v0.1.3-linux-x86_64.tar.gz" \
+     "$repo/artifacts/release/release-linux-x86_64.json" \
+     "$repo/LICENSE" "$repo/artifacts/THIRD_PARTY_NOTICES.txt" \
+     "$repo/artifacts/release/SHA256SUMS" "$side/"
+  if ( cd "$side" && shasum -a 256 -c SHA256SUMS >/dev/null 2>&1 ); then
+    ok "  and its checksums verify"
+  else
+    bad "  and its checksums verify"
+  fi
+fi
+
 echo
 echo "================================================================================"
 echo "  cases: $CASES   passed: $PASSED   failed: $FAILED"

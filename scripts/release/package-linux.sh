@@ -65,8 +65,7 @@ done
 
 [ -n "$VERSION" ] || die "--version is required"
 [ -n "$BINARY" ] || die "--binary is required"
-printf '%s' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-  || die "expected vMAJOR.MINOR.PATCH, got '$VERSION'"
+[[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "expected vMAJOR.MINOR.PATCH, got '$VERSION'"
 
 [ -f "$BINARY" ] || die "no binary at $BINARY"
 [ -s "$BINARY" ] || die "the binary at $BINARY is empty"
@@ -86,7 +85,7 @@ REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO"
 
 SHA="$(git rev-parse HEAD)"
-printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{40}$' || die "cannot read the release source commit"
+[[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || die "cannot read the release source commit"
 
 [ -s "$REPO/LICENSE" ] || die "LICENSE is missing"
 # The generator writes the notices here; the Windows packager reads the same path.
@@ -122,8 +121,17 @@ cp "$STAGE/$METADATA" "$METADATA_PATH"
 tar -czf "$ARCHIVE" -C "$STAGE" ohm-cli LICENSE THIRD_PARTY_NOTICES.txt "$METADATA"
 
 # --- verify before delivering ----------------------------------------------
-tar -tzf "$ARCHIVE" | grep -qx 'ohm-cli' || die "the archive does not contain ohm-cli"
-tar -tzf "$ARCHIVE" | grep -qx "$METADATA" || die "the archive does not contain $METADATA"
+# The listing goes to a file: `tar -tzf … | grep -q` lets grep exit as soon as it
+# matches, closing the pipe; GNU tar takes that as a write error, and `pipefail`
+# then fails a check that actually passed. (That is exactly how the first Linux
+# release build failed.)
+LIST="$OUT/.listing-$$"
+tar -tzf "$ARCHIVE" > "$LIST" || die "the archive cannot be listed"
+grep -qx 'ohm-cli' "$LIST" || die "the archive does not contain ohm-cli"
+grep -qx "$METADATA" "$LIST" || die "the archive does not contain $METADATA"
+grep -qx 'LICENSE' "$LIST" || die "the archive does not contain LICENSE"
+grep -qx 'THIRD_PARTY_NOTICES.txt' "$LIST" || die "the archive does not contain the dependency notices"
+rm -f "$LIST"
 
 if [ "$RUN_BINARY" = "1" ]; then
   reported=$("$BINARY" --version)
