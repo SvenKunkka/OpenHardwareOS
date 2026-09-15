@@ -27,6 +27,7 @@ fn state(pid: u32) -> ServiceState {
         heartbeat_interval_ms: 1_000,
         ticks: 12,
         rules: 1,
+        outcomes: Vec::new(),
         simulated: false,
         dry_run: false,
     }

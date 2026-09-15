@@ -24,7 +24,8 @@ use ohm_core::ConfigPaths;
 use ohm_core::logging::LogLevel;
 use ohm_device_model::{DeviceState, Value, caps};
 use ohm_runtime::{
-    ControlRelease, DeviceView, Runtime, ServiceError, ServiceGuard, ServiceState, SettingsStore,
+    ControlRelease, DeviceView, Runtime, ServiceError, ServiceGuard, ServiceOutcome, ServiceState,
+    SettingsStore,
 };
 
 // ---------------------------------------------------------------------------
@@ -412,8 +413,21 @@ impl Session {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    // The CLI prints its own report, so logs stay out of the way by default.
-    let _guard = ohm_core::logging::init(cli.log_level.into(), None)?;
+    // The CLI prints its own report, so logs stay out of the way by default. The
+    // exception is the background service: nobody is watching its terminal, so it
+    // must leave a file behind, next to the settings and the audit trail. Only the
+    // first initialisation takes effect, which is why the decision is made here
+    // rather than inside `service_run`.
+    let log_paths = match &cli.command {
+        Command::Service {
+            action: ServiceAction::Run { .. },
+        } => Some(match &cli.config_dir {
+            Some(root) => ConfigPaths::from_root(root),
+            None => ConfigPaths::discover()?,
+        }),
+        _ => None,
+    };
+    let _guard = ohm_core::logging::init(cli.log_level.into(), log_paths.as_ref())?;
 
     match &cli.command {
         Command::Doctor { mock, json } => doctor(&cli, *mock, *json).await,
@@ -625,6 +639,25 @@ async fn doctor(cli: &Cli, use_mock: bool, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// A compact picture of every rule, for the state file.
+///
+/// Deliberately short: this is read by a person asking "is this machine being cooled
+/// the way I asked", and by nothing that parses it as an interface.
+fn rule_outcomes(session: &Session) -> Vec<ServiceOutcome> {
+    session
+        .engine
+        .outcomes()
+        .into_iter()
+        .take(32)
+        .map(|outcome| ServiceOutcome {
+            id: outcome.rule_id.to_string(),
+            status: format!("{:?}", outcome.status).to_lowercase(),
+            applied: outcome.applied_output,
+            message: outcome.message.clone(),
+        })
+        .collect()
+}
+
 /// Wait for the signal a service is stopped with.
 ///
 /// `Ctrl-C` everywhere, plus `SIGTERM` on Unix, because that is what a service
@@ -685,6 +718,7 @@ async fn service_run(cli: &Cli, use_mock: bool, heartbeat_ms: u64, max_ticks: u6
         heartbeat_interval_ms: heartbeat_ms.max(50),
         ticks: 0,
         rules: 0,
+        outcomes: Vec::new(),
         simulated: use_mock,
         dry_run: settings.dry_run,
     };
@@ -712,10 +746,11 @@ async fn service_run(cli: &Cli, use_mock: bool, heartbeat_ms: u64, max_ticks: u6
     session.engine.start().await?;
 
     let rules = session.engine.stats();
-    guard.heartbeat(rules.ticks, rules.rules)?;
+    guard.heartbeat(rules.ticks, rules.rules, rule_outcomes(&session))?;
 
     print_header("OpenHardwareOS service");
     println!("state file: {}", state_path.display());
+    println!("log file:   {}", session.paths.logs_dir().display());
     println!("pid:        {}", std::process::id());
     println!("version:    {}", ohm_core::VERSION);
     println!(
@@ -752,7 +787,7 @@ async fn service_run(cli: &Cli, use_mock: bool, heartbeat_ms: u64, max_ticks: u6
             _ = stop.notified() => break "stop requested",
             _ = heartbeat.tick() => {
                 let stats = session.engine.stats();
-                guard.heartbeat(stats.ticks, stats.rules)?;
+                guard.heartbeat(stats.ticks, stats.rules, rule_outcomes(&session))?;
                 if max_ticks > 0 && stats.ticks >= max_ticks {
                     break "reached --max-ticks";
                 }
@@ -819,6 +854,24 @@ fn service_status(cli: &Cli) -> Result<()> {
             );
             if state.dry_run {
                 println!("writes:     dry-run — nothing reaches hardware");
+            }
+            if state.outcomes.is_empty() {
+                println!("rules:      none installed");
+            } else {
+                println!();
+                println!("rules:");
+                for outcome in &state.outcomes {
+                    match outcome.applied {
+                        Some(applied) => println!(
+                            "  {:<24} {:<12} at {applied:.0}  {}",
+                            outcome.id, outcome.status, outcome.message
+                        ),
+                        None => println!(
+                            "  {:<24} {:<12}         {}",
+                            outcome.id, outcome.status, outcome.message
+                        ),
+                    }
+                }
             }
             Ok(())
         }

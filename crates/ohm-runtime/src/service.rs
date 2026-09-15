@@ -31,6 +31,23 @@ use serde::{Deserialize, Serialize};
 /// long that a crashed service blocks a restart for minutes.
 pub const HEARTBEAT_TOLERANCE: u64 = 3;
 
+/// One rule, as the service's state file reports it.
+///
+/// A service whose status cannot say what the rules are *doing* is not much use to
+/// the person running it: "3 rules" does not distinguish "cooling normally" from
+/// "sitting in a fail-safe because a sensor went away".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServiceOutcome {
+    pub id: String,
+    /// `RuleStatus` as text (`applied`, `fallback`, `gated`, `error`, …).
+    pub status: String,
+    /// The value the rule last had confirmed, when it has one.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub applied: Option<f64>,
+    /// The rule's own sentence about what it is doing and why.
+    pub message: String,
+}
+
 /// What the owning process writes about itself.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServiceState {
@@ -46,6 +63,10 @@ pub struct ServiceState {
     pub ticks: u64,
     /// Rules the service loaded.
     pub rules: usize,
+    /// What each rule is doing right now. Capped, because a state file nobody can
+    /// read is not a status report.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outcomes: Vec<ServiceOutcome>,
     /// True when the simulated providers are registered.
     #[serde(default)]
     pub simulated: bool,
@@ -245,9 +266,15 @@ impl ServiceGuard {
     ///
     /// Written through a temporary file and renamed, so a reader never sees half a
     /// state file: `service status` may be run at any moment.
-    pub fn heartbeat(&mut self, ticks: u64, rules: usize) -> Result<(), ServiceError> {
+    pub fn heartbeat(
+        &mut self,
+        ticks: u64,
+        rules: usize,
+        outcomes: Vec<ServiceOutcome>,
+    ) -> Result<(), ServiceError> {
         self.state.ticks = ticks;
         self.state.rules = rules;
+        self.state.outcomes = outcomes;
         self.state.heartbeat_at_ms = ohm_core::now_ms();
         let text = serde_json::to_string_pretty(&self.state).unwrap_or_else(|_| "{}".into());
         let temporary = self.path.with_extension("json.tmp");
@@ -302,6 +329,7 @@ mod tests {
             heartbeat_interval_ms: interval_ms,
             ticks: 0,
             rules: 0,
+            outcomes: Vec::new(),
             simulated: true,
             dry_run: true,
         }
@@ -387,10 +415,24 @@ mod tests {
         let path = temp_path("heartbeat");
         let mut guard = ServiceGuard::acquire(&path, state(8001, 1_000)).expect("acquire");
         let first = read_state(&path).expect("written");
-        guard.heartbeat(7, 2).expect("heartbeat");
+        guard
+            .heartbeat(
+                7,
+                2,
+                vec![ServiceOutcome {
+                    id: "chassis".into(),
+                    status: "applied".into(),
+                    applied: Some(64.0),
+                    message: "1200.0 -> 64 %".into(),
+                }],
+            )
+            .expect("heartbeat");
         let second = read_state(&path).expect("still written");
         assert_eq!(second.ticks, 7);
         assert_eq!(second.rules, 2);
+        assert_eq!(second.outcomes.len(), 1);
+        assert_eq!(second.outcomes[0].status, "applied");
+        assert_eq!(second.outcomes[0].applied, Some(64.0));
         assert!(second.heartbeat_at_ms >= first.heartbeat_at_ms);
         assert!(second.is_fresh(ohm_core::now_ms()));
         let path_copy = guard.path().to_path_buf();

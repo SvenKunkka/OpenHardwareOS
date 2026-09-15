@@ -70,8 +70,29 @@ impl Default for SystemAdapter {
     }
 }
 
-/// `/sys/class/hwmon` on Linux; nothing on the platforms that have no sysfs.
+/// Environment variable that points the hwmon source at another tree.
+///
+/// Exists so a whole *process* — not just a unit test — can be run against a
+/// prepared sysfs tree: the service's sensor-loss and recovery behaviour is a
+/// question about what happens between two polls, and answering it needs a fan
+/// channel that can be made to disappear while the process keeps running.
+///
+/// Reading only: writing `pwm<N>` is not implemented in this build, so pointing
+/// this at a directory changes what is *read* and never what is written.
+pub const ENV_HWMON_ROOT: &str = "OHM_HWMON_ROOT";
+
+/// `/sys/class/hwmon` on Linux, or `$OHM_HWMON_ROOT` when that is set.
+///
+/// The override works on every platform, including the ones with no sysfs at all:
+/// that is what makes the fixture usable where the code is developed.
 fn default_hwmon_root() -> Option<std::path::PathBuf> {
+    if let Some(override_root) = std::env::var_os(ENV_HWMON_ROOT) {
+        // An empty value is a deliberate "no hwmon source here" rather than a path.
+        if override_root.is_empty() {
+            return None;
+        }
+        return Some(std::path::PathBuf::from(override_root));
+    }
     #[cfg(target_os = "linux")]
     {
         Some(std::path::PathBuf::from(hwmon::DEFAULT_ROOT))

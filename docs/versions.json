@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "repository": "SvenKunkka/OpenHardwareOS",
-  "development": null,
+  "development": "v0.1.7",
   "versions": [
     {
       "id": "v0.1.0",
@@ -235,8 +235,32 @@
       "plan": null
     },
     {
-      "id": "v0.2.0",
+      "id": "v0.1.7",
       "parent": "v0.1.6",
+      "status": "development",
+      "channel": "preview",
+      "title": "服务能说明它在做什么",
+      "summary": "状态文件报告每条规则的状态与原因；服务写日志文件；传感器失联与进程挂起恢复在服务层有测试。",
+      "tag": null,
+      "commit": null,
+      "branch": "codex/v0.1.7",
+      "release_url": null,
+      "published_at": null,
+      "changes": [
+        "service status 打印每条规则的状态、确认值与它自己的说明——只报「3 条规则」分不清正常降温与停在失效保护",
+        "服务把日志写进配置目录的 logs/：没有终端的进程必须留下记录",
+        "传感器失联→回退→恢复到读数：进程级测试用 OHM_HWMON_ROOT 指向准备好的 hwmon 树，删掉转速计再放回",
+        "进程被挂起（SIGSTOP）超过心跳窗口后被视为已停止、恢复后继续并保持自己的持有权：进程级测试",
+        "OHM_HWMON_ROOT 作为只读诊断开关公开，服务测试与排障共用它",
+        "文档说明「恢复后先保持失效保护值直到读数越过滞回锚点」是设计行为，而不是恢复失败"
+      ],
+      "evidence": [],
+      "hardware_validation": "not_verified",
+      "plan": null
+    },
+    {
+      "id": "v0.2.0",
+      "parent": "v0.1.7",
       "status": "planned",
       "channel": "preview",
       "title": "水泵支持",
