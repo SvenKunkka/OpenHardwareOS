@@ -113,6 +113,22 @@ jobs:
       RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+      # The workspace includes the desktop crate, so a Linux test run needs the
+      # same GTK/WebKit development packages the CI job installs; without them
+      # `glib-sys` fails in its build script before a single test runs.
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.98.1
