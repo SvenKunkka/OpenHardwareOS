@@ -116,6 +116,14 @@ impl Fixture {
         );
     }
 
+    // --- helpers used only by the suspend test ---------------------------------
+    //
+    // `SIGSTOP`/`SIGCONT` are Unix, so that test is Unix, so everything only it calls
+    // must be too: `clippy -D warnings` treats them as dead code on Windows, and it
+    // is right. This has now cost three CI runs across two rounds — a helper whose
+    // usefulness depends on the platform it is compiled for — so the rule is written
+    // here: **a helper used only by a `cfg`-gated test carries the same `cfg`.**
+    #[cfg(unix)]
     fn wait_for_state(&self, what: &str) -> serde_json::Value {
         let deadline = Instant::now() + Duration::from_secs(30);
         while Instant::now() < deadline {
@@ -133,6 +141,7 @@ impl Fixture {
     /// the service claims it, with the counters still at zero, so a test that asserts
     /// "it moved on" right after resuming can read a snapshot taken before anything
     /// moved and call it a failure. It did, once, under a parallel test run.
+    #[cfg(unix)]
     fn wait_for_ticks_above(&self, previous: u64) -> serde_json::Value {
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut last = self.state();
@@ -196,6 +205,8 @@ impl Running {
         Self { child }
     }
 
+    /// Only the suspend test asks who the service is; the sensor test never needs to.
+    #[cfg(unix)]
     fn pid(&self) -> u32 {
         self.child.id()
     }
