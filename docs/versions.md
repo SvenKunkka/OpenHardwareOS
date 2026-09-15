@@ -9,7 +9,7 @@
    └─ v0.1.1 · 已发布 · 预览版 · 版本管理与安全修复
       └─ v0.1.2 · 已发布 · 预览版 · 发布打包修复
          └─ v0.1.3 · 已发布 · 预览版 · 控制基础修复与 Linux 监测预览
-            └─ v0.1.4 · 开发中 · 预览版 · Linux 桌面预览包
+            └─ v0.1.4 · 已发布 · 预览版 · Linux 桌面预览包
                └─ v0.2.0 · 计划中 · 水泵支持
 ```
 
@@ -105,14 +105,20 @@
 
 在 Linux 上交付可安装的桌面应用（.deb 与 AppImage），并把安装路线、依赖与自检写进安装页。
 
-- 状态：开发中
-- 开发分支：`codex/v0.1.4`
+- 状态：已发布
+- [发布与下载](https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.4)
+- 源码：`febc02adf925ecae11c25910132906a594b4fbb6`
+- 发布时间：2026-09-15T05:30:13Z
 
 - Linux 桌面包：发布 .deb 与 AppImage，与 CLI 归档共用一份校验和清单
 - 桌面产物校验：包名、版本、架构、依赖、usr/bin 下的 64 位 x86_64 ELF、桌面入口及其启动的可执行文件、图标
 - 被拒绝的打包不再留下半成品目录——此前它会让修好后的重试也拒绝启动
 - 发布工作流在 ubuntu-latest 上安装 .deb 并运行装好的应用自检（--selftest --mock，含 --dry-run），并单独运行 AppImage
 - 安装页给出 CLI、.deb、AppImage 三条路线，并写明哪一步在 CI 上验证过、哪一步没有
+
+验证记录：
+
+- [GitHub 已发布版本与构建来源](https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.4)
 
 ## v0.2.0 · 水泵支持
 

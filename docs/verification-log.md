@@ -1465,3 +1465,190 @@ One process note, recorded because it cost a pass: a verification pass was inval
 files while it ran — the harness read the new script with the old test in the same step and
 reported a failure that belonged to neither revision. Verification and editing are now sequenced,
 and the pass's log names the revision it read.
+
+---
+
+## 2026-09-15 — round 9: the Linux desktop package, and what a .deb has to prove
+
+**Revision: `febc02a`** — the pass below ran at that commit, which is the commit
+the tag points at. The commits carrying this entry and the round's documentation follow it.
+
+### 1. Half of the Linux preview was missing, and it was the half a user double-clicks
+
+Round 8 shipped the Linux CLI. The goal's Linux preview asked for a CLI **and a first
+desktop package**, and "installable without compiling" is a claim about the app, not
+about a tarball. This round adds the package and, more importantly, makes the release
+pipeline prove things about it that a user cannot check before installing.
+
+`scripts/release/package-linux.sh` now takes `--desktop-deb` and `--desktop-appimage`:
+
+* **Both or neither.** Publishing a `.deb` without the AppImage (or the reverse) would
+  leave the install page describing an artefact nobody can download, so the packager
+  refuses the pair when only one is given.
+* **Published under this project's names** — `OpenHardwareOS-<version>-linux-x86_64.deb`
+  and `.AppImage`, not the bundler's `OpenHardwareOS_0.1.4_amd64.*`. The page has to
+  name a file whose name does not move when the bundler changes its mind, and both
+  platforms then follow the same pattern as the CLI archive.
+* **One checksum list for the whole platform** (`SHA256SUMS-linux-x86_64`), because a
+  user who downloads two Linux files wants one command that answers "is this intact".
+
+### 2. Reading the package instead of trusting it
+
+`scripts/release/inspect-deb.py` reads a `.deb` — an `ar` container holding
+`control.tar.*` and `data.tar.*` — and reports what is inside: the declared package
+name, version, architecture and dependencies, every file, the desktop entry and the
+program it launches, the icons, and the ELF class and machine of anything under
+`usr/bin/`. The packager then requires, before publishing:
+
+* the package declares **this release's version**, the name `open-hardware-os` and `amd64`;
+* it installs a **64-bit x86_64 ELF** under `usr/bin/` — the file a user will run;
+* it installs a `.desktop` entry whose `Exec` launches *that* binary (field codes and
+  quoting allowed, the program compared);
+* it installs icons, and declares dependencies at all;
+* the AppImage is a 64-bit x86_64 ELF **and executable**, or it cannot be run after
+  download.
+
+Reading it in Python rather than with `dpkg-deb` is deliberate: the fixture suites that
+guard this path also run on macOS, so the *same* code that validates a real artefact
+validates synthetic ones — including deliberately wrong ones. `make-fixture-deb.py`
+builds packages that declare the wrong version, the wrong architecture, a shell script
+where the binary should be, no desktop entry, an `Exec` that names something else and a
+different package name. `package-linux.test.sh` is **10 cases / 54 checks** (was 6 / 28);
+removing the version and `Exec` checks fails four of them.
+
+### 3. The defect this found: a refused run made the fix impossible
+
+Probing the new path by hand produced a failure that had nothing to do with the check
+being tested: a refused packaging run left a half-written `artifacts/release` behind,
+and since the packager refuses to write into an existing output — the rule that stops
+one release overwriting another — the *corrected* rerun refused to start. A fixable
+mistake became a permanent one, and every earlier failed Linux job will have left such a
+directory on its runner. The trap now removes what the failed run created, a case proves
+nothing is left behind for each refusal, and another proves a corrected retry delivers.
+
+### 4. The one place where guessing was wrong
+
+The first Linux job to reach the new step built both bundles successfully and then the
+packager refused: the Debian package is named **`open-hardware-os`** (the bundler
+kebab-cases `productName`; dpkg requires lower case), not `openhardwareos` as I had
+written. Three things came out of that single line of output:
+
+* the expected name is now `open-hardware-os`, enforced with the reason recorded — the
+  install page tells users what to remove, and a bundler upgrade that renamed the package
+  would silently break that sentence;
+* `mainBinaryName: "openhardwareos"` in `tauri.conf.json` makes the installed executable
+  explicit rather than derived, so `/usr/bin/openhardwareos` on the install page is a
+  fact instead of a hope;
+* the packager now prints everything the package declares **before** judging it, so one
+  release cycle answers every question. The previous cycle could not: it refused with one
+  sentence and no facts, which is why the fix needed a second look rather than a second
+  run.
+
+### 5. Installing it on a real distribution, in the release run
+
+The Linux release job now builds the bundles, and then, on `ubuntu-latest`:
+
+* installs the packaged `.deb` with `apt-get install ./<file>` — the documented route, so
+  dependencies are resolved the way a user's machine resolves them;
+* derives the installed path from the package itself and runs
+  `/usr/bin/openhardwareos --selftest --mock`, and once with `--dry-run`;
+* runs the packaged AppImage the same way (`APPIMAGE_EXTRACT_AND_RUN=1`, so no FUSE is
+  needed);
+* prints the runner's distribution and kernel, so the claim "verified on X" names the X
+  that this run actually was.
+
+The run that did it: [34931865680](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34931865680),
+which reports `PRETTY_NAME="Ubuntu 24.04.5 LTS"` and kernel `6.17.0-1022-azure`, prints
+`installed as /usr/bin/openhardwareos`, and ends both steps with the application having
+started, read simulated hardware and exited. The same run's log prints what the package
+declares, so the release page's claims are read from the build rather than remembered:
+
+```text
+desktop package : open-hardware-os 0.1.4 (amd64)
+desktop binary  : usr/bin/openhardwareos (64-bit x86_64)
+desktop entry   : usr/share/applications/OpenHardwareOS.desktop -> openhardwareos
+desktop depends : libayatana-appindicator3-1, libwebkit2gtk-4.1-0, libgtk-3-0
+```
+
+That is the evidence for "installable without compiling": the artefact a user downloads,
+installed and started on a distribution the log names. What it is not: a desktop session.
+`--selftest` returns before the Tauri builder is constructed, so the window, the tray and
+the menu entry remain unverified — which the install page says in as many words.
+
+### 6. Documentation that runs
+
+`docs/linux-install.md` now carries three routes (CLI, `.deb`, AppImage) and states what
+the release run verifies and what it does not. Two changes there came from the fixture
+suite rather than from review:
+
+* the checksum list covers **every** Linux asset of the version while each route downloads
+  one file, so the documented commands now verify the file being installed (exactly one
+  matching entry, then compare that digest) instead of failing on the three files the user
+  did not need. The suite runs a fixture whose list names four files and proves the
+  commands pass;
+* the page had a `PATH` hint still pointing at `v0.1.3` — the "install entry points at a
+  downloadable version" requirement, caught by extracting and running every block. The
+  suite now also fails if the page ever names two versions at once.
+
+`linux-install-doc.test.sh`: **6 cases / 28 checks** (was 4 / 12), with `sha256sum`,
+`sudo`, `apt-get` and `dpkg` shims so the Debian route runs on a machine that is not
+Debian.
+
+### The verification pass (all commands re-run at `RELEASE_COMMIT`, nothing carried over)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `rustup run 1.98.1 cargo fmt --all -- --check` | exit 0 |
+| 2 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0 |
+| 3 | `cargo test --workspace --locked` | **522 passed, 0 failed**, 46 test-result lines |
+| 4 | `cargo deny check` | advisories ok, bans ok, licenses ok, sources ok |
+| 5 | `scripts/versions.py check --remote --generated` | OK; 6 catalogue entries |
+| 6 | `scripts/tests/test_versions.py` | 30 tests, OK |
+| 7 | `npm run typecheck` / `npm test` / `npm run build` | clean / 43 tests / clean |
+| 8 | `scripts/tests/make-acceptance-package.test.sh` | 4 cases, 0 failures |
+| 9 | `scripts/release/test-packaging.ps1` | 6 cases, 0 failures |
+| 10 | `scripts/tests/package-linux.test.sh` | **10 cases, 54 checks**, 0 failures |
+| 11 | `scripts/tests/linux-install-doc.test.sh` | **6 cases, 28 checks**, 0 failures |
+| 12 | `docs/windows-validation/.../run-script-tests.ps1` | 18 cases, 151 checks, 0 failures (doubles only) |
+| 13 | cross-target `cargo check` for `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu` | exit 0, plus Linux-target Clippy |
+| 14 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** |
+| 15 | delivered packages still match their manifests | every file |
+
+### What round 9 could **not** verify
+
+* **The desktop window, tray and menu entry on Linux.** `--selftest` exits before the
+  GUI is built; a packaged app that starts headlessly is not a packaged app that draws.
+* **A real Linux machine, and real motherboard sensors.** Everything here is a CI runner
+  with simulated hardware.
+* **Distributions other than Ubuntu 24.04.** No RPM, no Arch, no Flatpak, no Snap.
+* **Fan control on Linux** — unchanged: reading only, by design.
+* **A physical fan or pump on any platform**, and the desktop on Windows: unchanged.
+* **Whether the AppImage runs without `APPIMAGE_EXTRACT_AND_RUN`** (i.e. with FUSE). The
+  release run uses the extract-and-run path, which is what the install page documents.
+
+### Publication
+
+v0.1.4 = `febc02a`, tagged and published as a preview with **12 assets**: the Windows set
+from v0.1.3 plus the Linux CLI archive, the Debian package and the AppImage. Every fact
+above was re-checked *from the download* before the tag existed — both checksum lists
+verify as a whole, `install.ps1` is byte-identical to the tagged blob, the published `.deb`
+still declares `open-hardware-os 0.1.4 amd64` with `usr/bin/openhardwareos` (64-bit x86_64)
+behind `usr/share/applications/OpenHardwareOS.desktop`, the AppImage is an executable
+64-bit x86_64 ELF, and both metadata files name the tagged commit. The public Windows
+install check ran against the tag
+([run 34933031037](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34933031037)),
+`main` was fast-forwarded to the release tip so the version-tree page names v0.1.4, and the
+acceptance source package was rebuilt from the release commit.
+
+### Deliberately **not** done in round 9
+
+No hardware was written to; no autostart or global environment value was changed; nothing
+was installed on the host; no licence was approved on the user's behalf (ADR 0002 and ADR
+0004 remain **Proposed**); no new version was published without the artefacts having been
+verified from the download first.
+
+One process note worth recording: staging this release with `git add -A` swept the user's
+own untracked `Prospector/` and `k10max-prospector/` working directories — keyboard
+firmware work that has nothing to do with this repository's release. They were removed
+from the index before the commit and left exactly as found. `git add -A` is not a safe
+way to stage a release in a working tree that contains somebody else's work.

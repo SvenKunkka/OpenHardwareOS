@@ -6,7 +6,7 @@
 ## v0.1.4 · 2026-09-15 · Linux 桌面预览包
 
 在 Linux 上补上另一半交付：可安装的**桌面应用**（`.deb` 与 AppImage），与现有的 Linux CLI 归档
-共用同一份校验和清单。**尚未发布**：条目先写在此处，公开发布后由版本工具登记版本树。
+共用同一份校验和清单。**已发布**：`v0.1.4`（提交 `febc02a`，预览版），12 个发布资产。
 
 - **Linux 桌面包。** `scripts/release/package-linux.sh` 新增 `--desktop-deb` 与
   `--desktop-appimage`（两者必须成对，只发布一个会让安装页描述一个下载不到的产物），
@@ -22,7 +22,8 @@
 - **CI 上装一遍再跑一遍。** 发布流程在 `ubuntu-latest` 上构建 `.deb` 与 AppImage，用
   `apt-get install ./<包>` 按安装页的方式装上（依赖由 apt 解析），然后运行**装好的**
   `/usr/bin/openhardwareos --selftest --mock`（含一次 `--dry-run`），并单独运行 AppImage。
-  这是"无需编译即可安装"的证据：发行版与内核版本取自该次运行自己的输出。
+  这是"无需编译即可安装"的证据：发行版与内核版本取自该次运行自己的输出——本次为
+  **Ubuntu 24.04.5 LTS，内核 6.17.0-1022-azure**。
 - **安装页三条路线。** `docs/linux-install.md` 现在给出 CLI、`.deb` 与 AppImage，并写明
   哪一步在 CI 上验证过、哪一步没有（界面显示、真实主板通道、RPM 系发行版仍无证据）。
 - 校验和清单覆盖整版 Linux 产物，而每条安装路线只下载其中一个，因此文档命令改为核对

@@ -163,11 +163,13 @@ Linux 上每个读数的来源都写在 `doctor` 输出里，能读就给出值�
 
 ## 这些命令验证到哪一步
 
-发布流程在 **GitHub Actions 的 `ubuntu-latest`**（Ubuntu 24.04，内核 VERIFIED_KERNEL）上
-把 `.deb` 用 `apt-get install` 装进干净容器般的 runner，再运行装好的
-`/usr/bin/openhardwareos --selftest --mock`（含 `--dry-run` 一次），并单独运行 AppImage。
-同一个 run 里还会打印包声明的依赖、`.deb` 的文件清单与 ELF 架构——**发布日志本身就是证据**，
-见 `docs/verification-log.md`。
+发布流程在 **GitHub Actions 的 `ubuntu-latest`** 上把 `.deb` 用 `apt-get install` 装进 runner，
+再运行装好的 `/usr/bin/openhardwareos --selftest --mock`（含 `--dry-run` 一次），并单独运行
+AppImage。这次运行自己打印出它是什么机器：
+[run 34931865680](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34931865680)
+报告 `PRETTY_NAME="Ubuntu 24.04.5 LTS"`、内核 `6.17.0-1022-azure`，并打印
+`installed as /usr/bin/openhardwareos`；同一个 run 还打印包声明的依赖、装出来的可执行文件与
+桌面入口——**发布日志本身就是证据**，见 `docs/verification-log.md` 第 9 轮。
 
 **没有验证的：**真实机器上的界面显示（托盘、窗口、菜单项）、真实主板的 hwmon 通道、
 风扇控制（本版本只读）、以及 Debian 之外的发行版（RPM 系没有产物）。CI 证明的是

@@ -413,6 +413,14 @@ uses per-machine installation. Code signing, an elevated helper and a Windows
 service remain separate work. Normal runtime exit requests restoration of firmware
 control; the result still requires target-device validation.
 
+**Linux now has a desktop package.** Since v0.1.4 a release publishes
+`OpenHardwareOS-<version>-linux-x86_64.deb` and `.AppImage` beside the CLI archive, and the
+release run installs the `.deb` with `apt-get` on the runner and starts the *installed*
+application with `--selftest --mock` before anything is tagged
+([run 34931865680](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34931865680),
+Ubuntu 24.04.5, kernel 6.17.0-1022-azure). The window, tray and menu entry are still
+unverified: the headless self-test returns before the GUI exists.
+
 **CI has run on Windows, Linux and macOS.** The
 [v0.1.1 source CI](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34825301892)
 passed all eight jobs: formatting/Clippy, three Rust platforms, frontend,
