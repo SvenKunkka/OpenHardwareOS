@@ -219,6 +219,14 @@ PY_READ
   deb_icon="$(read_field 'desktop_fields.Icon')"
   deb_icons="$(read_field 'icons')"
 
+  # Print the facts before judging them: a refusal in the release log then shows
+  # *what* the package declared, not only which sentence rejected it.
+  echo "desktop package : $declared_package $declared_version ($declared_arch)"
+  echo "desktop binary  : $deb_binary ($deb_class $deb_machine)"
+  echo "desktop entry   : $deb_desktop -> $deb_exec"
+  echo "desktop icons   : $deb_icons"
+  echo "desktop depends : $declared_depends"
+
   [ "$declared_version" = "${VERSION#v}" ] \
     || die "the desktop package declares version '$declared_version', expected '${VERSION#v}'"
   # The bundler derives the Debian package name from `productName`
@@ -265,9 +273,8 @@ PY_READ
   [ -x "$DESKTOP_APPIMAGE" ] || die "the AppImage is not executable; it cannot be run after download"
   DESKTOP_APPIMAGE_OUT="$OUT/OpenHardwareOS-$VERSION-$PLATFORM.AppImage"
   cp "$DESKTOP_APPIMAGE" "$DESKTOP_APPIMAGE_OUT"
-  echo "desktop package : $DESKTOP_DEB_OUT ($declared_package $declared_version, $declared_arch)"
-  echo "desktop depends : $declared_depends"
-  echo "desktop appimage: $DESKTOP_APPIMAGE_OUT"
+  echo "published as    : $DESKTOP_DEB_OUT"
+  echo "published as    : $DESKTOP_APPIMAGE_OUT"
 fi
 
 if [ "$RUN_BINARY" = "1" ]; then

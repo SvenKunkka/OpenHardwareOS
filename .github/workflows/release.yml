@@ -206,7 +206,10 @@ jobs:
           echo "runner distribution and kernel:"
           grep -E '^(PRETTY_NAME|VERSION_ID)=' /etc/os-release
           uname -r
-          deb="$(ls artifacts/release/OpenHardwareOS-*-linux-x86_64.deb)"
+          # An absolute path, because apt reads a bare `dir/file.deb` as a package
+          # *name* and answers "Unable to locate package artifacts/release". The
+          # documented route passes an absolute path for the same reason.
+          deb="$(ls "$PWD"/artifacts/release/OpenHardwareOS-*-linux-x86_64.deb)"
           # apt, not dpkg: the package declares its dependencies and apt resolves
           # them, which is what a user following the install page does.
           sudo apt-get install -y "$deb"
@@ -223,7 +226,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          image="$(ls artifacts/release/OpenHardwareOS-*-linux-x86_64.AppImage)"
+          image="$(ls "$PWD"/artifacts/release/OpenHardwareOS-*-linux-x86_64.AppImage)"
           export APPIMAGE_EXTRACT_AND_RUN=1
           export OHM_CONFIG_DIR="$RUNNER_TEMP/ohm-appimage-selftest"
           "$image" --selftest --mock
