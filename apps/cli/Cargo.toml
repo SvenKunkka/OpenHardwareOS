@@ -28,6 +28,10 @@ chrono.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 ohm-adapters.workspace = true
+# The service lifecycle tests read the state file the CLI writes, so they need
+# the same JSON and clock the CLI uses.
+serde_json.workspace = true
+ohm-core.workspace = true
 
 [lints]
 workspace = true

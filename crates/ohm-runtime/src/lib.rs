@@ -34,6 +34,7 @@ pub mod registry;
 pub mod release;
 pub mod runtime;
 pub mod safety;
+pub mod service;
 pub mod snapshot;
 pub mod store;
 
@@ -49,5 +50,6 @@ pub use registry::{
 pub use release::{ControlRelease, ReleasedChannel, ShutdownFailure};
 pub use runtime::{Runtime, group_by_type, online_devices};
 pub use safety::{SafetyDecision, SafetyPolicy};
+pub use service::{ServiceError, ServiceGuard, ServiceState};
 pub use snapshot::{AdapterView, DeviceStatus, DeviceView, RuntimeSnapshot, RuntimeStats};
 pub use store::{ReadingChange, Sample, StateStore, reading_epsilon, value_changed};

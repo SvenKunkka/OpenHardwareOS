@@ -19,7 +19,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
@@ -30,18 +30,18 @@ description = "Open Runtime, Device Layer and Automation Engine for PC hardware"
 
 [workspace.dependencies]
 # --- internal crates -------------------------------------------------------
-ohm-core = { path = "crates/ohm-core", version = "0.1.5" }
-ohm-device-model = { path = "crates/ohm-device-model", version = "0.1.5" }
-ohm-adapter-api = { path = "crates/ohm-adapter-api", version = "0.1.5" }
-ohm-runtime = { path = "crates/ohm-runtime", version = "0.1.5" }
-ohm-automation = { path = "crates/ohm-automation", version = "0.1.5" }
-ohm-protocol = { path = "crates/ohm-protocol", version = "0.1.5" }
-ohm-adapters = { path = "crates/adapters", version = "0.1.5" }
-ohm-adapter-mock = { path = "adapters/mock", version = "0.1.5" }
-ohm-adapter-system = { path = "adapters/system", version = "0.1.5" }
-ohm-adapter-nvidia = { path = "adapters/nvidia", version = "0.1.5" }
-ohm-adapter-lhm = { path = "adapters/libre-hardware-monitor", version = "0.1.5" }
-ohm-adapter-opd = { path = "adapters/open-protocol", version = "0.1.5" }
+ohm-core = { path = "crates/ohm-core", version = "0.1.6" }
+ohm-device-model = { path = "crates/ohm-device-model", version = "0.1.6" }
+ohm-adapter-api = { path = "crates/ohm-adapter-api", version = "0.1.6" }
+ohm-runtime = { path = "crates/ohm-runtime", version = "0.1.6" }
+ohm-automation = { path = "crates/ohm-automation", version = "0.1.6" }
+ohm-protocol = { path = "crates/ohm-protocol", version = "0.1.6" }
+ohm-adapters = { path = "crates/adapters", version = "0.1.6" }
+ohm-adapter-mock = { path = "adapters/mock", version = "0.1.6" }
+ohm-adapter-system = { path = "adapters/system", version = "0.1.6" }
+ohm-adapter-nvidia = { path = "adapters/nvidia", version = "0.1.6" }
+ohm-adapter-lhm = { path = "adapters/libre-hardware-monitor", version = "0.1.6" }
+ohm-adapter-opd = { path = "adapters/open-protocol", version = "0.1.6" }
 
 # --- third party -----------------------------------------------------------
 serde = { version = "1.0", features = ["derive"] }

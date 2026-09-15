@@ -23,7 +23,9 @@ use ohm_automation::{AutomationEngine, Rule, RuleStore, merge_suggestions};
 use ohm_core::ConfigPaths;
 use ohm_core::logging::LogLevel;
 use ohm_device_model::{DeviceState, Value, caps};
-use ohm_runtime::{ControlRelease, DeviceView, Runtime, SettingsStore};
+use ohm_runtime::{
+    ControlRelease, DeviceView, Runtime, ServiceError, ServiceGuard, ServiceState, SettingsStore,
+};
 
 // ---------------------------------------------------------------------------
 // Rendering helpers
@@ -287,6 +289,34 @@ enum Command {
     Paths,
     /// Show an Open Device Protocol exchange with the simulated OpenFan.
     Protocol,
+    /// Run the automation rules as a background service, or ask about one.
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ServiceAction {
+    /// Run the rules until interrupted (Ctrl-C, or SIGTERM from a service manager).
+    ///
+    /// This is the process that keeps cooling decisions running when no window is
+    /// open. It holds a state file while it runs, so a second service — or the
+    /// desktop application — can see that something else already owns the channels;
+    /// on exit it releases control exactly as the desktop does, and says what the
+    /// release achieved.
+    Run {
+        #[arg(long)]
+        mock: bool,
+        /// Milliseconds between heartbeats to the state file.
+        #[arg(long, default_value_t = 1000)]
+        heartbeat_ms: u64,
+        /// Stop after this many automation cycles (0 = until interrupted).
+        #[arg(long, default_value_t = 0)]
+        max_ticks: u64,
+    },
+    /// Is a service running here? Exits 1 when it is not.
+    Status,
 }
 
 #[derive(Debug, Subcommand)]
@@ -404,6 +434,14 @@ async fn main() -> Result<()> {
         Command::Handovers { retry } => handovers(&cli, *retry).await,
         Command::Paths => paths(&cli),
         Command::Protocol => protocol().await,
+        Command::Service { action } => match action {
+            ServiceAction::Run {
+                mock,
+                heartbeat_ms,
+                max_ticks,
+            } => service_run(&cli, *mock, *heartbeat_ms, *max_ticks).await,
+            ServiceAction::Status => service_status(&cli),
+        },
     }
 }
 
@@ -585,6 +623,219 @@ async fn doctor(cli: &Cli, use_mock: bool, json: bool) -> Result<()> {
 
     session.stop().await?;
     Ok(())
+}
+
+/// Wait for the signal a service is stopped with.
+///
+/// `Ctrl-C` everywhere, plus `SIGTERM` on Unix, because that is what a service
+/// manager sends. Both mean the same thing here: stop taking new decisions, make
+/// the machine safe, and say what happened.
+async fn wait_for_stop_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut terminate = match signal(SignalKind::terminate()) {
+            Ok(stream) => stream,
+            Err(error) => {
+                tracing::warn!(%error, "no SIGTERM handler; waiting for Ctrl-C only");
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+/// The background service: the runtime and the rule loop, with no window.
+async fn service_run(cli: &Cli, use_mock: bool, heartbeat_ms: u64, max_ticks: u64) -> Result<()> {
+    let session = Session::open(cli, use_mock, None).await?;
+    let settings = session.runtime.settings();
+
+    // The stop signal is handled *before* the state file is claimed, not after.
+    // A service manager may send SIGTERM the moment the process looks alive, and a
+    // service that has claimed the channels but cannot yet hear the signal is a
+    // process that dies by default termination — leaving the state file behind and
+    // the reason unrecorded. Being ready to stop comes first.
+    let stop = std::sync::Arc::new(tokio::sync::Notify::new());
+    let signal_waiter = {
+        let stop = std::sync::Arc::clone(&stop);
+        tokio::spawn(async move {
+            wait_for_stop_signal().await;
+            // `notify_one` leaves a permit when nobody is waiting yet, so a signal
+            // that arrives between heartbeats is not lost.
+            stop.notify_one();
+        })
+    };
+
+    // Claim the channels before touching them: a second service must be refused
+    // rather than allowed to alternate values onto the same fan.
+    let state_path = session.paths.service_state_file();
+    let state = ServiceState {
+        pid: std::process::id(),
+        version: ohm_core::VERSION.to_string(),
+        started_at_ms: ohm_core::now_ms(),
+        heartbeat_at_ms: ohm_core::now_ms(),
+        heartbeat_interval_ms: heartbeat_ms.max(50),
+        ticks: 0,
+        rules: 0,
+        simulated: use_mock,
+        dry_run: settings.dry_run,
+    };
+    let mut guard = match ServiceGuard::acquire(&state_path, state) {
+        Ok(guard) => guard,
+        Err(ServiceError::AlreadyRunning { state, age_ms }) => {
+            signal_waiter.abort();
+            eprintln!(
+                "error: a service is already running here (pid {}, started {}, last heartbeat {} ms ago).",
+                state.pid,
+                ohm_runtime::release::format_ms(state.started_at_ms),
+                age_ms
+            );
+            eprintln!("       Two services would fight over the same channels. Stop it first,");
+            eprintln!(
+                "       or delete {} if it is not coming back.",
+                state_path.display()
+            );
+            std::process::exit(3);
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    session.runtime.start().await?;
+    session.engine.start().await?;
+
+    let rules = session.engine.stats();
+    guard.heartbeat(rules.ticks, rules.rules)?;
+
+    print_header("OpenHardwareOS service");
+    println!("state file: {}", state_path.display());
+    println!("pid:        {}", std::process::id());
+    println!("version:    {}", ohm_core::VERSION);
+    println!(
+        "providers:  {}",
+        if use_mock {
+            "simulated hardware, writes dry-run"
+        } else {
+            "this machine"
+        }
+    );
+    println!(
+        "rules:      {} loaded, {} enabled",
+        rules.rules, rules.enabled_rules
+    );
+    println!(
+        "automation: {}",
+        if settings.automation_enabled {
+            "enabled"
+        } else {
+            "disabled in settings — this service will not write to hardware"
+        }
+    );
+    println!();
+    println!("Running. Stop with Ctrl-C, or SIGTERM from a service manager.");
+    println!("`ohm-cli service status` reports from the state file while this runs.");
+
+    // Written to a file or a pipe, stdout is block-buffered: without this the
+    // banner can still be in memory when the process is asked to stop.
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+
+    let mut heartbeat = tokio::time::interval(Duration::from_millis(heartbeat_ms.max(50)));
+    let reason = loop {
+        tokio::select! {
+            _ = stop.notified() => break "stop requested",
+            _ = heartbeat.tick() => {
+                let stats = session.engine.stats();
+                guard.heartbeat(stats.ticks, stats.rules)?;
+                if max_ticks > 0 && stats.ticks >= max_ticks {
+                    break "reached --max-ticks";
+                }
+            }
+        }
+    };
+    signal_waiter.abort();
+
+    let stats = session.engine.stats();
+    println!();
+    println!("{reason} after {} automation cycle(s)", stats.ticks);
+    // Stopping is where control goes back: `Session::stop` stops the rule loop,
+    // shuts the runtime down and reports what the release actually achieved —
+    // confirmed, unconfirmed, refused, failed, simulated — rather than claiming
+    // success for a write nobody saw land.
+    session.stop().await?;
+    // `guard` is dropped here, which removes the state file: a clean stop leaves
+    // nothing that could make the next start think a service is running.
+    drop(guard);
+    println!("state file removed; nothing is driving the channels now");
+    Ok(())
+}
+
+/// Report what the state file says, without touching the runtime.
+fn service_status(cli: &Cli) -> Result<()> {
+    let paths = match &cli.config_dir {
+        Some(root) => ConfigPaths::from_root(root),
+        None => ConfigPaths::discover()?,
+    };
+    let path = paths.service_state_file();
+    print_header("OpenHardwareOS service");
+    println!("state file: {}", path.display());
+    match ohm_runtime::service::stale_or_running(&path) {
+        None => {
+            println!("running:    no");
+            println!(
+                "            No service has written a state file here. Start one with `ohm-cli service run`."
+            );
+            std::process::exit(1);
+        }
+        Some((state, true)) => {
+            let age = state.age_ms(ohm_core::now_ms());
+            println!("running:    yes");
+            println!("pid:        {}", state.pid);
+            println!("version:    {}", state.version);
+            println!(
+                "started:    {} ({} s ago)",
+                ohm_runtime::release::format_ms(state.started_at_ms),
+                (ohm_core::now_ms() - state.started_at_ms) / 1000
+            );
+            println!(
+                "heartbeat:  {age} ms ago (every {} ms)",
+                state.heartbeat_interval_ms
+            );
+            println!("cycles:     {}", state.ticks);
+            println!("rules:      {}", state.rules);
+            println!(
+                "providers:  {}",
+                if state.simulated {
+                    "simulated hardware"
+                } else {
+                    "this machine"
+                }
+            );
+            if state.dry_run {
+                println!("writes:     dry-run — nothing reaches hardware");
+            }
+            Ok(())
+        }
+        Some((state, false)) => {
+            let age = state.age_ms(ohm_core::now_ms());
+            println!("running:    no");
+            println!(
+                "            A state file from pid {} is here, last heartbeat {} ms ago ({:.1} min).",
+                state.pid,
+                age,
+                age as f64 / 60_000.0
+            );
+            println!("            That process is not keeping it up to date, so it is treated as");
+            println!("            stopped; the next `service run` takes the file over.");
+            std::process::exit(1);
+        }
+    }
 }
 
 async fn status(cli: &Cli, use_mock: bool, json: bool) -> Result<()> {

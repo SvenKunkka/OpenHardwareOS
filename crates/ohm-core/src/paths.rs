@@ -69,6 +69,17 @@ impl ConfigPaths {
         self.root.join("logs")
     }
 
+    /// What a running background service says about itself.
+    ///
+    /// One writer at a time: the file is created atomically by whoever starts the
+    /// service, rewritten on a heartbeat, and removed on a clean stop. Its presence
+    /// with a fresh heartbeat is how a second process — another service, or the
+    /// desktop application — knows that something else is already driving the
+    /// channels. See `ohm_runtime::service`.
+    pub fn service_state_file(&self) -> PathBuf {
+        self.root.join("service.json")
+    }
+
     /// Append-only audit trail of every hardware write.
     pub fn audit_log(&self) -> PathBuf {
         self.root.join("audit.jsonl")
@@ -85,11 +96,12 @@ impl ConfigPaths {
     /// Render the layout for `--print-config-paths` style diagnostics.
     pub fn describe(&self) -> String {
         format!(
-            "root:      {}\nsettings:  {}\nrules:     {}\nlogs:      {}\naudit:     {}",
+            "root:      {}\nsettings:  {}\nrules:     {}\nlogs:      {}\nservice:   {}\naudit:     {}",
             self.root.display(),
             self.settings_file().display(),
             self.rules_dir().display(),
             self.logs_dir().display(),
+            self.service_state_file().display(),
             self.audit_log().display(),
         )
     }

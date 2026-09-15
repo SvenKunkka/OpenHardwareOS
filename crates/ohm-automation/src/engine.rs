@@ -203,6 +203,12 @@ pub struct AutomationStats {
     pub fallbacks: u64,
     pub failures: u64,
     pub last_tick_ms: i64,
+    /// Set when this process deliberately did **not** start its rule loop because
+    /// another one owns the hardware channels (a background service), with the pid
+    /// that holds them. The desktop shows it instead of an engine that silently
+    /// does nothing.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub blocked_by: Option<String>,
     /// Why the unresolved control responsibility could not be written down, when it
     /// could not. Surfaced here so a front-end can show it: losing that file means
     /// losing track of a channel nobody is protecting.
@@ -221,6 +227,8 @@ struct EngineInner {
     running: AtomicBool,
     ticks: AtomicU64,
     last_tick_ms: AtomicI64,
+    /// Why this process is not driving the channels, when another one is.
+    blocked_by: Mutex<Option<String>>,
     /// Unresolved-by-the-user conflicts found when loading rule files.
     conflicts: RwLock<Vec<RuleConflict>>,
     /// Rule files that loaded but had to be adjusted in memory (a `release`
@@ -269,6 +277,7 @@ impl AutomationEngine {
                 running: AtomicBool::new(false),
                 ticks: AtomicU64::new(0),
                 last_tick_ms: AtomicI64::new(0),
+                blocked_by: Mutex::new(None),
                 conflicts: RwLock::new(Vec::new()),
                 compatibility_notes: RwLock::new(Vec::new()),
                 handovers: Mutex::new(crate::handover::HandoverBook::default()),
@@ -396,6 +405,28 @@ impl AutomationEngine {
             return Ok(());
         }
         self.load_rules()?;
+
+        // Hardware channels have one writer. A background service records itself in
+        // the state file precisely so this can be checked before a second process
+        // starts alternating values onto the same fan; a state file that names
+        // *this* process is the service itself starting its own loop.
+        if let Some(owner) = self.channels_owned_elsewhere() {
+            self.inner.running.store(false, Ordering::SeqCst);
+            let message = format!(
+                "another process (pid {}) is running the rules and owns the hardware \
+                 channels; automation is not started here",
+                owner.pid
+            );
+            tracing::error!(pid = owner.pid, "{message}");
+            self.inner
+                .runtime
+                .publish_automation(None, "engine_blocked", message.clone());
+            self.inner
+                .runtime
+                .log("error", format!("automation engine not started: {message}"));
+            self.inner.blocked_by.lock().replace(message);
+            return Ok(());
+        }
 
         if self.inner.runtime.settings().automation_enabled {
             tracing::info!(rules = self.rules().len(), "automation engine started");
@@ -1278,6 +1309,16 @@ impl AutomationEngine {
             None => values.first().copied(),
             Some(aggregate) => aggregate.reduce(&values),
         }
+    }
+
+    /// The state-file owner, when it is a *different* live process.
+    ///
+    /// Two processes writing one fan is the failure this exists to prevent, and the
+    /// state file is the only thing they share.
+    fn channels_owned_elsewhere(&self) -> Option<ohm_runtime::ServiceState> {
+        let paths = self.inner.runtime.paths();
+        let state = ohm_runtime::service::running(&paths.service_state_file())?;
+        (state.pid != std::process::id()).then_some(state)
     }
 
     fn remember(&self, id: &RuleId, state: RuleState) {
@@ -2187,6 +2228,7 @@ impl AutomationEngine {
                 .filter(|o| o.status == RuleStatus::Error)
                 .count() as u64,
             last_tick_ms: self.inner.last_tick_ms.load(Ordering::Relaxed),
+            blocked_by: self.inner.blocked_by.lock().clone(),
             persistence_error: self.persistence_error(),
         }
     }

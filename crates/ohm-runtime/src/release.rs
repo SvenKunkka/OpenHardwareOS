@@ -243,6 +243,13 @@ pub fn is_refusal(code: &str) -> bool {
     )
 }
 
+/// A millisecond timestamp as the local RFC 3339 instant, for messages a person
+/// reads. Kept here rather than in each caller so "handed back at ..." and "a
+/// service is already running (started ...)" cannot drift apart in format.
+pub fn format_ms(ms: i64) -> String {
+    ohm_core::unix_ms_to_rfc3339(ms)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
