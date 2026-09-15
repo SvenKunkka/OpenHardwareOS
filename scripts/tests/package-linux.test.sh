@@ -60,8 +60,8 @@ new_repo() {
   mkdir -p "$repo/scripts/release"
   cp "$SCRIPT" "$repo/scripts/release/package-linux.sh"
   printf 'Apache License 2.0 fixture\n' > "$repo/LICENSE"
-  printf 'notices fixture\n' > "$repo/THIRD_PARTY_NOTICES.txt"
   mkdir -p "$repo/artifacts"
+  printf 'notices fixture\n' > "$repo/artifacts/THIRD_PARTY_NOTICES.txt"
   fake_elf "$repo/artifacts/ohm-cli"
   git -C "$repo" init --quiet
   git -C "$repo" config user.email fixture@example.invalid
@@ -113,7 +113,7 @@ if [ -f "$out/SHA256SUMS" ]; then
   # Verify the way the target platform does.
   side="$ROOT/side-good"
   mkdir -p "$side"
-  cp "$archive" "$out/release-linux-x86_64.json" "$repo/LICENSE" "$repo/THIRD_PARTY_NOTICES.txt" "$out/SHA256SUMS" "$side/"
+  cp "$archive" "$out/release-linux-x86_64.json" "$repo/LICENSE" "$repo/artifacts/THIRD_PARTY_NOTICES.txt" "$out/SHA256SUMS" "$side/"
   if ( cd "$side" && shasum -a 256 -c SHA256SUMS >/dev/null 2>&1 ); then
     ok "shasum -c verifies every entry"
   else
@@ -213,7 +213,7 @@ echo
 echo "--- missing notices block the delivery"
 CASES=$((CASES + 1))
 repo="$(new_repo notices)"
-rm "$repo/THIRD_PARTY_NOTICES.txt"
+rm "$repo/artifacts/THIRD_PARTY_NOTICES.txt"
 if run_packager "$repo" > "$ROOT/notices.log" 2>&1; then
   bad "a package without dependency notices is refused"
 else

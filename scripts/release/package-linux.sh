@@ -88,9 +88,11 @@ cd "$REPO"
 SHA="$(git rev-parse HEAD)"
 printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{40}$' || die "cannot read the release source commit"
 
-for required in LICENSE THIRD_PARTY_NOTICES.txt; do
-  [ -s "$REPO/$required" ] || die "$required is missing; generate the dependency notices first"
-done
+[ -s "$REPO/LICENSE" ] || die "LICENSE is missing"
+# The generator writes the notices here; the Windows packager reads the same path.
+NOTICES="$REPO/artifacts/THIRD_PARTY_NOTICES.txt"
+[ -s "$NOTICES" ] || die "$NOTICES is missing; generate the dependency notices first"
+[ -n "$(head -c 1 "$NOTICES")" ] || die "$NOTICES is empty"
 
 mkdir -p "$OUT"
 STAGE="$OUT/.stage-$$"
@@ -100,7 +102,7 @@ trap cleanup EXIT
 
 cp "$BINARY" "$STAGE/ohm-cli"
 cp "$REPO/LICENSE" "$STAGE/LICENSE"
-cp "$REPO/THIRD_PARTY_NOTICES.txt" "$STAGE/THIRD_PARTY_NOTICES.txt"
+cp "$NOTICES" "$STAGE/THIRD_PARTY_NOTICES.txt"
 chmod 755 "$STAGE/ohm-cli"
 
 {
@@ -133,7 +135,7 @@ fi
 
 # LF only, and every entry must describe a file that exists here.
 {
-  for file in "$ARCHIVE" "$METADATA_PATH" "$REPO/LICENSE" "$REPO/THIRD_PARTY_NOTICES.txt"; do
+  for file in "$ARCHIVE" "$METADATA_PATH" "$REPO/LICENSE" "$NOTICES"; do
     printf '%s  %s\n' "$(hash_file "$file" | cut -d' ' -f1)" "$(basename "$file")"
   done
 } > "$OUT/SHA256SUMS.tmp"
@@ -148,7 +150,7 @@ mkdir -p "$SIDE"
 cp "$ARCHIVE" "$SIDE/"
 cp "$METADATA_PATH" "$SIDE/"
 cp "$REPO/LICENSE" "$SIDE/"
-cp "$REPO/THIRD_PARTY_NOTICES.txt" "$SIDE/"
+cp "$NOTICES" "$SIDE/"
 cp "$OUT/SHA256SUMS" "$SIDE/"
 ( cd "$SIDE" && verify_sums >/dev/null ) \
   || die "the checksum list does not verify against the files it names"
