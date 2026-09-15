@@ -30,6 +30,9 @@ PLATFORM="linux-x86_64"
 # called exactly `release.json` — which the Windows build already publishes — so
 # this one is named for its platform.
 METADATA="release-$PLATFORM.json"
+# The checksum list too: a Release holds one asset per name, and `SHA256SUMS`
+# belongs to the Windows assets. The documented Linux commands fetch this name.
+SUMS="SHA256SUMS-$PLATFORM"
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -43,11 +46,11 @@ hash_file() {
   fi
 }
 
-verify_sums() { # run in a directory holding SHA256SUMS and the files it names
+verify_sums() { # run in a directory holding the list and the files it names
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum -c SHA256SUMS
+    sha256sum -c "$1"
   else
-    shasum -a 256 -c SHA256SUMS
+    shasum -a 256 -c "$1"
   fi
 }
 
@@ -146,11 +149,11 @@ fi
   for file in "$ARCHIVE" "$METADATA_PATH" "$REPO/LICENSE" "$NOTICES"; do
     printf '%s  %s\n' "$(hash_file "$file" | cut -d' ' -f1)" "$(basename "$file")"
   done
-} > "$OUT/SHA256SUMS.tmp"
-if grep -q $'\r' "$OUT/SHA256SUMS.tmp"; then
-  die "SHA256SUMS would contain a carriage return; shasum -c could not read it"
+} > "$OUT/$SUMS.tmp"
+if grep -q $'\r' "$OUT/$SUMS.tmp"; then
+  die "$SUMS would contain a carriage return; the checksum tool could not read it"
 fi
-mv "$OUT/SHA256SUMS.tmp" "$OUT/SHA256SUMS"
+mv "$OUT/$SUMS.tmp" "$OUT/$SUMS"
 
 # Check the list the way the target platform will: line by line, by name.
 SIDE="$OUT/.side-$$"
@@ -159,13 +162,13 @@ cp "$ARCHIVE" "$SIDE/"
 cp "$METADATA_PATH" "$SIDE/"
 cp "$REPO/LICENSE" "$SIDE/"
 cp "$NOTICES" "$SIDE/"
-cp "$OUT/SHA256SUMS" "$SIDE/"
-( cd "$SIDE" && verify_sums >/dev/null ) \
+cp "$OUT/$SUMS" "$SIDE/"
+( cd "$SIDE" && verify_sums "$SUMS" >/dev/null ) \
   || die "the checksum list does not verify against the files it names"
 rm -rf "$SIDE"
 
 echo "source commit : $SHA"
 echo "archive       : $ARCHIVE"
 ls -l "$ARCHIVE" | awk '{ print "archive size  : " $5 " bytes" }'
-echo "SHA256SUMS    :"
-sed 's/^/  /' "$OUT/SHA256SUMS"
+echo "$SUMS:"
+sed 's/^/  /' "$OUT/$SUMS"

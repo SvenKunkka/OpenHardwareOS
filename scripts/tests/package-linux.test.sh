@@ -99,22 +99,22 @@ else
 fi
 archive="$out/ohm-cli-v0.1.3-linux-x86_64.tar.gz"
 [ -f "$archive" ] && ok "the archive exists" || bad "the archive exists"
-[ -f "$out/SHA256SUMS" ] && ok "a checksum list exists" || bad "a checksum list exists"
+[ -f "$out/SHA256SUMS-linux-x86_64" ] && ok "a checksum list exists" || bad "a checksum list exists"
 [ -f "$out/release-linux-x86_64.json" ] && ok "platform metadata exists" || bad "platform metadata exists"
 
-if [ -f "$out/SHA256SUMS" ]; then
-  if grep -q $'\r' "$out/SHA256SUMS"; then
+if [ -f "$out/SHA256SUMS-linux-x86_64" ]; then
+  if grep -q $'\r' "$out/SHA256SUMS-linux-x86_64"; then
     bad "the checksum list uses LF (POSIX shasum -c can read it)"
   else
     ok "the checksum list uses LF (POSIX shasum -c can read it)"
   fi
-  entries=$(grep -c . "$out/SHA256SUMS")
+  entries=$(grep -c . "$out/SHA256SUMS-linux-x86_64")
   check "the list covers four files (found $entries)" "$([ "$entries" = "4" ] && echo 1 || echo 0)"
   # Verify the way the target platform does.
   side="$ROOT/side-good"
   mkdir -p "$side"
-  cp "$archive" "$out/release-linux-x86_64.json" "$repo/LICENSE" "$repo/artifacts/THIRD_PARTY_NOTICES.txt" "$out/SHA256SUMS" "$side/"
-  if ( cd "$side" && shasum -a 256 -c SHA256SUMS >/dev/null 2>&1 ); then
+  cp "$archive" "$out/release-linux-x86_64.json" "$repo/LICENSE" "$repo/artifacts/THIRD_PARTY_NOTICES.txt" "$out/SHA256SUMS-linux-x86_64" "$side/"
+  if ( cd "$side" && shasum -a 256 -c SHA256SUMS-linux-x86_64 >/dev/null 2>&1 ); then
     ok "shasum -c verifies every entry"
   else
     bad "shasum -c verifies every entry"
@@ -256,14 +256,14 @@ else
 fi
 [ -f "$repo/artifacts/release/ohm-cli-v0.1.3-linux-x86_64.tar.gz" ] \
   && ok "the archive exists" || bad "the archive exists"
-if [ -f "$repo/artifacts/release/SHA256SUMS" ]; then
+if [ -f "$repo/artifacts/release/SHA256SUMS-linux-x86_64" ]; then
   side="$ROOT/side-gnu-tar"
   mkdir -p "$side"
   cp "$repo/artifacts/release/ohm-cli-v0.1.3-linux-x86_64.tar.gz" \
      "$repo/artifacts/release/release-linux-x86_64.json" \
      "$repo/LICENSE" "$repo/artifacts/THIRD_PARTY_NOTICES.txt" \
-     "$repo/artifacts/release/SHA256SUMS" "$side/"
-  if ( cd "$side" && shasum -a 256 -c SHA256SUMS >/dev/null 2>&1 ); then
+     "$repo/artifacts/release/SHA256SUMS-linux-x86_64" "$side/"
+  if ( cd "$side" && shasum -a 256 -c SHA256SUMS-linux-x86_64 >/dev/null 2>&1 ); then
     ok "  and its checksums verify"
   else
     bad "  and its checksums verify"

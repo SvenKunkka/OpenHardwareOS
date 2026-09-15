@@ -22,6 +22,19 @@ VERSION="$(grep -m1 -oE '`v[0-9]+\.[0-9]+\.[0-9]+`' "$DOC" | tr -d '`')"
 PLATFORM="linux-x86_64"
 ASSET="ohm-cli-$VERSION-$PLATFORM.tar.gz"
 
+# The checksum list's name, taken from the document's own block, so the fixture
+# and the documented commands cannot drift apart. It must carry the platform
+# suffix: one GitHub Release holds one asset per name, and `SHA256SUMS` is
+# already the Windows list, so a bare name would make the Linux route fetch the
+# wrong file (and fail the "exactly one matching entry" check).
+SUMS_RAW="$(grep -m1 -oE '^ohm_sums="[^"]+"' "$DOC" | sed -e 's/^ohm_sums="//' -e 's/"$//')"
+[ -n "$SUMS_RAW" ] || { echo "error: $DOC must set ohm_sums in its install block" >&2; exit 1; }
+SUMS="${SUMS_RAW//\$ohm_platform/$PLATFORM}"
+case "$SUMS" in
+  SHA256SUMS-*) ;;
+  *) echo "error: $DOC names the Linux checksum list '$SUMS'; it must be platform-suffixed" >&2; exit 1 ;;
+esac
+
 # `mktemp` under a TMPDIR that ends in a slash yields a path with `//` in it, and
 # curl rejects a file:// URL whose path contains that.
 WORK="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/ohm-linux-install-XXXXXX")" && pwd)"
@@ -83,7 +96,7 @@ SH
     printf '%s  %s\n' "$(shasum -a 256 "$dir/$ASSET" | cut -d' ' -f1)" "$ASSET"
     printf '%s  %s\n' "$(shasum -a 256 "$dir/stage/LICENSE" | cut -d' ' -f1)" "LICENSE"
     printf '%s  %s\n' "$(shasum -a 256 "$dir/stage/THIRD_PARTY_NOTICES.txt" | cut -d' ' -f1)" "THIRD_PARTY_NOTICES.txt"
-  } > "$dir/SHA256SUMS"
+  } > "$dir/$SUMS"
   if [ "$tamper" = "yes" ]; then
     printf 'tampered' >> "$dir/$ASSET"
   fi
@@ -104,7 +117,7 @@ run_block() { # block file
 echo "================================================================================"
 echo " OpenHardwareOS — documented Linux install route (FIXTURES ONLY)"
 echo "================================================================================"
-echo " document : docs/linux-install.md (version $VERSION)"
+echo " document : docs/linux-install.md (version $VERSION, list $SUMS)"
 echo " work     : $WORK"
 echo
 echo " The release is a local fixture. This proves the documented commands work and"
@@ -150,8 +163,8 @@ echo "--- a checksum list with two matching entries is refused"
 CASES=$((CASES + 1))
 fixture="$WORK/release-duplicate"
 build_fixture "$fixture"
-first="$(grep "$ASSET" "$fixture/SHA256SUMS")"
-printf '%s\n' "$first" >> "$fixture/SHA256SUMS"
+first="$(grep "$ASSET" "$fixture/$SUMS")"
+printf '%s\n' "$first" >> "$fixture/$SUMS"
 scoped_block "$fixture" "$WORK/install-duplicate" "$WORK/duplicate.sh"
 if run_block "$WORK/duplicate.sh"; then
   bad "the block refuses a duplicated entry"

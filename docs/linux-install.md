@@ -12,6 +12,9 @@ set -euo pipefail
 ohm_version=v0.1.3
 ohm_platform=linux-x86_64
 ohm_asset="ohm-cli-$ohm_version-$ohm_platform.tar.gz"
+# Linux 的校验和清单带平台后缀：同一个 Release 里 Windows 资产已经占用了
+# 名字 `SHA256SUMS`（一个 Release 里同名资产只能有一个）。
+ohm_sums="SHA256SUMS-$ohm_platform"
 ohm_base="https://github.com/SvenKunkka/OpenHardwareOS/releases/download/$ohm_version"
 ohm_dir="$HOME/.local/share/OpenHardwareOS/cli-$ohm_version"
 test ! -e "$ohm_dir" || { echo "已存在，未改动：$ohm_dir" >&2; exit 1; }
@@ -20,19 +23,19 @@ trap 'rm -rf "$ohm_tmp"' EXIT
 
 # 用资产的真实文件名下载：`sha256sum -c` 是按文件名核对的，改名会让它找不到文件。
 curl -fsSL -o "$ohm_tmp/$ohm_asset" "$ohm_base/$ohm_asset"
-curl -fsSL -o "$ohm_tmp/SHA256SUMS" "$ohm_base/SHA256SUMS"
+curl -fsSL -o "$ohm_tmp/$ohm_sums" "$ohm_base/$ohm_sums"
 # 恰好一条匹配记录：多一条、少一条都停下。
 ohm_pattern="^[0-9a-f]{64}  $ohm_asset\$"
-ohm_matches="$(grep -cE "$ohm_pattern" "$ohm_tmp/SHA256SUMS" || true)"
-test "$ohm_matches" = "1" || { echo "SHA256SUMS 中应有且仅有一条匹配记录，实际 $ohm_matches 条" >&2; exit 1; }
-(cd "$ohm_tmp" && grep -E "$ohm_pattern" SHA256SUMS | sha256sum -c -)
+ohm_matches="$(grep -cE "$ohm_pattern" "$ohm_tmp/$ohm_sums" || true)"
+test "$ohm_matches" = "1" || { echo "$ohm_sums 中应有且仅有一条匹配记录，实际 $ohm_matches 条" >&2; exit 1; }
+(cd "$ohm_tmp" && grep -E "$ohm_pattern" "$ohm_sums" | sha256sum -c -)
 mkdir -p "$ohm_dir"
 tar -xzf "$ohm_tmp/$ohm_asset" -C "$ohm_dir"
 "$ohm_dir/ohm-cli" --version
 "$ohm_dir/ohm-cli" doctor
 ```
 
-`SHA256SUMS` 先校验再解压；校验失败 `set -e` 会直接中止。CLI 装在当前用户目录下，
+校验和清单先核对再解压；校验失败 `set -e` 会直接中止。CLI 装在当前用户目录下，
 不需要 root，也不修改 `PATH`。目标目录已存在时会停止并保留原有文件。
 `doctor` 打印这台机器上每个来源的可用性与不可用的原因。
 
