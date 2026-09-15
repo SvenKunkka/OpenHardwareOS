@@ -128,7 +128,12 @@ jobs:
             libxdo-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
-            librsvg2-dev
+            librsvg2-dev \
+            zstd
+          # The AppImage tooling mounts itself through FUSE; the package is named
+          # differently on 22.04 and 24.04, and neither is required to *build*
+          # (APPIMAGE_EXTRACT_AND_RUN covers that), so a miss is not fatal.
+          sudo apt-get install -y libfuse2t64 || sudo apt-get install -y libfuse2 || true
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.98.1
@@ -169,10 +174,59 @@ jobs:
         run: ./scripts/tests/linux-install-doc.test.sh
       - name: Build CLI
         run: cargo build --locked --release -p ohm-cli
+      # The GUI stack is built here, not only compiled for tests: a desktop package
+      # that has never been assembled is a promise, not a deliverable.
+      - name: Build desktop bundles (Debian package and AppImage)
+        working-directory: apps/desktop
+        env:
+          # appimagetool is itself an AppImage; without FUSE it must extract first.
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+        run: npx tauri build --ci --bundles deb,appimage -- --locked
       - name: Generate dependency notices
         run: python scripts/release/generate-notices.py --output artifacts/THIRD_PARTY_NOTICES.txt
       - name: Package verified build outputs
-        run: ./scripts/release/package-linux.sh --version "$RELEASE_VERSION" --binary target/release/ohm-cli --run-binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb="$(ls target/release/bundle/deb/*.deb)"
+          image="$(ls target/release/bundle/appimage/*.AppImage)"
+          echo "bundler produced: $deb"
+          echo "bundler produced: $image"
+          ./scripts/release/package-linux.sh --version "$RELEASE_VERSION" \
+            --binary target/release/ohm-cli \
+            --desktop-deb "$deb" --desktop-appimage "$image" --run-binary
+      # The evidence that matters for "installable without compiling": install the
+      # package the way the install page says to, on a distribution and kernel this
+      # run reports, and run the installed binary with simulated hardware.
+      - name: Install the packaged Debian package and run the installed application
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "runner distribution and kernel:"
+          grep -E '^(PRETTY_NAME|VERSION_ID)=' /etc/os-release
+          uname -r
+          deb="$(ls artifacts/release/OpenHardwareOS-*-linux-x86_64.deb)"
+          # apt, not dpkg: the package declares its dependencies and apt resolves
+          # them, which is what a user following the install page does.
+          sudo apt-get install -y "$deb"
+          installed="$(python3 scripts/release/inspect-deb.py "$deb" \
+            | python3 -c 'import json,sys;print(json.load(sys.stdin)["binary"])')"
+          echo "installed as /$installed"
+          ls -l "/$installed"
+          export OHM_CONFIG_DIR="$RUNNER_TEMP/ohm-deb-selftest"
+          "/$installed" --selftest --mock
+          export OHM_CONFIG_DIR="$RUNNER_TEMP/ohm-deb-selftest-dry"
+          "/$installed" --selftest --mock --dry-run
+          echo "the installed desktop application started, read simulated hardware and exited"
+      - name: Run the packaged AppImage
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$(ls artifacts/release/OpenHardwareOS-*-linux-x86_64.AppImage)"
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          export OHM_CONFIG_DIR="$RUNNER_TEMP/ohm-appimage-selftest"
+          "$image" --selftest --mock
+          echo "the packaged AppImage started, read simulated hardware and exited"
       - name: Upload release assets for review
         uses: actions/upload-artifact@v4
         with:

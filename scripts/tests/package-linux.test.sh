@@ -15,6 +15,9 @@ set -uo pipefail
 
 SCRIPT="$(cd "$(dirname "$0")/../release" && pwd)/package-linux.sh"
 [ -f "$SCRIPT" ] || { echo "error: cannot find $SCRIPT" >&2; exit 1; }
+ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+MAKE_DEB="$ROOT_DIR/scripts/tests/make-fixture-deb.py"
+[ -f "$MAKE_DEB" ] || { echo "error: cannot find $MAKE_DEB" >&2; exit 1; }
 
 ROOT="$(mktemp -d "${TMPDIR:-/tmp}/ohm-linux-package-XXXXXX")"
 KEEP="${KEEP_FIXTURES:-0}"
@@ -53,12 +56,28 @@ os.chmod(path, 0o755)
 PY
 }
 
+# A synthetic Debian package. Real structure, chosen contents: the packager's
+# checks are about what the package *declares*, so a fixture has to be able to
+# declare the wrong thing on purpose.
+fake_deb() { # path, extra make-fixture-deb.py args…
+  local path="$1"; shift
+  python3 "$MAKE_DEB" "$path" --version 0.1.3 --binary-elf "$@" >/dev/null
+}
+
+fake_appimage() { # path
+  fake_elf "$1"
+}
+
 # A throwaway repository with the files the packager insists on.
 new_repo() {
   local repo="$ROOT/repo-$1"
   rm -rf "$repo"
-  mkdir -p "$repo/scripts/release"
+  mkdir -p "$repo/scripts/release" "$repo/scripts/tests"
   cp "$SCRIPT" "$repo/scripts/release/package-linux.sh"
+  # The packager reads a .deb with this tool; the fixture repository is the only
+  # checkout the packager sees, so it has to be there too.
+  cp "$(dirname "$SCRIPT")/inspect-deb.py" "$repo/scripts/release/inspect-deb.py"
+  cp "$ROOT_DIR/scripts/tests/make-fixture-deb.py" "$repo/scripts/tests/make-fixture-deb.py"
   printf 'Apache License 2.0 fixture\n' > "$repo/LICENSE"
   mkdir -p "$repo/artifacts"
   printf 'notices fixture\n' > "$repo/artifacts/THIRD_PARTY_NOTICES.txt"
@@ -278,6 +297,113 @@ if [ -f "$repo/artifacts/release/SHA256SUMS-linux-x86_64" ]; then
     bad "  and its checksums verify"
   fi
 fi
+
+# ---------------------------------------------------------------- case 7
+echo
+echo "--- the desktop bundles are published under this project's names, in one list"
+CASES=$((CASES + 1))
+repo="$(new_repo desktop)"
+fake_deb "$ROOT/desktop-good.deb"
+fake_appimage "$ROOT/desktop-good.AppImage"
+if run_packager "$repo" --desktop-deb "$ROOT/desktop-good.deb" \
+     --desktop-appimage "$ROOT/desktop-good.AppImage" > "$ROOT/desktop.log" 2>&1; then
+  ok "the packager exits 0"
+else
+  bad "the packager exits 0 ($(tail -1 "$ROOT/desktop.log"))"
+fi
+out="$repo/artifacts/release"
+[ -f "$out/OpenHardwareOS-v0.1.3-linux-x86_64.deb" ] \
+  && ok "the .deb is published under this project's name" \
+  || bad "the .deb is published under this project's name"
+[ -f "$out/OpenHardwareOS-v0.1.3-linux-x86_64.AppImage" ] \
+  && ok "the AppImage too" || bad "the AppImage too"
+if [ -f "$out/SHA256SUMS-linux-x86_64" ]; then
+  entries=$(grep -c . "$out/SHA256SUMS-linux-x86_64")
+  check "one list covers all four Linux artefacts (found $entries)" \
+    "$([ "$entries" = "4" ] && echo 1 || echo 0)"
+  side="$ROOT/side-desktop"
+  mkdir -p "$side"
+  cp "$out"/ohm-cli-v0.1.3-linux-x86_64.tar.gz "$out"/release-linux-x86_64.json \
+     "$out"/OpenHardwareOS-v0.1.3-linux-x86_64.deb \
+     "$out"/OpenHardwareOS-v0.1.3-linux-x86_64.AppImage \
+     "$out"/SHA256SUMS-linux-x86_64 "$side/"
+  if ( cd "$side" && shasum -a 256 -c SHA256SUMS-linux-x86_64 >/dev/null 2>&1 ); then
+    ok "  and a plain shasum -c verifies every one of them"
+  else
+    bad "  and a plain shasum -c verifies every one of them"
+  fi
+fi
+grep -q "libwebkit2gtk-4.1-0" "$ROOT/desktop.log" \
+  && ok "  and the declared dependencies are printed for the release notes" \
+  || bad "  and the declared dependencies are printed for the release notes"
+
+# ---------------------------------------------------------------- case 8
+echo
+echo "--- a desktop package that does not match the release is refused"
+CASES=$((CASES + 1))
+for variant in "version:--version 0.1.2" "arch:--arch arm64" "binary:--binary-script" \
+               "desktop:--desktop-missing" "exec:--exec-name something-else"; do
+  label="${variant%%:*}"; flags="${variant#*:}"
+  repo="$(new_repo "bad-$label")"
+  fake_deb "$ROOT/desktop-$label.deb" $flags
+  if run_packager "$repo" --desktop-deb "$ROOT/desktop-$label.deb" \
+       --desktop-appimage "$ROOT/desktop-good.AppImage" > "$ROOT/bad-$label.log" 2>&1; then
+    bad "a $label mismatch is refused"
+  else
+    ok "a $label mismatch is refused ($(grep -m1 '^error:' "$ROOT/bad-$label.log" | sed 's/^error: //'))"
+  fi
+  # The refusal must not leave something that looks like a delivery: the next
+  # run refuses to write into an existing output, so a leftover turns one
+  # fixable mistake into a permanent one. This is a real defect this suite found.
+  [ ! -e "$repo/artifacts/release" ] \
+    && ok "  and nothing is left behind for the next attempt to trip over" \
+    || bad "  and nothing is left behind for the next attempt to trip over"
+done
+# The corrected retry proves the point: same repository, right version.
+repo="$(new_repo bad-version)"
+fake_deb "$ROOT/desktop-retry.deb"
+run_packager "$repo" --desktop-deb "$ROOT/desktop-retry.deb" \
+  --desktop-appimage "$ROOT/desktop-good.AppImage" > "$ROOT/retry.log" 2>&1
+[ -f "$repo/artifacts/release/OpenHardwareOS-v0.1.3-linux-x86_64.deb" ] \
+  && ok "  and a corrected retry then delivers" \
+  || bad "  and a corrected retry then delivers"
+
+# ---------------------------------------------------------------- case 9
+echo
+echo "--- a desktop package needs its pair, and must be a Debian package"
+CASES=$((CASES + 1))
+repo="$(new_repo pair)"
+fake_deb "$ROOT/desktop-pair.deb"
+if run_packager "$repo" --desktop-deb "$ROOT/desktop-pair.deb" > "$ROOT/pair.log" 2>&1; then
+  bad "a .deb without its AppImage is refused"
+else
+  ok "a .deb without its AppImage is refused"
+fi
+if run_packager "$repo" --desktop-appimage "$ROOT/desktop-good.AppImage" > "$ROOT/pair2.log" 2>&1; then
+  bad "an AppImage without its .deb is refused"
+else
+  ok "an AppImage without its .deb is refused"
+fi
+printf 'this is not a Debian package\n' > "$ROOT/not-a-deb.deb"
+if run_packager "$repo" --desktop-deb "$ROOT/not-a-deb.deb" \
+     --desktop-appimage "$ROOT/desktop-good.AppImage" > "$ROOT/notadeb.log" 2>&1; then
+  bad "a file that is not a Debian package is refused"
+else
+  ok "a file that is not a Debian package is refused"
+  grep -q "not an ar archive" "$ROOT/notadeb.log" \
+    && ok "  and the reason says what it is not" || bad "  and the reason says what it is not"
+fi
+printf 'not an elf\n' > "$ROOT/not-an-appimage.AppImage"
+chmod +x "$ROOT/not-an-appimage.AppImage"
+if run_packager "$repo" --desktop-deb "$ROOT/desktop-pair.deb" \
+     --desktop-appimage "$ROOT/not-an-appimage.AppImage" > "$ROOT/notapp.log" 2>&1; then
+  bad "a file that is not an ELF AppImage is refused"
+else
+  ok "a file that is not an ELF AppImage is refused"
+fi
+[ ! -e "$repo/artifacts/release" ] \
+  && ok "  and none of those attempts left a delivery behind" \
+  || bad "  and none of those attempts left a delivery behind"
 
 echo
 echo "================================================================================"

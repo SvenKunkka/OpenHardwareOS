@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 #
-# Package the Linux CLI build for a release.
+# Package the Linux delivery for a release: the CLI, and (when they are given)
+# the desktop bundles.
 #
-#   ./scripts/release/package-linux.sh --version v0.1.3 --binary target/x86_64-unknown-linux-gnu/release/ohm-cli
+#   ./scripts/release/package-linux.sh --version v0.1.3 --binary target/release/ohm-cli
+#   ./scripts/release/package-linux.sh --version v0.1.4 --binary target/release/ohm-cli \
+#       --desktop-deb target/release/bundle/deb/OpenHardwareOS_0.1.4_amd64.deb \
+#       --desktop-appimage target/release/bundle/appimage/OpenHardwareOS_0.1.4_amd64.AppImage
 #
 # The same rules the Windows packager follows, for the same reasons:
 #
@@ -19,6 +23,16 @@
 #     plain `sha256sum -c` on a download is a check of the download and not a
 #     report of files that were never meant to be there.
 #
+# One list covers everything Linux publishes, the desktop packages included: a
+# user who downloads two files wants one command that answers "is this download
+# intact", not one list per artefact kind.
+#
+# The desktop `.deb` is read with `scripts/release/inspect-deb.py` (an `ar`
+# archive holding `control.tar.*` and `data.tar.*`) and checked for the facts a
+# user depends on: the declared package name, version and architecture, a real
+# x86_64 ELF at `usr/bin/...`, a desktop entry that launches it, and icons. A
+# `.deb` that dpkg would install as something else is not published.
+#
 # `--run-binary` additionally executes the packaged CLI and checks its version.
 # Only the Linux CI job passes it; the fixture test runs everywhere and checks
 # everything else.
@@ -29,6 +43,8 @@ BINARY=""
 OUT="artifacts/release"
 RUN_BINARY=0
 PLATFORM="linux-x86_64"
+DESKTOP_DEB=""
+DESKTOP_APPIMAGE=""
 # A GitHub Release holds one asset per name, and the tooling verifies the asset
 # called exactly `release.json` — which the Windows build already publishes — so
 # this one is named for its platform.
@@ -63,8 +79,10 @@ while [ $# -gt 0 ]; do
     --binary) BINARY="${2:-}"; shift 2 ;;
     --out) OUT="${2:-}"; shift 2 ;;
     --platform) PLATFORM="${2:-}"; shift 2 ;;
+    --desktop-deb) DESKTOP_DEB="${2:-}"; shift 2 ;;
+    --desktop-appimage) DESKTOP_APPIMAGE="${2:-}"; shift 2 ;;
     --run-binary) RUN_BINARY=1; shift ;;
-    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -85,6 +103,15 @@ machine=$(od -An -tx1 -j18 -N2 "$BINARY" | tr -d ' \n')
 [ "$class" = "2" ] || die "the binary at $BINARY is not 64-bit (ELF class $class)"
 [ "$machine" = "3e00" ] || die "the binary at $BINARY is not x86_64 (ELF machine $machine)"
 
+# The two desktop bundles are a pair: a release that publishes one and not the
+# other would leave the install page describing an artefact nobody can download.
+if [ -n "$DESKTOP_DEB" ] || [ -n "$DESKTOP_APPIMAGE" ]; then
+  [ -n "$DESKTOP_DEB" ] || die "--desktop-appimage needs --desktop-deb as well"
+  [ -n "$DESKTOP_APPIMAGE" ] || die "--desktop-deb needs --desktop-appimage as well"
+  [ -f "$DESKTOP_DEB" ] || die "no desktop package at $DESKTOP_DEB"
+  [ -f "$DESKTOP_APPIMAGE" ] || die "no AppImage at $DESKTOP_APPIMAGE"
+fi
+
 [ ! -e "$OUT" ] || die "output already exists; use a clean release build: $OUT"
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -102,7 +129,20 @@ NOTICES="$REPO/artifacts/THIRD_PARTY_NOTICES.txt"
 mkdir -p "$OUT"
 STAGE="$OUT/.stage-$$"
 mkdir -p "$STAGE"
-cleanup() { rm -rf "$STAGE"; }
+COMPLETED=0
+cleanup() {
+  rm -rf "$STAGE"
+  # A refused package must not leave a directory that looks like a delivery. The
+  # packager refuses to write into an existing output — that is what stops one
+  # release from overwriting another — so a half-written one left behind by a
+  # failure turns a fixable mistake into a permanent one: the corrected rerun
+  # refuses to start. Everything under $OUT was created by this run, because the
+  # run refuses to begin when it already exists.
+  if [ "$COMPLETED" != "1" ] && [ -n "$OUT" ] && [ -d "$OUT" ]; then
+    echo "note: removing the incomplete delivery at $OUT" >&2
+    rm -rf "$OUT"
+  fi
+}
 trap cleanup EXIT
 
 cp "$BINARY" "$STAGE/ohm-cli"
@@ -139,6 +179,88 @@ grep -qx 'LICENSE' "$LIST" || die "the archive does not contain LICENSE"
 grep -qx 'THIRD_PARTY_NOTICES.txt' "$LIST" || die "the archive does not contain the dependency notices"
 rm -f "$LIST"
 
+# --- the desktop bundles, when they were given ------------------------------
+# Checked here rather than trusted because the file that the install page tells a
+# user to run is the one thing they cannot inspect themselves before installing.
+DESKTOP_DEB_OUT=""
+DESKTOP_APPIMAGE_OUT=""
+if [ -n "$DESKTOP_DEB" ]; then
+  INSPECT="$REPO/scripts/release/inspect-deb.py"
+  [ -f "$INSPECT" ] || die "missing $INSPECT"
+  REPORT="$OUT/.deb-report-$$.json"
+  python3 "$INSPECT" "$DESKTOP_DEB" > "$REPORT" \
+    || die "the desktop package at $DESKTOP_DEB cannot be read as a Debian package"
+
+  read_field() { # JSON report, dotted path — printed by the small reader below
+    python3 - "$REPORT" "$1" <<'PY_READ'
+import json, sys
+report = json.load(open(sys.argv[1], encoding="utf-8"))
+node = report
+for part in sys.argv[2].split("."):
+    if isinstance(node, list):
+        node = node[0] if node else None
+    if not isinstance(node, dict) or part not in node:
+        print("")
+        raise SystemExit(0)
+    node = node[part]
+print("" if node is None else node)
+PY_READ
+  }
+
+  declared_version="$(read_field 'control.Version')"
+  declared_package="$(read_field 'control.Package')"
+  declared_arch="$(read_field 'control.Architecture')"
+  declared_depends="$(read_field 'control.Depends')"
+  deb_binary="$(read_field 'binary')"
+  deb_machine="$(read_field 'binaries.elf.machine')"
+  deb_class="$(read_field 'binaries.elf.class')"
+  deb_desktop="$(read_field 'desktop_entry')"
+  deb_exec="$(read_field 'desktop_fields.Exec')"
+  deb_icon="$(read_field 'desktop_fields.Icon')"
+  deb_icons="$(read_field 'icons')"
+
+  [ "$declared_version" = "${VERSION#v}" ] \
+    || die "the desktop package declares version '$declared_version', expected '${VERSION#v}'"
+  [ "$declared_package" = "openhardwareos" ] \
+    || die "the desktop package is named '$declared_package', expected 'openhardwareos'"
+  case "$declared_arch" in
+    amd64|x86_64) ;;
+    *) die "the desktop package is built for '$declared_arch', expected amd64" ;;
+  esac
+  [ -n "$declared_depends" ] || die "the desktop package declares no dependencies"
+  [ -n "$deb_binary" ] || die "the desktop package installs no ELF binary under usr/bin"
+  [ "$deb_class" = "64-bit" ] || die "the desktop binary is $deb_class, expected 64-bit"
+  [ "$deb_machine" = "x86_64" ] || die "the desktop binary is for $deb_machine, expected x86_64"
+  [ -n "$deb_desktop" ] || die "the desktop package installs no .desktop entry"
+  [ -n "$deb_exec" ] || die "the desktop entry launches nothing"
+  [ "$deb_exec" = "$(basename "$deb_binary")" ] \
+    || die "the desktop entry runs '$deb_exec' but the package installs '$(basename "$deb_binary")'"
+  [ -n "$deb_icon" ] || die "the desktop entry names no icon"
+  [ -n "$deb_icons" ] || die "the desktop package installs no icon files"
+  rm -f "$REPORT"
+
+  # Published under this project's own names, not the bundler's
+  # (`OpenHardwareOS_0.1.4_amd64.deb`): the install page has to name a file that
+  # does not change shape when the bundler changes its mind, and both platforms
+  # then follow the same pattern as the CLI archive.
+  DESKTOP_DEB_OUT="$OUT/OpenHardwareOS-$VERSION-$PLATFORM.deb"
+  cp "$DESKTOP_DEB" "$DESKTOP_DEB_OUT"
+
+  # The AppImage is the same application in one file: an ELF that mounts itself.
+  magic=$(od -An -tx1 -N4 "$DESKTOP_APPIMAGE" | tr -d ' \n')
+  class=$(od -An -tu1 -j4 -N1 "$DESKTOP_APPIMAGE" | tr -d ' \n')
+  machine=$(od -An -tx1 -j18 -N2 "$DESKTOP_APPIMAGE" | tr -d ' \n')
+  [ "$magic" = "7f454c46" ] || die "the AppImage is not an ELF file (magic $magic)"
+  [ "$class" = "2" ] || die "the AppImage is not 64-bit (ELF class $class)"
+  [ "$machine" = "3e00" ] || die "the AppImage is not x86_64 (ELF machine $machine)"
+  [ -x "$DESKTOP_APPIMAGE" ] || die "the AppImage is not executable; it cannot be run after download"
+  DESKTOP_APPIMAGE_OUT="$OUT/OpenHardwareOS-$VERSION-$PLATFORM.AppImage"
+  cp "$DESKTOP_APPIMAGE" "$DESKTOP_APPIMAGE_OUT"
+  echo "desktop package : $DESKTOP_DEB_OUT ($declared_package $declared_version, $declared_arch)"
+  echo "desktop depends : $declared_depends"
+  echo "desktop appimage: $DESKTOP_APPIMAGE_OUT"
+fi
+
 if [ "$RUN_BINARY" = "1" ]; then
   reported=$("$BINARY" --version)
   expected="ohm-cli ${VERSION#v}"
@@ -155,6 +277,9 @@ fi
 # that was in fact intact. The archive's contents are checked by the listing
 # above; this list is about the bytes a user downloads.
 PUBLISHED=("$ARCHIVE" "$METADATA_PATH")
+if [ -n "$DESKTOP_DEB_OUT" ]; then
+  PUBLISHED+=("$DESKTOP_DEB_OUT" "$DESKTOP_APPIMAGE_OUT")
+fi
 {
   for file in "${PUBLISHED[@]}"; do
     printf '%s  %s\n' "$(hash_file "$file" | cut -d' ' -f1)" "$(basename "$file")"
@@ -181,3 +306,10 @@ echo "archive       : $ARCHIVE"
 ls -l "$ARCHIVE" | awk '{ print "archive size  : " $5 " bytes" }'
 echo "$SUMS:"
 sed 's/^/  /' "$OUT/$SUMS"
+# From here the delivery is complete and verified: the trap may leave it alone.
+COMPLETED=1
+if [ -n "$DESKTOP_DEB_OUT" ]; then
+  echo
+  echo "Install on Debian/Ubuntu with: sudo apt-get install ./$(basename "$DESKTOP_DEB_OUT")"
+  echo "Run the AppImage with       : chmod +x $(basename "$DESKTOP_APPIMAGE_OUT") && ./$(basename "$DESKTOP_APPIMAGE_OUT")"
+fi
