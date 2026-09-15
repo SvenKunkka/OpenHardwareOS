@@ -149,6 +149,8 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Test the Linux packager with isolated fixtures
         run: ./scripts/tests/package-linux.test.sh
+      - name: Test the documented install route with isolated fixtures
+        run: ./scripts/tests/linux-install-doc.test.sh
       - name: Build CLI
         run: cargo build --locked --release -p ohm-cli
       - name: Generate dependency notices

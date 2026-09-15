@@ -61,11 +61,20 @@ function renderDevice() {
 /** Type a value into the fan-duty control and click Apply, like a user would. */
 async function applyFanDuty(value: string): Promise<void> {
   const input = await screen.findByLabelText('Fan duty value');
+  // The change has to be committed before the button is clicked: Apply is
+  // disabled while the field is empty or invalid, and a click on a disabled
+  // button does nothing at all. Firing both inside one `act` let this pass
+  // locally and fail on a CI runner (the click arrived while the field was still
+  // empty, no write was attempted, and the test blamed the product).
+  await act(async () => {
+    fireEvent.change(input, { target: { value } });
+  });
+  const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement;
+  await waitFor(() => expect(apply.disabled).toBe(false));
   // Awaiting inside `act` lets the submit's own promise settle before the
   // assertions run, so the test sees the finished state, not a half-open one.
   await act(async () => {
-    fireEvent.change(input, { target: { value } });
-    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    fireEvent.click(apply);
   });
 }
 
