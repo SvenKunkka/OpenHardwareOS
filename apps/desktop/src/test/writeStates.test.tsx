@@ -742,6 +742,52 @@ describe('manual control: a reading that arrives after the user typed', () => {
   });
 });
 
+describe('manual control: the control being re-created by a refresh', () => {
+  beforeEach(() => {
+    resetIpcMock();
+    ipcMock().api.getHistory.mockResolvedValue([]);
+    ipcMock().api.writeCapability.mockResolvedValue(
+      writeReportFixture({ status: 'applied', requested: 80, applied: 80 }),
+    );
+  });
+
+  /**
+   * A refresh can unmount and mount a control — the device drops out of one
+   * snapshot (unplugged, disabled, a discovery cycle that did not see it) and comes
+   * back in the next. When the value being typed lived inside that control, the
+   * edit died with it and the field came back showing the device's own 45 %, which
+   * is what a release build caught: the assertion said the write carried 45 while
+   * the user had typed 80. The field's content is now derived on the screen from
+   * `drafts[capability] ?? the reading`, so re-creating the control changes nothing.
+   */
+  it('keeps an uncommitted value when the control is re-created', async () => {
+    renderDevice();
+    const input = (await screen.findByLabelText('Fan duty value')) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(input, { target: { value: '80' } });
+    });
+    expect(input.value).toBe('80');
+
+    const onSnapshot = ipcMock().subscribeRuntime.mock.calls[0]?.[0] as
+      | ((snapshot: RuntimeSnapshot) => void)
+      | undefined;
+    expect(onSnapshot, 'the screen subscribes to snapshots').toBeTypeOf('function');
+
+    // The device is briefly absent — the control is unmounted — and then returns.
+    await act(async () => {
+      onSnapshot?.({ ...snapshotFixture(), devices: [] });
+    });
+    expect(screen.queryByLabelText('Fan duty value'), 'the control is gone').toBeNull();
+    await act(async () => {
+      onSnapshot?.(snapshotFixture());
+    });
+
+    const again = screen.getByLabelText('Fan duty value') as HTMLInputElement;
+    expect(again, 'the control is back').not.toBe(input);
+    expect(again.value, 'and it still holds what the user typed').toBe('80');
+  });
+});
+
 describe('the release fallback action', () => {
   it('is never offered as an editor choice', () => {
     // `isSimpleFallback` is what feeds the `<select>`; a value it cannot return is

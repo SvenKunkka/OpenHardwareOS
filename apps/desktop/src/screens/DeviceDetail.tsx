@@ -73,6 +73,15 @@ export function DeviceDetail({
   );
 
   const [chartCapabilityId, setChartCapabilityId] = useState<string | undefined>(undefined);
+  /**
+   * Values the user has typed but not yet had confirmed, keyed by capability id.
+   *
+   * They live on the screen rather than inside each control so that a re-render
+   * — including one that unmounts and mounts a control — cannot throw away what
+   * somebody is in the middle of typing. The field's content is derived:
+   * `drafts[id] ?? the reading from the snapshot`.
+   */
+  const [drafts, setDrafts] = useState<Record<string, CapabilityValue>>({});
   useEffect(() => {
     if (!view) return;
     const preferred = primarySensor(view);
@@ -257,15 +266,31 @@ export function DeviceDetail({
           subtitle="Writes are sent through the safety layer; a refusal is reported verbatim"
         >
           <div className="grid grid--two">
-            {writeCapabilities.map((capability) => (
-              <WriteControl
-                key={capability.id}
-                deviceId={view.device.id}
-                capability={capability}
-                current={currentValue(view, capability.id)}
-                disabled={!view.enabled}
-              />
-            ))}
+            {writeCapabilities.map((capability) => {
+              const reading = currentValue(view, capability.id);
+              const edit = drafts[capability.id];
+              return (
+                <WriteControl
+                  key={capability.id}
+                  deviceId={view.device.id}
+                  capability={capability}
+                  current={reading}
+                  disabled={!view.enabled}
+                  draft={edit ?? initialDraft(capability, reading)}
+                  edited={edit !== undefined}
+                  onEdit={(next) =>
+                    setDrafts((current) => ({ ...current, [capability.id]: next }))
+                  }
+                  onCommitted={() =>
+                    setDrafts((current) => {
+                      const next = { ...current };
+                      delete next[capability.id];
+                      return next;
+                    })
+                  }
+                />
+              );
+            })}
           </div>
         </Panel>
       ) : (
@@ -444,6 +469,24 @@ export function DeviceDetail({
   );
 }
 
+/**
+ * What a control shows before the user touches it: the reading when there is one,
+ * otherwise the least surprising legal value for the capability's shape.
+ */
+function initialDraft(
+  capability: Capability,
+  current: CapabilityValue | undefined,
+): CapabilityValue {
+  if (typeof current === 'number' || typeof current === 'boolean' || typeof current === 'string') {
+    return current;
+  }
+  if (capability.values && capability.values.length > 0 && !isNumericUnit(capability.unit)) {
+    return capability.values[0] ?? '';
+  }
+  if (isNumericUnit(capability.unit)) return capability.min ?? 0;
+  return '';
+}
+
 function currentValue(view: DeviceView, capabilityId: string): CapabilityValue | undefined {
   const reading = view.state?.readings.find((item) => item.capability === capabilityId);
   return reading?.status === 'ok' ? reading.value : undefined;
@@ -474,27 +517,22 @@ function describeOrigin(report: WriteReport): string {
  * was requested next to what the backend actually confirmed. A write the device
  * accepted but never confirmed is reported as unknown, never as applied.
  */
-function WriteControl({
-  deviceId,
-  capability,
-  current,
-  disabled,
-}: {
+function WriteControl(props: {
   deviceId: string;
   capability: Capability;
   current: CapabilityValue | undefined;
   disabled: boolean;
+  /** What the field shows: the user's edit if there is one, else the reading. */
+  draft: CapabilityValue;
+  /** `true` when `draft` is the user's, not the device's. */
+  edited: boolean;
+  onEdit: (next: CapabilityValue) => void;
+  /** A confirmed write: the field follows the device again. */
+  onCommitted: () => void;
 }) {
+  const { deviceId, capability, current, disabled } = props;
   const inputId = useId();
   const isNumeric = isNumericUnit(capability.unit);
-  const [draft, setDraft] = useState<CapabilityValue>(() => {
-    if (typeof current === 'number') return current;
-    if (typeof current === 'boolean') return current;
-    if (typeof current === 'string') return current;
-    if (capability.values && capability.values.length > 0) return capability.values[0] ?? '';
-    if (isNumeric) return capability.min ?? 0;
-    return '';
-  });
   const [report, setReport] = useState<WriteReport | null>(null);
   const [failure, setFailure] = useState<NoticeError | null>(null);
   /**
@@ -506,28 +544,25 @@ function WriteControl({
   const toast = useToast();
 
   /**
-   * Has the user touched this field?
+   * The value in the field, and whether the user put it there.
    *
-   * A reading that arrives *after* an edit must not overwrite it. The snapshot
-   * reaches the screen asynchronously — the first one lands a moment after the
-   * window opens — so following the reading unconditionally silently discarded
-   * what the user had typed and sent the device's *old* value with the click. A
-   * CI runner made the window wide enough to lose an 80 % request and write the
-   * 45 % the device was already at, which is exactly the kind of "it did
-   * something else and said nothing" this project is trying to remove.
+   * Both come from the screen above, deliberately. This control used to keep its
+   * own `draft` state and copy the reading into it with an effect; that is a race
+   * with every render, and it loses the same way twice:
+   *
+   *  * a reading arriving after an edit replaced what the user had typed, and the
+   *    write went out with the device's *old* value (found by a release build);
+   *  * a re-render that unmounts and mounts this control — the refresh cycle can
+   *    do that — threw the draft away with the component, and the field came back
+   *    showing the device's value (found by the same assertion, on the next run,
+   *    which is why the failure now names the field instead of the write).
+   *
+   * Holding the draft where the screen lives makes both impossible: the value is
+   * derived (`drafts[id] ?? the reading`) and there is no effect to lose it. A
+   * confirmed write clears the entry, so the field follows the device again.
    */
-  const [edited, setEdited] = useState(false);
-  const edit = (next: CapabilityValue) => {
-    setEdited(true);
-    setDraft(next);
-  };
-
-  useEffect(() => {
-    if (edited) return;
-    if (typeof current === 'number' || typeof current === 'boolean' || typeof current === 'string') {
-      setDraft(current);
-    }
-  }, [current, edited]);
+  const { draft, edited, onEdit, onCommitted } = props;
+  const edit = onEdit;
 
   const submit = async () => {
     setPending(true);
@@ -540,7 +575,7 @@ function WriteControl({
       // again. An unconfirmed or rejected write leaves the user's request in
       // place: the panel is showing *that* request against an unknown value.
       if (result.status === 'applied' || result.status === 'simulated') {
-        setEdited(false);
+        onCommitted();
       }
       if (result.status === 'rejected') {
         setFailure({
