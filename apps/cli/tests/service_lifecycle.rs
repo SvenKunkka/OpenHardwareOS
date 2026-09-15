@@ -49,6 +49,13 @@ impl Service {
     }
 
     /// Wait for the state file to exist, returning what it says.
+    ///
+    /// Unix-only, together with the tests that use it: they are the ones that ask a
+    /// *running* service a question, and the signal they need (`SIGTERM`) is the Unix
+    /// way of asking. The service itself is not Unix-only — a bounded run is tested
+    /// on every platform above — and `clippy -D warnings` is right to refuse helpers
+    /// that no test on this target uses.
+    #[cfg(unix)]
     fn wait_for_state(&self, timeout: Duration) -> serde_json::Value {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
@@ -98,6 +105,8 @@ impl Service {
         }
     }
 
+    /// Run the CLI against the same config directory, from outside the service.
+    #[cfg(unix)]
     fn run_cli(&self, args: &[&str]) -> std::process::Output {
         run_cli(&self.dir, args)
     }
