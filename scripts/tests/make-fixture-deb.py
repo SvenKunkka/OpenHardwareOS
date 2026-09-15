@@ -84,7 +84,7 @@ def main() -> int:
     parser.add_argument("out")
     parser.add_argument("--version", default="0.1.4")
     parser.add_argument("--arch", default="amd64")
-    parser.add_argument("--package", default="openhardwareos")
+    parser.add_argument("--package", default="open-hardware-os")
     parser.add_argument("--depends", default="libwebkit2gtk-4.1-0, libgtk-3-0")
     parser.add_argument("--binary-elf", action="store_true")
     parser.add_argument("--binary-script", action="store_true")
@@ -92,6 +92,7 @@ def main() -> int:
     parser.add_argument("--desktop-missing", action="store_true")
     parser.add_argument("--icon-missing", action="store_true")
     parser.add_argument("--exec-name", default="openhardwareos")
+    parser.add_argument("--exec-args", default="")
     parser.add_argument("--compression", default="gz", choices=["gz", "xz", "none"])
     args = parser.parse_args()
 
@@ -114,7 +115,10 @@ def main() -> int:
         binary = SCRIPT_BINARY if args.binary_script else ELF_X86_64
         files["usr/bin/openhardwareos"] = (binary, 0o755)
     if not args.desktop_missing:
-        entry = DESKTOP_ENTRY.replace(b"Exec=openhardwareos", f"Exec={args.exec_name}".encode())
+        exec_line = f"Exec={args.exec_name}"
+        if args.exec_args:
+            exec_line += f" {args.exec_args}"
+        entry = DESKTOP_ENTRY.replace(b"Exec=openhardwareos", exec_line.encode())
         files["usr/share/applications/openhardwareos.desktop"] = (entry, 0o644)
     if args.icon_missing:
         files.pop("usr/share/icons/hicolor/128x128/apps/openhardwareos.png")

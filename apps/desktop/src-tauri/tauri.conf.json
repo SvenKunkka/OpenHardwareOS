@@ -47,5 +47,6 @@
         "displayLanguageSelector": false
       }
     }
-  }
+  },
+  "mainBinaryName": "openhardwareos"
 }

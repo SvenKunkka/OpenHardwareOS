@@ -89,6 +89,16 @@ cat > "$WORK/bin/sudo" <<'SH'
 #!/bin/sh
 exec "$@"
 SH
+cat > "$WORK/bin/dpkg" <<'SH'
+#!/bin/sh
+# `dpkg -l <name>` / `dpkg -s <name>`: the fixture "installed" the package, so
+# answer like dpkg would.
+case "${1:-}" in
+  -l) echo "ii  ${2:-}  0.0.0  amd64  fixture" ;;
+  -s) printf 'Package: %s\nStatus: install ok installed\nDepends: libwebkit2gtk-4.1-0, libgtk-3-0\n' "${2:-}" ;;
+esac
+exit 0
+SH
 cat > "$WORK/bin/apt-get" <<'SH'
 #!/bin/sh
 # `apt-get install -y <file.deb>`: record the request and "install" the binary the
@@ -105,7 +115,7 @@ if [ "${1:-}" = "install" ]; then
 fi
 exit 0
 SH
-chmod +x "$WORK/bin/sha256sum" "$WORK/bin/sudo" "$WORK/bin/apt-get"
+chmod +x "$WORK/bin/sha256sum" "$WORK/bin/sudo" "$WORK/bin/apt-get" "$WORK/bin/dpkg"
 export OHM_TEST_APT_LOG="$WORK/apt.log"
 export OHM_TEST_BINDIR="$WORK/bin"
 : > "$OHM_TEST_APT_LOG"

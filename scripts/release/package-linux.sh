@@ -221,8 +221,13 @@ PY_READ
 
   [ "$declared_version" = "${VERSION#v}" ] \
     || die "the desktop package declares version '$declared_version', expected '${VERSION#v}'"
-  [ "$declared_package" = "openhardwareos" ] \
-    || die "the desktop package is named '$declared_package', expected 'openhardwareos'"
+  # The bundler derives the Debian package name from `productName`
+  # ("OpenHardwareOS" -> "open-hardware-os"); dpkg requires lower case. Enforced
+  # rather than accepted: the install page tells users what to remove, and a
+  # bundler upgrade that renames the package would silently break that sentence.
+  # The installed binary is `openhardwareos` because `mainBinaryName` says so.
+  [ "$declared_package" = "open-hardware-os" ] \
+    || die "the desktop package is named '$declared_package', expected 'open-hardware-os'"
   case "$declared_arch" in
     amd64|x86_64) ;;
     *) die "the desktop package is built for '$declared_arch', expected amd64" ;;
@@ -233,8 +238,12 @@ PY_READ
   [ "$deb_machine" = "x86_64" ] || die "the desktop binary is for $deb_machine, expected x86_64"
   [ -n "$deb_desktop" ] || die "the desktop package installs no .desktop entry"
   [ -n "$deb_exec" ] || die "the desktop entry launches nothing"
-  [ "$deb_exec" = "$(basename "$deb_binary")" ] \
-    || die "the desktop entry runs '$deb_exec' but the package installs '$(basename "$deb_binary")'"
+  # A freedesktop Exec line may carry arguments and field codes (`%U`, `%F`), and
+  # may be quoted; the thing that must match is the program it launches, not the
+  # rest of the line.
+  deb_program="$(printf '%s' "$deb_exec" | awk '{print $1}' | tr -d '"'"'"'')"
+  [ "$deb_program" = "$(basename "$deb_binary")" ] \
+    || die "the desktop entry runs '$deb_program' but the package installs '$(basename "$deb_binary")'"
   [ -n "$deb_icon" ] || die "the desktop entry names no icon"
   [ -n "$deb_icons" ] || die "the desktop package installs no icon files"
   rm -f "$REPORT"

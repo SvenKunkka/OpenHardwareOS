@@ -83,14 +83,20 @@ sudo apt-get install -y "$ohm_tmp/$ohm_deb"
 openhardwareos --version 2>/dev/null || true
 ```
 
-装完后应用出现在应用菜单里（`/usr/share/applications/openhardwareos.desktop`），
-可执行文件在 `/usr/bin/openhardwareos`。运行时配置与审计记录在 `~/.config/OpenHardwareOS`。
-卸载：`sudo apt-get remove openhardwareos`。
-
-包声明的依赖由打包时的实际链接决定，发布日志会打印出来；`.deb` 的 `control` 里也能直接看到：
+装完后应用出现在应用菜单里，可执行文件在 `/usr/bin/openhardwareos`。运行时配置与审计记录在
+`~/.config/OpenHardwareOS`。Debian 包名是 `open-hardware-os`（dpkg 只接受小写），
+所以查询与卸载用这个名字：
 
 ```bash
-dpkg-deb -f /var/cache/apt/archives/openhardwareos_*.deb Depends 2>/dev/null || true
+dpkg -l open-hardware-os
+sudo apt-get remove open-hardware-os
+```
+
+包声明的依赖由打包时的实际链接决定。发布日志会打印包实际声明的依赖、安装路径与桌面入口；
+本地也可以直接查：
+
+```bash
+dpkg -s open-hardware-os | grep '^Depends:' || true
 ```
 
 **没有界面自检这条路。** `openhardwareos --selftest --mock` 会**不建窗口**、用模拟硬件跑一个

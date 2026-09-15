@@ -1,4 +1,4 @@
-name: Windows release assets
+name: Release assets (Windows and Linux)
 
 on:
   push:
@@ -10,7 +10,8 @@ on:
         required: true
         type: string
 
-# This workflow builds artifacts for review. The maintainer publishes the
+# This workflow builds the release artifacts for review: Windows (CLI, installer)
+# and Linux (CLI archive, Debian package, AppImage). The maintainer publishes the
 # successful run's artifacts as a GitHub Release after checking its commit SHA.
 permissions:
   contents: read

@@ -342,7 +342,8 @@ echo
 echo "--- a desktop package that does not match the release is refused"
 CASES=$((CASES + 1))
 for variant in "version:--version 0.1.2" "arch:--arch arm64" "binary:--binary-script" \
-               "desktop:--desktop-missing" "exec:--exec-name something-else"; do
+               "desktop:--desktop-missing" "exec:--exec-name something-else" \
+               "package:--package something-else"; do
   label="${variant%%:*}"; flags="${variant#*:}"
   repo="$(new_repo "bad-$label")"
   fake_deb "$ROOT/desktop-$label.deb" $flags
@@ -367,6 +368,21 @@ run_packager "$repo" --desktop-deb "$ROOT/desktop-retry.deb" \
 [ -f "$repo/artifacts/release/OpenHardwareOS-v0.1.3-linux-x86_64.deb" ] \
   && ok "  and a corrected retry then delivers" \
   || bad "  and a corrected retry then delivers"
+
+# ---------------------------------------------------------------- case 8b
+echo
+echo "--- a desktop entry may carry arguments, but must launch the installed binary"
+CASES=$((CASES + 1))
+repo="$(new_repo desktop-args)"
+# A field code is normal in a freedesktop entry and must not be mistaken for a
+# different program.
+fake_deb "$ROOT/desktop-args.deb" --exec-args '%U'
+if run_packager "$repo" --desktop-deb "$ROOT/desktop-args.deb" \
+     --desktop-appimage "$ROOT/desktop-good.AppImage" > "$ROOT/desktop-args.log" 2>&1; then
+  ok "an Exec line with a field code is accepted"
+else
+  bad "an Exec line with a field code is accepted ($(grep -m1 '^error:' "$ROOT/desktop-args.log"))"
+fi
 
 # ---------------------------------------------------------------- case 9
 echo
