@@ -3,6 +3,31 @@
 实际发行状态见 [版本树](docs/versions.md) 和 [GitHub Releases](https://github.com/SvenKunkka/OpenHardwareOS/releases)。
 应用版本、规划节点和发布证据由 [版本清单](docs/versions.json) 管理。
 
+## v0.1.4 · 2026-09-15 · Linux 桌面预览包
+
+在 Linux 上补上另一半交付：可安装的**桌面应用**（`.deb` 与 AppImage），与现有的 Linux CLI 归档
+共用同一份校验和清单。**尚未发布**：条目先写在此处，公开发布后由版本工具登记版本树。
+
+- **Linux 桌面包。** `scripts/release/package-linux.sh` 新增 `--desktop-deb` 与
+  `--desktop-appimage`（两者必须成对，只发布一个会让安装页描述一个下载不到的产物），
+  并以本项目自己的名字发布（`OpenHardwareOS-v0.1.4-linux-x86_64.deb` / `.AppImage`），
+  而不是打包器给的名字——页面要指向一个不会随打包器改名而失效的文件。
+- **发布前把 `.deb` 读一遍。** 新增 `scripts/release/inspect-deb.py`：直接读 `ar` 容器里的
+  `control.tar.*` 与 `data.tar.*`，核对包声明的包名、版本、架构与依赖，`usr/bin/` 下必须是
+  64 位 x86_64 ELF，桌面入口的 `Exec` 必须指向那个可执行文件，并且要带图标。AppImage 必须是
+  64 位 x86_64 ELF 且可执行——否则下载后根本跑不起来。
+- **被拒绝的打包不再留下半成品目录。** 此前失败会把 `artifacts/release` 留在磁盘上，而打包器
+  拒绝写入已存在的输出目录，于是"改好再跑一次"也会被拒绝：一个可修复的失误变成永久的。
+  现在失败时清理本次创建的内容，并有夹具证明修正后的重试可以交付。
+- **CI 上装一遍再跑一遍。** 发布流程在 `ubuntu-latest` 上构建 `.deb` 与 AppImage，用
+  `apt-get install ./<包>` 按安装页的方式装上（依赖由 apt 解析），然后运行**装好的**
+  `/usr/bin/openhardwareos --selftest --mock`（含一次 `--dry-run`），并单独运行 AppImage。
+  这是"无需编译即可安装"的证据：发行版与内核版本取自该次运行自己的输出。
+- **安装页三条路线。** `docs/linux-install.md` 现在给出 CLI、`.deb` 与 AppImage，并写明
+  哪一步在 CI 上验证过、哪一步没有（界面显示、真实主板通道、RPM 系发行版仍无证据）。
+- 校验和清单覆盖整版 Linux 产物，而每条安装路线只下载其中一个，因此文档命令改为核对
+  **自己下载的那一个文件**（恰好一条匹配记录 + 摘要核对），不因为少下载别的产物而失败。
+
 ## v0.1.3 · 2026-09-14 · Windows 与 Linux 预览版
 
 控制基础的三个问题修好，并交付 Linux 监测预览与 Linux CLI 发布产物。

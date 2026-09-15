@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "repository": "SvenKunkka/OpenHardwareOS",
-  "development": null,
+  "development": "v0.1.4",
   "versions": [
     {
       "id": "v0.1.0",
@@ -152,13 +152,13 @@
     {
       "id": "v0.1.4",
       "parent": "v0.1.3",
-      "status": "planned",
+      "status": "development",
       "channel": "preview",
       "title": "Linux 桌面预览包",
       "summary": "在 Linux 上交付可安装的桌面应用（.deb 与 AppImage），并把安装路线、依赖与自检写进安装页。",
       "tag": null,
       "commit": null,
-      "branch": null,
+      "branch": "codex/v0.1.4",
       "release_url": null,
       "published_at": null,
       "changes": [
