@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "repository": "SvenKunkka/OpenHardwareOS",
-  "development": "v0.1.6",
+  "development": null,
   "versions": [
     {
       "id": "v0.1.0",
@@ -209,15 +209,15 @@
     {
       "id": "v0.1.6",
       "parent": "v0.1.5",
-      "status": "development",
+      "status": "released",
       "channel": "preview",
       "title": "后台规则服务",
       "summary": "把规则放进一个不建窗口的进程：一个通道一个写入者，停止时释放控制，状态可查。",
-      "tag": null,
-      "commit": null,
-      "branch": "codex/v0.1.6",
-      "release_url": null,
-      "published_at": null,
+      "tag": "v0.1.6",
+      "commit": "0c6e20c778402241b69f68dd9565280d2bd4fc3e",
+      "branch": null,
+      "release_url": "https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.6",
+      "published_at": "2026-09-15T09:13:51Z",
       "changes": [
         "新增 `ohm-cli service run` / `service status`：桌面关闭后规则继续运行，状态文件记录 pid、心跳与周期数",
         "一个通道一个写入者：状态文件以原子方式创建，心跳决定存活，过期文件可被安全接手，坏文件不会卡住启动",
@@ -225,7 +225,12 @@
         "`SIGTERM`/`Ctrl-C` 停止时交回控制并如实报告结果；干净退出删除状态文件",
         "`docs/background-service.md` 说明语义、systemd 用户单元模板、权限边界，以及尚未验证的部分（真实硬件、休眠恢复、Windows 服务集成）"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "title": "GitHub 已发布版本与构建来源",
+          "url": "https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.6"
+        }
+      ],
       "hardware_validation": "not_verified",
       "plan": null
     },

@@ -1790,3 +1790,138 @@ No hardware was written to; no autostart or global environment value was changed
 was installed on the host; no licence was approved on the user's behalf (ADR 0002 and ADR
 0004 remain **Proposed**); `Prospector/` and `k10max-prospector/` were left exactly as
 found, and nothing from them was staged.
+
+---
+
+## 2026-09-15 — round 11: the rules keep running with no window open, and one writer per channel
+
+**Revision: `0c6e20c`** — the pass below ran at that commit, which is the commit the
+tag points at. The commits carrying this entry follow it and change documentation only.
+
+### 1. A service, and the problem underneath it
+
+Closing the desktop window stopped the rules: the engine lived in the application
+process. `ohm-cli service run` is the process that keeps them going — headless, until
+`Ctrl-C` or `SIGTERM` — and `service status` reports from what it writes about itself
+(pid, start, heartbeat age, cycles, rules, simulated/dry-run), exiting 1 when nothing
+is running so a script can ask.
+
+The service could not be written before the thing it makes dangerous was solved. The
+desktop and the service run the same rules against the same channels, and two
+processes alternating values onto one fan is worse than no automation at all:
+
+* the owner claims the state file with `create_new`, which is atomic on every platform
+  this build targets — two processes starting together, or two that both decide an
+  abandoned file is reclaimable, cannot both win;
+* liveness is a **heartbeat**, not a pid guess: the owner rewrites the file every
+  second, so a file whose heartbeat stopped belongs to a process that died, including
+  one killed with `SIGKILL` that never got to clean up. On Linux `/proc/<pid>` settles
+  it exactly; elsewhere only the heartbeat decides, because a wrong guess in the
+  "alive" direction blocks a restart and a wrong guess the other way lets two
+  processes fight over a fan;
+* an unparseable file counts as unowned. Refusing to start because a hand-edited file
+  is broken would leave a machine that cannot run its rules until somebody deletes it;
+* **the desktop stands down.** `AutomationEngine::start` checks the file, and when it
+  names a different live process the engine does not start its loop: it logs, publishes
+  an `engine_blocked` event, and records the reason in `stats().blocked_by` so a UI can
+  show it instead of appearing to work while doing nothing.
+
+### 2. Stopping is the part that matters
+
+`SIGTERM` — what a service manager sends — and `Ctrl-C` stop the rule loop, shut the
+runtime down (which hands control back and reports what that achieved: confirmed,
+unconfirmed, refused, failed and simulated separately), and remove the state file.
+
+The signal handler is installed **before** the state file is claimed. That ordering
+came out of a failing test, not out of review: the test sent `SIGTERM` the moment the
+state file appeared, and the process died by default termination with an empty log —
+a service that looks alive but cannot yet hear a stop signal. Claiming channels before
+being able to release them is the wrong order in production too, and now the code says
+so where it happens.
+
+The page states plainly why `kill -9` is the wrong way to stop it: nothing hands
+control back, so the fans stay at the last value written, and the next start takes over
+a state file that describes a dead process.
+
+### 3. Two failures the CI found, both mine, both the same shape
+
+Neither was in the service. Both were fixtures whose usefulness depended on the machine
+they ran on:
+
+* the unit fixtures named made-up pids (4242, 5001). Liveness is checked exactly on
+  Linux, so a "fresh" state file looked abandoned there and two tests failed while
+  macOS — where that check is deliberately skipped — was green. They now name this
+  process, and a comment says why a made-up number is not good enough.
+* `clippy -D warnings` refused two test helpers on Windows because every test using
+  them needs `SIGTERM`, so they were dead code there. The gate now says that the
+  *service* is not Unix-only, only those tests.
+
+The local pass cannot see either: it runs on macOS, and the one cross-target gate that
+exists checks compilation of a crate that has no platform-specific tests. Worth
+recording as a limit of the current setup rather than pretending the pass covers it.
+
+### 4. Publication
+
+v0.1.6 = `0c6e20c`, tagged and published as a preview with 12 assets. Both checksum
+lists verify as a whole from the download, `install.ps1` is byte-identical to the
+tagged blob, both metadata files name the tagged commit, and the released CLI carries
+the new subcommands. The public Windows install check passed against the tag
+([run 34951399465](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34951399465)),
+`main` was fast-forwarded so the version-tree page names v0.1.6, and the acceptance
+source package was rebuilt from the release commit
+(`dist/acceptance/OpenHardwareOS-0c6e20c-windows-acceptance.zip`, 262 files).
+
+### The verification pass (all commands re-run at `0c6e20c`, nothing carried over)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `rustup run 1.98.1 cargo fmt --all -- --check` | exit 0 |
+| 2 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0 |
+| 3 | `cargo test --workspace --locked` | **538 passed, 0 failed**, 48 test-result lines |
+| 4 | `cargo deny check` | advisories ok, bans ok, licenses ok, sources ok |
+| 5 | `scripts/versions.py check --remote --generated` | OK; 8 catalogue entries |
+| 6 | `scripts/tests/test_versions.py` | 30 tests, OK |
+| 7 | `npm run typecheck` / `npm test` / `npm run build` | clean / 44 tests / clean |
+| 8 | `scripts/tests/make-acceptance-package.test.sh` | 4 cases, 0 failures |
+| 9 | `scripts/release/test-packaging.ps1` | 6 cases, 0 failures |
+| 10 | `scripts/tests/package-linux.test.sh` | 10 cases, 54 checks, 0 failures |
+| 11 | `scripts/tests/linux-install-doc.test.sh` | 6 cases, 32 checks, 0 failures |
+| 12 | `scripts/tests/verify-linux-readings.test.sh` | 6 cases, 21 checks, 0 failures |
+| 13 | `docs/windows-validation/.../run-script-tests.ps1` | 18 cases, 151 checks, 0 failures (doubles only) |
+| 14 | cross-target `cargo check` (Windows and Linux targets) | exit 0, plus Linux-target Clippy |
+| 15 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** |
+| 16 | delivered packages still match their manifests | every file |
+| 17 | `scripts/verify-linux-readings.sh` against the kernel's own sources | every comparable reading `AGREE` |
+
+The fifteen new tests this round: seven in `crates/ohm-runtime/src/service.rs`
+(claiming, refusing, atomic takeover, a corrupt file, heartbeats, the window), four
+process-level in `apps/cli/tests/service_lifecycle.rs` (a bounded run, a `SIGTERM`
+stop, a second instance refused, a stale file taken over) and four in
+`tests/tests/service_ownership.rs` (the engine stands down and says why, does not
+block itself, is not blocked by an abandoned file, and reads the state file of the
+runtime it belongs to).
+
+### What round 11 could **not** verify
+
+* **Real hardware**: every test uses simulated providers, and `--mock` forces dry-run.
+  The service has never run on a machine with a fan.
+* **Suspend and resume**: no test suspends a machine. The two mechanisms it depends on
+  are each covered — a heartbeat that stops means "stopped", and readings older than
+  the engine's window make rules fall back — but "suspended for eight hours and
+  resumed" has not been executed.
+* **Sensor loss at the service level**: covered by the engine's own tests, which the
+  service drives; the restart-and-recover path through the service is not.
+* **Windows service integration**: `service run` works in a console there; nothing
+  installs or supervises it, and that path has not been run on a Windows machine.
+* **Permissions**: reading needs none, and this build does not write `pwm<N>` at all,
+  so there is no privilege story to verify yet.
+* **Two processes racing in the same millisecond**: the atomic claim is reasoned about
+  and unit-tested for the sequential cases; a true simultaneous start is not exercised.
+
+### Deliberately **not** done in round 11
+
+No hardware was written to; no autostart entry was created and no global environment
+value was changed (the systemd unit on the page is a template a user installs, not
+something this build does); nothing was installed on the host; no licence was approved
+on the user's behalf (ADR 0002 and ADR 0004 remain **Proposed**); `Prospector/` and
+`k10max-prospector/` were left exactly as found.
