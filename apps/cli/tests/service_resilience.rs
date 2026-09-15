@@ -293,12 +293,31 @@ fn a_tachometer_that_disappears_makes_the_rule_fall_back_and_recovery_follows() 
         "and the rule is talking about the reading that came back: {message}"
     );
 
+    // How it stops is a Unix question: `SIGTERM` is what a service manager sends and
+    // what this test can send, while Windows offers a test no way to deliver a console
+    // CTRL+C to another process. So the clean-shutdown assertions belong to the Unix
+    // runs, and the cross-platform coverage of that path is the bounded run in
+    // `service_lifecycle.rs`, which exits on its own everywhere. The *sensor* path
+    // above runs on every platform, because that is where the platform-independent
+    // behaviour is.
     let exit = service.stop();
-    assert_eq!(exit.code(), Some(0));
-    assert!(
-        !fixture.state_path().exists(),
-        "a clean stop leaves no state file"
-    );
+    #[cfg(unix)]
+    {
+        assert_eq!(exit.code(), Some(0), "SIGTERM stops it cleanly");
+        assert!(
+            !fixture.state_path().exists(),
+            "a clean stop leaves no state file"
+        );
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = exit;
+        assert!(
+            fixture.state_path().exists(),
+            "killed rather than stopped: the state file is left behind, which is what \
+             the heartbeat/stale-takeover path exists for"
+        );
+    }
 }
 
 #[cfg(unix)]
