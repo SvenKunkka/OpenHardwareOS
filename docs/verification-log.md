@@ -1652,3 +1652,141 @@ own untracked `Prospector/` and `k10max-prospector/` working directories — key
 firmware work that has nothing to do with this repository's release. They were removed
 from the index before the commit and left exactly as found. `git add -A` is not a safe
 way to stage a release in a working tree that contains somebody else's work.
+
+---
+
+## 2026-09-15 — round 10: readings that can be checked, and a field that kept losing what was typed
+
+**Revision: `5ec543a`** — the pass below ran at that commit, which is the commit the
+tag points at. The commits carrying this entry follow it and change documentation only.
+
+### 1. The Linux preview's last claim: "readings can be cross-checked"
+
+Round 9 delivered the package; the remaining unmet criterion was that a reading can be
+compared with something that did not come from this project. Until now the honest
+answer was "read the source": every value came from sysfs, /proc or `sysinfo`, and
+nothing checked it against what the operating system itself reports.
+
+* **`ohm-cli status --json` and `ohm-cli doctor --json`** print one JSON object and
+  nothing else — providers with status and reason, devices with their readings, the
+  reason for each missing reading, and the capability notes. It is the *same*
+  snapshot the desktop renders from, so the two cannot disagree about what the runtime
+  reported. `crates/ohm-runtime/src/snapshot.rs` pins the paths a script reads, because
+  renaming a field silently changes what is being compared.
+
+* **`scripts/verify-linux-readings.sh`** compares each reading with the platform on the
+  same host and prints one line per reading: `AGREE`, `DIFFER` (exit 1), `NO-SOURCE`
+  (with the reason), `NOT-CHECKED` (no independent source exists). Memory against
+  `/proc/meminfo`; fan tachometers and PWM against **the very hwmon file the reading
+  came from**; temperatures against the range the platform reports; free space against
+  `df` for the same mount point. A machine with no fan channels is a normal `NO-SOURCE`
+  rather than a failure — the point is that it is stated — and `cpu.load` /
+  `cpu.frequency` are declared uncheckable from one sample instead of being dressed up.
+
+* **It runs on a real kernel**, in CI and in the release pipeline. Live result from this
+  round's release run on `ubuntu-latest` (Ubuntu 24.04.5, kernel 6.17.0-1022-azure):
+  `memory.total` equal to `/proc/meminfo` exactly, `memory.used` within 3.3 MB of
+  `MemTotal − MemAvailable`, three mount points agreeing with `df` to 0, 0 and 16384
+  bytes, the temperature reading inside the platform's own range, and `NO-SOURCE` for
+  hwmon because that runner has no fan driver. The same check ran on the macOS and
+  Windows runners in CI.
+
+* **The install page carries a version a user can run themselves**: which system file or
+  command corresponds to each reading, what a mismatch would mean, and the four
+  verdicts. Its fixture suite extracts and runs *every* bash block on the page.
+
+### 2. What the check found about itself
+
+The documented-route fixture suite failed on Linux, correctly: its `ohm-cli` shim fed
+**invented** readings, the documented check ran against the real /proc and /sys, found
+them wrong and exited 1. A fixture for a check whose whole purpose is catching a reading
+that does not match the machine has to tell the truth about the host it runs on, so it
+now reads `/proc/meminfo`, the hwmon fan/PWM files and `df` for the root filesystem.
+
+Doing that immediately exposed a real ordering bug in the check: with no
+`/proc/meminfo` at all, "we report nothing and give no reason for it" was reported as a
+**difference**. A missing platform source means there is nothing to disagree about; it
+is only a defect to report nothing when the platform *had* an answer. Two smaller ones
+went with it: readings can arrive as JSON floats (`82222657536.0`), which broke the
+comparison's bash arithmetic until values were coerced, and the storage comparison used
+the GNU-only `df --output=avail`, which made it untestable off Linux.
+
+### 3. The duty field, for the second time
+
+Two consecutive release builds failed on `expected 80, received 45` — the same assertion
+that failed a release build in round 8, where the cause was real (the field followed
+every reading, so a late one replaced what the user had typed). Round 8's guard was, and
+is, in place: probed by pushing a snapshot, by pushing one 120 ms late, and by reading
+the DOM, the field kept 80 in every case.
+
+So the helper was changed to say what the field *actually contained* instead of
+asserting on the write's arguments, and the next run said it in one line: after the
+change event, the field held 45. The control keeps its draft in local state, so a render
+that **unmounts and re-mounts** it — the device dropping out of one snapshot and coming
+back in the next, which a discovery cycle, a disable or a blip can do — threw the edit
+away and re-initialised the field from the reading.
+
+The draft now lives on the screen and the field's content is *derived*
+(`drafts[capability] ?? the reading`): there is no effect to lose it and no local state
+to reset. The regression test drives exactly that sequence — the device absent from a
+pushed snapshot, then present again — and it fails against the previous component with
+CI's own message, which was checked before committing the fix (git stash the component,
+run the test, see `expected '45' to be '80'`, restore).
+
+Two lessons, both paid for: an assertion on a *symptom* (the write carried the wrong
+value) hides the mechanism, while an assertion on the *state* names it; and this control
+has now lost a user's input twice, both times in a way that looked like the write path.
+
+### 4. Publication
+
+v0.1.5 = `5ec543a`, tagged and published as a preview with 12 assets. Every fact was
+re-checked from the download before the tag existed: both checksum lists verify as a
+whole, `install.ps1` is byte-identical to the tagged blob, the published `.deb` declares
+`open-hardware-os 0.1.5 amd64` with a 64-bit x86_64 ELF behind
+`usr/share/applications/OpenHardwareOS.desktop`, and both metadata files name the tagged
+commit. The public Windows install check passed against the tag
+([run 34939368500](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/34939368500)),
+`main` was fast-forwarded so the version-tree page names v0.1.5, and the acceptance source
+package was rebuilt from the release commit (
+`dist/acceptance/OpenHardwareOS-5ec543a-windows-acceptance.zip`, 258 files).
+
+### The verification pass (all commands re-run at `5ec543a`, nothing carried over)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `rustup run 1.98.1 cargo fmt --all -- --check` | exit 0 |
+| 2 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0 |
+| 3 | `cargo test --workspace --locked` | **523 passed, 0 failed**, 46 test-result lines |
+| 4 | `cargo deny check` | advisories ok, bans ok, licenses ok, sources ok |
+| 5 | `scripts/versions.py check --remote --generated` | OK; 7 catalogue entries |
+| 6 | `scripts/tests/test_versions.py` | 30 tests, OK |
+| 7 | `npm run typecheck` / `npm test` / `npm run build` | clean / **44 tests** / clean |
+| 8 | `scripts/tests/make-acceptance-package.test.sh` | 4 cases, 0 failures |
+| 9 | `scripts/release/test-packaging.ps1` | 6 cases, 0 failures |
+| 10 | `scripts/tests/package-linux.test.sh` | 10 cases, 54 checks, 0 failures |
+| 11 | `scripts/tests/linux-install-doc.test.sh` | 6 cases, 32 checks, 0 failures |
+| 12 | `scripts/tests/verify-linux-readings.test.sh` | **6 cases, 21 checks**, 0 failures |
+| 13 | `docs/windows-validation/.../run-script-tests.ps1` | 18 cases, 151 checks, 0 failures (doubles only) |
+| 14 | cross-target `cargo check` for `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu` | exit 0, plus Linux-target Clippy |
+| 15 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** |
+| 16 | delivered packages still match their manifests | every file |
+| 17 | `scripts/verify-linux-readings.sh` against the kernel's own sources | on CI's Ubuntu, macOS and Windows runners: every comparable reading `AGREE` |
+
+### What round 10 could **not** verify
+
+* **A machine whose readings are interesting.** The CI runners have no fan driver, so the
+  hwmon half of the cross-check reports `NO-SOURCE` there; the pathway is tested against
+  synthetic trees that agree and disagree, but a real SuperIO board is still unverified.
+* **The desktop window, tray and menu entry on Linux** — unchanged: the headless
+  self-test returns before the GUI is built.
+* **Real hardware of any kind**: no fan, no pump, no physical response.
+* **Whether a user's own cross-check would find a *stale* reading**: the check compares
+  values, not their age, and the engine's staleness window is still a policy question
+  (carried over from round 8).
+
+### Deliberately **not** done in round 10
+
+No hardware was written to; no autostart or global environment value was changed; nothing
+was installed on the host; no licence was approved on the user's behalf (ADR 0002 and ADR
+0004 remain **Proposed**); `Prospector/` and `k10max-prospector/` were left exactly as
+found, and nothing from them was staged.

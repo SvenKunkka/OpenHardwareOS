@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "repository": "SvenKunkka/OpenHardwareOS",
-  "development": "v0.1.5",
+  "development": null,
   "versions": [
     {
       "id": "v0.1.0",
@@ -180,15 +180,15 @@
     {
       "id": "v0.1.5",
       "parent": "v0.1.4",
-      "status": "development",
+      "status": "released",
       "channel": "preview",
       "title": "读数可核对",
       "summary": "CLI 增加机器可读输出（status/doctor --json），并给出与系统自身来源逐项对照的检查与说明。",
-      "tag": null,
-      "commit": null,
-      "branch": "codex/v0.1.5",
-      "release_url": null,
-      "published_at": null,
+      "tag": "v0.1.5",
+      "commit": "5ec543a9247bc54c1195c0c83a0e7d893f423f47",
+      "branch": null,
+      "release_url": "https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.5",
+      "published_at": "2026-09-15T06:57:43Z",
       "changes": [
         "`ohm-cli status --json` / `doctor --json`：一条 JSON，包含每个读数的值、状态与缺失原因",
         "`scripts/verify-linux-readings.sh`：把每个读数与内核自己的文件（sysfs、/proc、df）逐项对照，输出 AGREE/DIFFER/NO-SOURCE/NOT-CHECKED",
@@ -197,7 +197,12 @@
         "安装页新增用户可自行执行的对照命令与对应关系表；CI 与发布流程在真实内核上运行该检查",
         "读数为 JSON 浮点（如 82222657536.0）时不再破坏比较；磁盘对照改用可移植的 df 第 4 列"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "title": "GitHub 已发布版本与构建来源",
+          "url": "https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.5"
+        }
+      ],
       "hardware_validation": "not_verified",
       "plan": null
     },

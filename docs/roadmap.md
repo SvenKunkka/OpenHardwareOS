@@ -413,6 +413,13 @@ uses per-machine installation. Code signing, an elevated helper and a Windows
 service remain separate work. Normal runtime exit requests restoration of firmware
 control; the result still requires target-device validation.
 
+**Linux readings are checkable against the machine itself.** Since v0.1.5 the CLI
+prints one JSON object (`status --json`, `doctor --json`) and
+`scripts/verify-linux-readings.sh` compares every reading with the platform's own
+answer on the same host, naming what it compared with and why a reading has no
+comparable source. It runs in CI and in the release pipeline on a real kernel, and
+the install page tells a user how to do the same by hand.
+
 **Linux now has a desktop package.** Since v0.1.4 a release publishes
 `OpenHardwareOS-<version>-linux-x86_64.deb` and `.AppImage` beside the CLI archive, and the
 release run installs the `.deb` with `apt-get` on the runner and starts the *installed*
