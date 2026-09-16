@@ -71,6 +71,47 @@ describe('a gated rule on its card', () => {
   });
 });
 
+describe('automation that another process is running', () => {
+  beforeEach(() => {
+    resetIpcMock();
+  });
+
+  /**
+   * A background service can own the hardware channels. The engine then deliberately
+   * does not start, and without saying so the screen looks like automation that is
+   * simply broken — the reason matters more than the fact.
+   */
+  it('says which process holds the channels and what this window will still do', async () => {
+    ipcMock().api.automationStats.mockResolvedValue({
+      rules: 1,
+      enabled_rules: 1,
+      ticks: 0,
+      evaluations: 0,
+      writes: 0,
+      skipped: 0,
+      fallbacks: 0,
+      failures: 0,
+      last_tick_ms: 0,
+      blocked_by:
+        'another process (pid 4242) is running the rules and owns the hardware channels; automation is not started here',
+    });
+
+    renderWithProviders(<Automation />);
+
+    const notice = await screen.findByTestId('automation-blocked');
+    expect(notice.textContent).toContain('pid 4242');
+    expect(screen.getByText(/Another process is running the rules/)).toBeTruthy();
+    expect(screen.getByText(/will not write while the other process owns the channels/)).toBeTruthy();
+  });
+
+  it('says nothing when this process is the one running the rules', async () => {
+    renderWithProviders(<Automation />);
+    // The default fixture has no `blocked_by`, and no notice may appear for it.
+    await waitFor(() => expect(ipcMock().api.automationStats).toHaveBeenCalled());
+    expect(screen.queryByTestId('automation-blocked')).toBeNull();
+  });
+});
+
 describe('the output-conflict section', () => {
   beforeEach(() => {
     resetIpcMock();

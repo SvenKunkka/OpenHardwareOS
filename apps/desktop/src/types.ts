@@ -531,6 +531,13 @@ export interface AutomationStats {
    * front-end can say so instead of implying it was saved.
    */
   persistence_error?: string;
+  /**
+   * Set when this process deliberately did **not** start its rule loop because another
+   * one owns the hardware channels — a background service — with the pid that holds
+   * them. Without showing it, the screen looks like automation that simply is not
+   * working.
+   */
+  blocked_by?: string;
 }
 
 // ---------------------------------------------------------------------------

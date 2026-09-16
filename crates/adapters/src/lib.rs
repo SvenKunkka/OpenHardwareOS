@@ -34,7 +34,8 @@
 
 pub mod prelude {
     pub use ohm_adapter_api::{AdapterInfo, AdapterStatus, HardwareAdapter};
-    pub use ohm_adapter_lhm::LhmAdapter;
+    pub use ohm_adapter_lhm::web::LhmConfig;
+    pub use ohm_adapter_lhm::{ADAPTER_ID as LHM_ADAPTER_ID, LhmAdapter, LhmSensorEvidence};
     pub use ohm_adapter_mock::MockAdapter;
     pub use ohm_adapter_nvidia::NvidiaAdapter;
     pub use ohm_adapter_opd::OpdAdapter;

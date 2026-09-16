@@ -697,6 +697,20 @@ struct ReportRule {
 
 /// What the operating system itself says, gathered from files rather than from an API
 /// this project wrote. A reader can compare these with the readings above.
+/// What LibreHardwareMonitor reports, on a machine where it is running.
+///
+/// On Windows this *is* the platform's own answer: LHM owns the SuperIO driver and
+/// reads the same registers we read through it, so its window is what a person
+/// compares our readings against. Empty on a machine without LHM, with the reason.
+#[derive(Debug, Default, serde::Serialize)]
+struct LhmEvidence {
+    url: String,
+    sensors: Vec<ohm_adapters::prelude::LhmSensorEvidence>,
+    /// Set when the list was cut short, so a reader knows it is not everything.
+    truncated_at: Option<usize>,
+    notes: Vec<String>,
+}
+
 #[derive(Debug, Default, serde::Serialize)]
 struct PlatformEvidence {
     /// Where the hwmon files were read from — an override tree, or the real sysfs.
@@ -708,6 +722,8 @@ struct PlatformEvidence {
     meminfo: Vec<String>,
     /// `df -k` for the filesystems this report covers.
     df: Vec<String>,
+    /// LibreHardwareMonitor's own sensor list, when it is running.
+    lhm: LhmEvidence,
     /// Notes about what could not be read, so an empty section is explained.
     notes: Vec<String>,
 }
@@ -727,8 +743,38 @@ struct HwmonChipEvidence {
 /// Every failure here becomes a note rather than an error: a report from a machine
 /// with no `hwmon` at all is still a useful report, and saying *why* a section is
 /// empty is the whole point of collecting one.
-fn platform_evidence() -> PlatformEvidence {
+fn platform_evidence(lhm: Option<ohm_adapters::prelude::LhmConfig>) -> PlatformEvidence {
     let mut evidence = PlatformEvidence::default();
+
+    // LibreHardwareMonitor's own view, when it is there. Windows has no sysfs, so
+    // without this the platform half of the report is empty on exactly the machine
+    // the fan work happens on — and LHM's window is what a person compares against
+    // there.
+    match lhm {
+        None => evidence.lhm.notes.push(
+            "LibreHardwareMonitor is switched off in settings, so its own view of this \
+             machine is not in this report"
+                .to_string(),
+        ),
+        Some(config) => {
+            evidence.lhm.url = config.base_url.clone();
+            match ohm_adapters::prelude::LhmAdapter::new(config).platform_evidence() {
+                Ok(sensors) => {
+                    const LIMIT: usize = 400;
+                    if sensors.len() > LIMIT {
+                        evidence.lhm.truncated_at = Some(LIMIT);
+                        evidence.lhm.sensors = sensors.into_iter().take(LIMIT).collect();
+                    } else {
+                        evidence.lhm.sensors = sensors;
+                    }
+                }
+                Err(error) => evidence.lhm.notes.push(format!(
+                    "LibreHardwareMonitor could not be read: {}",
+                    error.detail(&evidence.lhm.url)
+                )),
+            }
+        }
+    }
 
     let root: Option<std::path::PathBuf> =
         match std::env::var_os(ohm_adapters::prelude::ENV_HWMON_ROOT) {
@@ -753,7 +799,7 @@ fn platform_evidence() -> PlatformEvidence {
                 ohm_adapters::prelude::ENV_HWMON_ROOT
             )
         } else {
-            "hwmon: this platform has no sysfs, so fan tachometers and PWM values have              no file to compare with. On Windows the same numbers come from              LibreHardwareMonitor, and its window is the source to compare against."
+            "hwmon: this platform has no sysfs, so fan tachometers and PWM values have no file to compare with. On Windows the same numbers come from LibreHardwareMonitor, and its own sensor list is in this report."
                 .to_string()
         }),
         Some(path) => {
@@ -871,7 +917,19 @@ async fn report(cli: &Cli, out: Option<&str>, use_mock: bool) -> Result<()> {
     let session = Session::open(cli, use_mock, None).await?;
     session.start().await?;
 
-    let platform = platform_evidence();
+    let lhm_config = ohm_adapters::prelude::LhmConfig::from_json(
+        session
+            .runtime
+            .settings()
+            .adapter_config(ohm_adapters::prelude::LHM_ADAPTER_ID),
+    );
+    let platform = platform_evidence(
+        session
+            .runtime
+            .settings()
+            .adapter_enabled(ohm_adapters::prelude::LHM_ADAPTER_ID)
+            .then_some(lhm_config),
+    );
 
     let settings = session.runtime.settings();
     let rules = session
@@ -938,11 +996,15 @@ async fn report(cli: &Cli, out: Option<&str>, use_mock: bool) -> Result<()> {
     );
     println!("devices:    {}", report.devices.len());
     println!(
-        "platform:   {} hwmon chip(s), {} meminfo line(s), {} df line(s)",
+        "platform:   {} hwmon chip(s), {} meminfo line(s), {} df line(s), {} LHM sensor(s)",
         report.platform.hwmon.len(),
         report.platform.meminfo.len(),
-        report.platform.df.len()
+        report.platform.df.len(),
+        report.platform.lhm.sensors.len()
     );
+    for note in &report.platform.lhm.notes {
+        println!("note:       {note}");
+    }
     for note in &report.platform.notes {
         println!("note:       {note}");
     }

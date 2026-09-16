@@ -45,8 +45,10 @@ ohm-cli report
 * **平台自己的答案**：`hwmon` 目录里每个芯片的 `fan*_input` / `pwm*` / `pwm*_enable` / `temp*_input`
   的原始内容、`/proc/meminfo` 的 `MemTotal`/`MemAvailable`、`df -k` 的输出。
 
-在 Windows 上平台那一半基本是空的（没有 sysfs）；**这不是缺陷**，此时对照对象是
-LibreHardwareMonitor 自己的窗口——把同一个传感器的数值抄进记录里即可。
+在 Windows 上，平台那一半来自 **LibreHardwareMonitor 自己的传感器清单**（它的 Web 接口，
+按它的 id、名称、类型、硬件路径与原始值字符串原样收录）：那里的对照对象就是 LHM 自己的窗口，
+而报告已经把它的数字带上了，不必手抄。若 LHM 没在运行，报告会**说明原因**（以及它尝试的地址），
+而不是看起来像一台没有传感器的机器。
 
 同时留下：
 

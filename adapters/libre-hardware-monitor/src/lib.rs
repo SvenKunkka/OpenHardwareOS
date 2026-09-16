@@ -61,6 +61,39 @@ pub const READ_BACK_TOLERANCE_PERCENT: f64 = 1.0;
 /// Display name.
 pub const ADAPTER_NAME: &str = "LibreHardwareMonitor";
 
+/// One sensor, as LibreHardwareMonitor reports it.
+///
+/// Deliberately its own shape rather than this project's device model: the report is
+/// meant to show the *provider's* answer, so a reader can compare it with ours.
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LhmSensorEvidence {
+    /// LHM's internal id, e.g. `/lpc/nct6687d/control/0`.
+    pub id: String,
+    /// Display name, e.g. `Fan Control #1`.
+    pub text: String,
+    /// `Temperature`, `Fan`, `Control`, `Load`, ...
+    pub sensor_type: String,
+    /// `SuperIO`, `Motherboard`, `GpuNvidia`, ...
+    pub hardware: String,
+    /// The number LHM computed, when it has one.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub value: Option<f64>,
+    /// The string LHM showed, kept verbatim — `N/A` and `null` are answers too.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub raw: Option<String>,
+}
+
+impl std::fmt::Debug for LhmSensorEvidence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LhmSensorEvidence")
+            .field("id", &self.id)
+            .field("text", &self.text)
+            .field("type", &self.sensor_type)
+            .field("value", &self.raw.as_deref().unwrap_or("(none)"))
+            .finish()
+    }
+}
+
 /// OpenHardwareOS's view of a running LibreHardwareMonitor instance.
 #[derive(Debug)]
 pub struct LhmAdapter {
@@ -109,6 +142,37 @@ impl LhmAdapter {
     /// Current device mapping.
     pub fn mapping(&self) -> LhmMapping {
         self.mapping.read().clone()
+    }
+
+    /// LibreHardwareMonitor's own view of this machine, for a field report.
+    ///
+    /// On Windows, LHM's window *is* the platform's answer: it owns the SuperIO
+    /// driver and reads the same registers we read through it. A report that carries
+    /// its own sensor list lets somebody compare our readings with the numbers a
+    /// person sees in that window — which is the point of collecting a report from a
+    /// machine nobody else can look at.
+    ///
+    /// Fetched fresh rather than from the last poll, so the values in the report are
+    /// as close as possible to the readings beside them.
+    pub fn platform_evidence(&self) -> std::result::Result<Vec<LhmSensorEvidence>, LhmError> {
+        let tree = self.client.fetch_tree()?;
+        Ok(tree
+            .flatten()
+            .into_iter()
+            .filter(|node| node.sensor_type.is_some())
+            .map(|node| LhmSensorEvidence {
+                id: node.id.clone(),
+                text: node.text.clone(),
+                sensor_type: node.sensor_type.clone().unwrap_or_default(),
+                hardware: node
+                    .hardware_name
+                    .clone()
+                    .or_else(|| node.hardware_type.clone())
+                    .unwrap_or_default(),
+                value: node.value,
+                raw: node.raw_value.clone(),
+            })
+            .collect())
     }
 
     /// Fetch the tree and re-map it.
@@ -404,6 +468,56 @@ mod tests {
             timeout_ms: 1_000,
             ..LhmConfig::default()
         })
+    }
+
+    #[tokio::test]
+    async fn platform_evidence_is_lhms_own_view_of_the_machine() {
+        let server = FakeLhm::start();
+        let adapter = adapter(&server);
+
+        let evidence = adapter
+            .platform_evidence()
+            .expect("the fake server answers");
+        assert!(!evidence.is_empty(), "LHM reports sensors");
+
+        // Only sensors: hardware nodes have no type and no value, and a report full of
+        // containers would bury the numbers a person compares against.
+        assert!(
+            evidence.iter().all(|sensor| !sensor.sensor_type.is_empty()),
+            "{evidence:#?}"
+        );
+        let fan = evidence
+            .iter()
+            .find(|sensor| sensor.sensor_type == "Fan")
+            .expect("the fake machine has a fan");
+        assert!(
+            !fan.id.is_empty(),
+            "the id is what a comparison is keyed on"
+        );
+        assert!(
+            !fan.text.is_empty(),
+            "and the name is what LHM's window shows"
+        );
+        // A sensor LHM has a number for carries it; one it does not still carries
+        // whatever it said (`N/A`, an empty string) rather than being dropped.
+        let with_value = evidence
+            .iter()
+            .filter(|sensor| sensor.value.is_some() || sensor.raw.is_some())
+            .count();
+        assert!(
+            with_value > 0,
+            "the provider's own numbers are in the report: {evidence:#?}"
+        );
+
+        // Unreachable is an error with a reason, not an empty list: a report that
+        // silently shows no LHM data would look like a machine without sensors.
+        let offline = LhmAdapter::new(LhmConfig {
+            base_url: "http://127.0.0.1:1".to_string(),
+            timeout_ms: 1_000,
+            ..LhmConfig::default()
+        });
+        let error = offline.platform_evidence().unwrap_err();
+        assert!(!error.detail("http://127.0.0.1:1/").is_empty());
     }
 
     #[tokio::test]

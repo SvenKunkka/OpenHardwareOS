@@ -110,6 +110,27 @@ fn the_report_carries_our_readings_and_the_platforms_own_answer() {
     );
 
     // And an explanation for a section that is empty, rather than silence.
+    // The Windows half of the platform evidence is LibreHardwareMonitor's own sensor
+    // list. There is no LHM on a test machine, so what is asserted here is the honest
+    // failure: the section says why it is empty and names the server it tried, rather
+    // than looking like a machine without sensors. The successful path is covered by
+    // `ohm-adapter-lhm`'s own tests against its fake server.
+    let lhm = &report["platform"]["lhm"];
+    assert!(lhm["url"].is_string(), "it names the server it asked");
+    assert_eq!(
+        lhm["sensors"].as_array().map(|list| list.len()),
+        Some(0),
+        "and carries no invented sensors"
+    );
+    let lhm_notes = lhm["notes"].as_array().expect("notes");
+    assert!(
+        lhm_notes.iter().any(|note| note
+            .as_str()
+            .unwrap_or_default()
+            .contains("LibreHardwareMonitor")),
+        "with a reason a reader can act on: {lhm_notes:?}"
+    );
+
     // And an explanation for a section that is empty, rather than silence — which means
     // two different assertions, because the answer depends on the platform. Linux has
     // `/proc/meminfo` and must show it; everywhere else must say why it has nothing.

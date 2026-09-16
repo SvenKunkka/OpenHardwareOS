@@ -333,6 +333,14 @@ export function Automation() {
   const capabilityIndex = usePolled(() => api.capabilityIndex(), tick, { throttleMs: 8000 });
   const suggestions = usePolled(() => api.suggestRules(), tick, { throttleMs: 15000 });
   const conflicts = usePolled(() => api.ruleConflicts(), tick, { throttleMs: 4000 });
+  /**
+   * Why this process is not driving the channels, when another one is.
+   *
+   * Polled rather than pushed: a service can start or stop while this window is open,
+   * and the honest answer changes with it.
+   */
+  const stats = usePolled(() => api.automationStats(), tick, { throttleMs: 4000 });
+  const blockedBy = stats.data?.blocked_by;
   const compatibility = usePolled(() => api.ruleCompatibilityNotes(), tick, { throttleMs: 8000 });
 
   const [editing, setEditing] = useState<RuleDraft | null>(null);
@@ -433,6 +441,17 @@ export function Automation() {
             </Badge>
           ) : null}
         </div>
+
+        {blockedBy ? (
+          <InlineNotice tone="warn" title="Another process is running the rules">
+            <p data-testid="automation-blocked">{blockedBy}</p>
+            <p className="inline-notice__hint">
+              This window will read and show hardware, but it will not write while the
+              other process owns the channels. Stop that service (`ohm-cli service
+              status`) to run the rules from here instead.
+            </p>
+          </InlineNotice>
+        ) : null}
 
         {rules.error ? (
           <InlineNotice tone="error" title="Could not load rules">
