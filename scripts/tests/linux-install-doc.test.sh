@@ -337,7 +337,11 @@ if run_block "$WORK/tampered.sh"; then
   bad "the block fails on a checksum mismatch"
 else
   ok "the block fails on a checksum mismatch"
-  grep -qi "FAILED\|does not match" "$WORK/last.log" \
+  # `-E`, not a `\|` alternation: this machine's `grep` is toybox, which reads `\|` as a
+  # literal pipe — and the check then fails while the log it is reading contains exactly
+  # the line it is looking for. A test whose verdict depends on which `grep` is installed
+  # is not a test of the documented route.
+  grep -qiE "FAILED|does not match" "$WORK/last.log" \
     && ok "  and the checksum tool said so" || bad "  and the checksum tool said so"
 fi
 [ ! -e "$CASE_HOME/.local/share/OpenHardwareOS/cli-$VERSION" ] \
