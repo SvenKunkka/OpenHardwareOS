@@ -2434,3 +2434,115 @@ was approved on the user's behalf (ADR 0002 and ADR 0004 remain **Proposed**);
 this round is confined to this project's own release flow: the tagged commit is the one
 this pass ran at, the artefacts are downloaded and checked before they are attached, and
 no earlier tag, release or download was modified.
+
+---
+
+## 2026-09-16 — round 16: last round's defect class now fails a test
+
+**Revision: `1791572`** — the pass below ran at that commit. This work is not part of a
+prepared version yet: no version was started, so there is no CHANGELOG section for it and
+no tag. The entry exists because the change is a verification guarantee, and a guarantee
+nobody wrote down is the thing this round is about.
+
+### 1. Round 15 found the defect by reading a log. Nothing in this repository had failed
+
+The renaming defect was silent for six rounds because no check connected a built
+artefact's name to the places that use it. Two more instances of the same class were
+sitting in the tree:
+
+* **The Linux packager said it, and nothing checked it.** `scripts/release/package-linux.sh`
+  carried the comment "The installed binary is `openhardwareos` because `mainBinaryName`
+  says so" next to assertions about the package name, the architecture and the desktop
+  entry — every one of those was enforced, and the binary's own name was not. A second
+  rename would have shipped a `.deb` installing `/usr/bin/<new name>` while the Linux
+  install page told users to run `/usr/bin/openhardwareos`, and CI would have passed.
+* **The install pages carry the version in more than one place.** `$ohmVersion` /
+  `ohm_version` were the obvious entry, but the pages also name the CLI's versioned
+  directory — `cli-v0.1.10`, six occurrences across `README.md`,
+  `docs/windows-install.md` and `docs/linux-install.md` — and a release-page link.
+  Nothing tied any of them to `docs/versions.json`, so a half-finished version bump
+  would send a reader to a directory that does not exist.
+
+### 2. One source per name, one downloadable target per entry
+
+`scripts/check-artefact-names.py` (no toolchain required) enforces:
+
+| Thing | Single source | What must agree with it |
+|---|---|---|
+| desktop artefact name | `mainBinaryName` in `apps/desktop/src-tauri/tauri.conf.json` | `/usr/bin/<name>` and the self-test commands in `docs/linux-install.md`; the packager and the IPC script must read the key rather than repeat the name; no non-comment literal `target/release/<name>` in any shell script (the name is derived or passed in) |
+| CLI artefact name | `apps/cli/Cargo.toml` | the packager's staging and archive names, its own archive assertion, `install.ps1`'s `<name>.exe`, the release workflow's packaged path, and the documented commands |
+| install entry | `docs/versions.json` | every download URL, release-page link, `$ohmVersion`, `ohm_version`, `cargo install --tag` and `cli-vX.Y.Z` path must name the **newest released** version, or the one being prepared while it is being prepared |
+
+`scripts/tests/test_artefact_names.py` (15 tests) copies the files the checker reads into a
+throwaway tree and breaks one source of truth at a time — the artefact renamed, a
+hardcoded path, an empty `mainBinaryName`, a missing configuration, the CLI renamed, a
+planned version in an install entry, an older released version, a stale release-page link,
+a `cli-v` path that did not move — and requires the checker to report each one. It also
+requires that a note in a *comment* about the old name is **not** reported: correcting
+history is not the same as depending on it.
+
+**The guard was wrong when first written, and its own test said so.** It allowed any
+*released* version as an install target, so an entry left behind on an older release would
+have passed. The mutation test for "an older released version" failed, the rule became
+"newest released, or the one being prepared", and `record-release` clearing the
+development pointer is what makes the published state strict.
+
+`scripts/release/package-linux.sh` now derives the expected binary name from
+`mainBinaryName` and refuses a package that installs anything else. Case 8c of
+`scripts/tests/package-linux.test.sh` proves it twice: a `.deb` whose binary is named
+`ohm-desktop` is refused with the setting named, and a fixture checkout declaring another
+name refuses the otherwise-good package — so the expectation follows the configuration
+rather than a constant.
+
+Both run in CI's `Version catalogue and lifecycle` job, and in the local pass.
+
+### 3. The verification pass (all commands re-run at `1791572`, nothing carried over)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `rustup run 1.98.1 cargo fmt --all -- --check` | exit 0 |
+| 2 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0 |
+| 3 | `cargo test --workspace --locked` | **559 passed, 0 failed**, 50 test-result lines |
+| 4 | `cargo deny check` | advisories ok, bans ok, licenses ok, sources ok |
+| 5 | `scripts/versions.py check --remote --generated` | OK: 12 catalogue entries; application version 0.1.10; published releases verified on GitHub |
+| 5b | `scripts/check-artefact-names.py` | OK: desktop `openhardwareos` and CLI `ohm-cli` agree with their sources; **16 install entries** point at a downloadable version |
+| 5c | `unittest discover -s scripts/tests -p 'test_*.py'` | **48 tests, OK** (33 version lifecycle + 15 artefact names) |
+| 6 | `npm run typecheck` / `npm test` / `npm run build` | clean / **46 tests** / clean |
+| 7 | `scripts/tests/make-acceptance-package.test.sh` | 4 cases, 0 failures |
+| 8 | `scripts/release/test-packaging.ps1` | 6 cases, 0 failures |
+| 8b | `scripts/tests/package-linux.test.sh` | **11 cases, 58 checks**, 0 failures (including the four new artefact-name checks) |
+| 8c | `scripts/tests/linux-install-doc.test.sh` | 6 cases, 34 checks, 0 failures |
+| 8d | `scripts/tests/verify-linux-readings.test.sh` | 6 cases, 21 checks, 0 failures |
+| 9 | `docs/windows-validation/.../run-script-tests.ps1` | 18 cases, 151 checks, 0 failures (doubles only) |
+| 10 | cross-target `cargo check` for `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu` | exit 0, plus Linux-target Clippy |
+| 11 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** — 51 `PASS`, 0 `FAIL` |
+| 12 | delivered source packages still verify | every file matches its manifest |
+| 13 | repository hygiene | only `Prospector/` and `k10max-prospector/` untracked, untouched |
+
+`non-zero steps: 0`.
+
+One process note, because it is the same subject: the pass was started twice and killed
+both times, because the checker was edited after the first run had begun — a pass that
+reads a file the working tree changed underneath it is not a record of a revision. The
+run above is the third attempt, started from a clean tree at `1791572` and left alone
+until it finished.
+
+### 4. What round 16 could **not** verify
+
+* **A real rename, end to end.** The guard is exercised on fixtures and on a fixture
+  checkout with a mutated `tauri.conf.json`; no artefact was actually renamed in this
+  repository, which would have meant rebuilding the desktop application and shipping a
+  package to prove a point a fixture already makes.
+* **The guard's own coverage of anything unforeseen.** It checks the places that name an
+  artefact *today*. A fifth place that starts naming one is a hole until someone adds it —
+  this round closed three such places, not the class itself.
+* **Anything on real hardware.** Unchanged: no fan measured, no `pwm<N>` written, no
+  Windows or Linux run of the desktop application.
+
+### Deliberately **not** done in round 16
+
+No version was prepared, so the workspace version, the catalogue and `CHANGELOG.md` are
+untouched; no tag, release or download was created or modified. No hardware was written to;
+no autostart entry was created and no global environment value was changed; nothing was
+installed on the host; no licence was approved on the user's behalf (ADR 0002 and ADR 0004
+remain **Proposed**); `Prospector/` and `k10max-prospector/` were left exactly as found.
