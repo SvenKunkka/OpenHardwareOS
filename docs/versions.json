@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "repository": "SvenKunkka/OpenHardwareOS",
-  "development": "v0.1.8",
+  "development": null,
   "versions": [
     {
       "id": "v0.1.0",
@@ -266,22 +266,27 @@
     {
       "id": "v0.1.8",
       "parent": "v0.1.7",
-      "status": "development",
+      "status": "released",
       "channel": "preview",
       "title": "实机核对：让证据能带回来",
       "summary": "新增 ohm-cli report（把我们报告的读数与平台自己的原始答案放进同一个文件）与实机核对清单。",
-      "tag": null,
-      "commit": null,
-      "branch": "codex/v0.1.8",
-      "release_url": null,
-      "published_at": null,
+      "tag": "v0.1.8",
+      "commit": "9c4ffe2314c22b52c9aa38a6ec04bffa7d25f425",
+      "branch": null,
+      "release_url": "https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.8",
+      "published_at": "2026-09-16T01:45:18Z",
       "changes": [
         "ohm-cli report：一份 JSON 同时包含我们的读数与平台自己的答案（hwmon 原始文件、/proc/meminfo、df），交给别人也能判断读数是否真实",
         "报告写入配置目录的 reports/，并在摘要里打印路径、提供方状态、芯片数与不可读项的原因",
         "docs/field-checklist.md：Windows/Linux 实机核对步骤——先只读确认、再单通道受限调速、然后退出与异常终止的恢复，每步都写明记录什么与怎么撤回",
         "清单明确列出尚未有证据的结论（实机读写、托盘/自启、Linux 写 PWM、水泵），避免把\"能跑\"读成\"已验证\""
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "title": "GitHub 已发布版本与构建来源",
+          "url": "https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.8"
+        }
+      ],
       "hardware_validation": "not_verified",
       "plan": null
     },

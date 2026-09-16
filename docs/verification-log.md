@@ -2061,3 +2061,125 @@ No hardware was written to; no autostart entry was created and no global environ
 value was changed; nothing was installed on the host; no licence was approved on the
 user's behalf (ADR 0002 and ADR 0004 remain **Proposed**); `Prospector/` and
 `k10max-prospector/` were left exactly as found.
+
+---
+
+## 2026-09-15 — round 13: making a real machine's evidence able to travel
+
+**Revision: `9c4ffe2`** — the pass below ran at that commit, which is the commit the tag
+points at. The commits carrying this entry follow it and change documentation only.
+
+### 1. The next step happens on a machine that is not here
+
+The plan's next item is validating a chassis fan on a real desktop, then the pump. That
+work happens on the user's machine, and a sentence like "it read 1200 rpm" is worth
+exactly as much as the evidence attached to it. Nothing in this project produces that
+evidence yet: `doctor` prints a report for the person in front of the machine, and the
+Linux cross-check compares readings with the kernel — but neither produces a *file* that
+carries both sides to somebody else.
+
+`ohm-cli report` does:
+
+* **this project's half**: providers with status and reason, every device with its
+  readings, the reason for each missing reading, the capability notes, and the installed
+  rules;
+* **the platform's half, unparsed**: for every `hwmon` chip the raw contents of its
+  `fan*_input`, `pwm*`, `pwm*_enable` and `temp*_input` files, plus `/proc/meminfo` and
+  `df -k`.
+
+Side by side, so a reading can be compared with the file it came from without trusting
+this project's parser — which is the whole point of asking for the file. Every
+unreadable section carries a note explaining itself; a report from a machine with no
+`hwmon` at all is still a useful report, and on Windows that half is empty by nature.
+
+### 2. The procedure, with the rollback written next to the dangerous step
+
+`docs/field-checklist.md` is the other half of the deliverable: what to prepare, what to
+run, what to record, and — for the steps that write real hardware — how to undo them. It
+is ordered by risk rather than by feature: read-only confirmation first, then restricted
+control of **one** channel, then exit and forced-kill behaviour, then the service while
+the window closes. It names the safety rules at the top (never the CPU fan, one channel
+at a time, know the way back) and lists at the bottom every claim that still has no
+evidence, so "it runs" cannot be read as "it is verified".
+
+Two details that matter for a real machine and were not obvious while writing it: the
+rule in step 3 must take *both* its source and its target from `ohm-cli doctor` on that
+machine — the ids in the documentation are simulated devices and would fail validation
+there — and a forced kill (`kill -9`, or End Task) is recorded as what it is, a state
+that does **not** hand control back, rather than as a defect to fix.
+
+### 3. The fourth occurrence of one mistake, and the honest answer to it
+
+CI's Ubuntu runner failed the new report test at the note about `/proc/meminfo`, because
+on Linux that file exists and no such note is written. The assertion had been written
+from the machine it was written on — the fourth time in three rounds, and the second time
+in this file's family. It now asserts both cases: Linux must carry `MemTotal` and must not
+claim meminfo is missing; everywhere else must carry nothing and must say why.
+
+The pattern deserves the sentence it keeps earning: **an assertion, fixture or helper
+whose meaning depends on the machine it is compiled or run on.** Three of the four were
+found by CI, one by thinking about it first. The local pass cannot see any of them, and
+the single cross-target gate checks a crate that has no platform-specific tests — so this
+is a real limit of the local setup, not an oversight of one step.
+
+The limit is fixable: Docker and colima are installed on this machine, and running the
+test job inside a Linux container would execute the Ubuntu path locally. It was not
+started, because starting colima changes host state — a VM and downloaded images — and
+that is the user's decision rather than mine. Recorded here as the obvious next
+improvement to the verification loop, with that caveat.
+
+### 4. Publication
+
+v0.1.8 = `9c4ffe2`, tagged and published as a preview with 12 assets. Both checksum lists
+verify as a whole from the download, `install.ps1` is byte-identical to the tagged blob,
+both metadata files name the tagged commit, and the released CLI carries the new
+subcommand. The public Windows install check passed against the tag
+([run 35045369898](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/35045369898)),
+`main` was fast-forwarded so the version-tree page names v0.1.8, and the acceptance source
+package was rebuilt from the release commit
+(`dist/acceptance/OpenHardwareOS-9c4ffe2-windows-acceptance.zip`, 265 files).
+
+### The verification pass (all commands re-run at `9c4ffe2`, nothing carried over)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `rustup run 1.98.1 cargo fmt --all -- --check` | exit 0 |
+| 2 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0 |
+| 3 | `cargo test --workspace --locked` | **544 passed, 0 failed**, 50 test-result lines |
+| 4 | `cargo deny check` | advisories ok, bans ok, licenses ok, sources ok |
+| 5 | `scripts/versions.py check --remote --generated` | OK; 10 catalogue entries |
+| 6 | `scripts/tests/test_versions.py` | 30 tests, OK |
+| 7 | `npm run typecheck` / `npm test` / `npm run build` | clean / 44 tests / clean |
+| 8 | `scripts/tests/make-acceptance-package.test.sh` | 4 cases, 0 failures |
+| 9 | `scripts/release/test-packaging.ps1` | 6 cases, 0 failures |
+| 10 | `scripts/tests/package-linux.test.sh` | 10 cases, 54 checks, 0 failures |
+| 11 | `scripts/tests/linux-install-doc.test.sh` | 6 cases, 32 checks, 0 failures |
+| 12 | `scripts/tests/verify-linux-readings.test.sh` | 6 cases, 21 checks, 0 failures |
+| 13 | `docs/windows-validation/.../run-script-tests.ps1` | 18 cases, 151 checks, 0 failures (doubles only) |
+| 14 | cross-target `cargo check` (Windows and Linux targets) | exit 0, plus Linux-target Clippy |
+| 15 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** |
+| 16 | delivered packages still match their manifests | every file |
+| 17 | `scripts/verify-linux-readings.sh` against the kernel's own sources | every comparable reading `AGREE` |
+
+Three tests were added (`apps/cli/tests/field_report.rs`): the report carries both halves
+against a prepared tree, a default target lands in `reports/`, and installed rules appear
+in the file.
+
+### What round 13 could **not** verify
+
+* **Anything on real hardware** — unchanged, and now the point: this round built the
+  instrument that the next round's evidence comes out of, and the instrument itself has
+  only been run against prepared trees and this development machine.
+* **That the checklist is complete**: it has not been executed on a Windows desktop or a
+  Linux box with a real SuperIO chip, so what it forgot is unknown.
+* **The Windows half of the report**: on this machine that section is empty by design;
+  nobody has seen it filled from a machine with LibreHardwareMonitor running.
+
+### Deliberately **not** done in round 13
+
+No hardware was written to; no autostart entry was created and no global environment
+value was changed; nothing was installed on the host, and in particular colima was not
+started despite being the obvious way to close the local-verification gap — that is a
+host change and the user's call; no licence was approved on the user's behalf (ADR 0002
+and ADR 0004 remain **Proposed**); `Prospector/` and `k10max-prospector/` were left
+exactly as found.
