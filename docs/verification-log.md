@@ -3003,7 +3003,8 @@ this can run while another service owns the channels.
 | 12 | delivered source packages still verify | every file matches its manifest |
 | 13 | repository hygiene | only `Prospector/` and `k10max-prospector/` untracked, untouched |
 
-`non-zero steps: 0`.
+`non-zero steps: 0` — **and that line was wrong.** Corrected in §5 below: the pass recorded
+one failing step, and the summary under-counted it.
 
 ### 5. What CI found after this round was already recorded
 
@@ -3043,6 +3044,46 @@ for the same mount; `cargo deny check` was re-run for the new direct dependency
 no live readings cross-check on macOS in it — the fixture suite (8d) checks the checker,
 not this machine. CI's macOS job was the only thing running that comparison, which is
 exactly why it exists.
+
+#### 5.1 The pass summary was lying, and that is the more important finding
+
+While fixing the above, the pass was re-run at `9736738` and its summary said
+`non-zero steps: 0`. It had not been:
+
+```
+== 10. Cross-target compile gates (code no host build reads)
+[exit code: 101]
+[!! NON-ZERO EXIT: … cargo check --locked --target x86_64-pc-windows-msvc -p ohm-adapter-system]
+```
+
+The failure was real and the line was printed — but the **counter** was wrong, and this is
+the mechanism behind round 15's discovery:
+
+* `runcmd` incremented `FAILED` in its own shell. A step invoked as
+  `runcmd … | tail -2` runs `runcmd` in a **subshell**, so the increment was made in a copy
+  of the shell and lost.
+* Every *piped* step was therefore invisible to the summary: the two cross-target gates and
+  the real-application IPC round trip. Every unpiped step counted correctly.
+* Auditing every log on this machine: **passes r20–r26 recorded one failing step each and
+  printed `non-zero steps: 0`** — the IPC round trip, exiting 1 in every one of those rounds,
+  which is exactly why rounds 9–14 were recorded as verified. Round 15 corrected those six
+  *claims*; it did not notice that the counter which should have contradicted them was
+  broken. `pass-r36` repeated it with the Windows-target gate.
+
+**Fixed in the harness** (which lives outside this repository, at
+`~/.local/share/ohm-verify/pass-r9.sh`): failures are now also appended to a file, the
+summary reports the file's count, it prints the discrepancy when the two disagree, and it
+lists the steps that failed. Proven with a three-line probe: two failures, one of them
+piped, are both recorded (`in-shell=1 recorded=2`).
+
+**And what the gate was telling us**: the Windows-target check had been failing since the
+free-space fix, because the `[target.'cfg(unix)'.dependencies]` table was written *inside*
+`[dependencies]` — a table header ends the table above it, so on Windows every dependency
+below it disappeared. Unix was unaffected (the `cfg` matched), which is exactly why a local
+Unix build said nothing and why the cross-target gate is in the pass at all. The manifest
+now declares the target-specific tables after the general ones, with the reason written in
+the file, and `cargo check --target x86_64-pc-windows-msvc` passes for the crate again —
+verified locally on both targets before pushing.
 
 ### 6. What round 20 could **not** verify
 

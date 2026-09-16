@@ -8,11 +8,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# `statvfs` for the free-space reading: the answer has to be the one `df` prints, and
-# the library helper answers a different question on macOS (see `available_bytes`).
-# `rustix` is already in the tree, and its wrapper keeps this crate free of `unsafe`.
-[target.'cfg(unix)'.dependencies]
-rustix = { version = "1", features = ["fs"] }
 ohm-core.workspace = true
 ohm-device-model.workspace = true
 ohm-adapter-api.workspace = true
@@ -24,6 +19,18 @@ sysinfo.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 wmi.workspace = true
+
+# `statvfs` for the free-space reading: the answer has to be the one `df` prints, and
+# the library helper answers a different question on macOS (see `available_bytes`).
+# `rustix` is already in the tree, and its wrapper keeps this crate free of `unsafe`.
+#
+# Target-specific tables come **after** the general ones, always: a table header ends the
+# table above it, so a target block written inside `[dependencies]` quietly moves every
+# dependency below it behind that `cfg`. This file did exactly that, and the only thing
+# that noticed was Windows CI, where the whole dependency list disappeared. Unix was
+# unaffected because the `cfg` matched — which is why a local Unix build said nothing.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
 tokio.workspace = true
