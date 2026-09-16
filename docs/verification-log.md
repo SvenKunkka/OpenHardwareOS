@@ -2815,3 +2815,107 @@ No hardware was written to; no autostart entry was created and no global environ
 was changed; nothing was installed on the host; no licence was approved on the user's behalf
 (ADR 0002 and ADR 0004 remain **Proposed**); `Prospector/` and `k10max-prospector/` were left
 exactly as found. v0.1.11 remains prepared and unpublished.
+
+---
+
+## 2026-09-16 — round 19: the channel a dead process switched gets handed over
+
+**Revision: `c657987`** — the pass below ran at that commit, on `codex/v0.1.11`, still the
+version under development. Nothing was published; the install entries still point at
+v0.1.10, the newest version somebody can download.
+
+### 1. The gap last round wrote down, closed
+
+Round 18 fixed the *record* a woken owner keeps — the state file can no longer be
+overwritten or deleted by a process that lost it — and then stated what was still
+missing, in its own words:
+
+> if the predecessor had switched a `pwm<N>_enable` to manual and remembered the
+> original, and is then killed or taken over while suspended, the successor reads *manual*
+> as the original and will restore that — so firmware control may never come back.
+
+That is the failure this round removes. A killed process never runs its shutdown, so the
+only place the value it took can still exist is what it wrote down while it was alive.
+
+### 2. What is handed over, and who adopts it
+
+| | |
+|---|---|
+| What is recorded | `ServiceState.taken`: device id, the exact value the kernel's ownership file had, and a sentence about it. Filled from `Runtime::taken_controls`, which collects `HardwareAdapter::taken_controls` across adapters (the default is empty, so no other adapter changes). |
+| Exactness | `ControlMode::Automatic` now keeps the number it read. `3` is "automatic, using the driver's own curve" and `2` is plain automatic; collapsing them was tolerable when a value only had to be restored by the process that read it, and is not when the value travels between processes. `from_restored` is the inverse, so nothing decays on the way through the state file. |
+| Adoption | The successor adopts **before it writes anything**: it writes the recorded value back to the kernel immediately — the channel returns to its driver now, not at some later exit — and remembers it as *its own* original, which is what makes its own shutdown restore the dead owner's value rather than the switched one it found. |
+| Refusals | One sentence per channel it could not adopt: no restorable value was recorded, the channel is not in `adapter_settings.system.pwm_write_allow` (recovering somebody else's mistake is not a reason to exceed the confirmation a person gave), or the channel is no longer in the tree. Nothing is guessed, and the runtime adds a net for a channel no adapter claimed at all. |
+| When it is published | On **change**, not on the heartbeat. Waiting up to a full heartbeat meant a process killed in that window left a switched channel with no record at all — which the process-level test caught by racing it. The ticker that watches for it runs at 25 ms; what remains is a millisecond window, written down as a limit rather than claimed to be zero. |
+
+### 3. Tests, and the mutation that proves they bite
+
+* `adapters/system` (+5): what this adapter switched is reported with the value it had and
+  cleared once given back; a channel left in manual by a dead process is put back
+  **immediately** and is now owed by this process too; a recorded `3` comes back as `3`
+  and not `2`; a recorded original that could not be read is refused and the file is left
+  alone; a channel outside the allow-list is not touched and the refusal names the
+  setting.
+* `crates/ohm-runtime/src/service.rs` (+3): what an owner switched is published in the
+  state file; a successor is given its predecessor's record, and a fresh start has none
+  rather than an invented one; a state file written before this version has nothing to
+  adopt (the field is additive, or an upgrade would either fail to parse or claim the
+  previous owner switched something).
+* `apps/cli/tests/service_resilience.rs` (+1, two real services on a prepared **writable**
+  tree): the first service writes the prepared channel, which switches `pwm1_enable` from
+  `2` to `1` and publishes the record; `SIGKILL` leaves the channel switched and the record
+  behind; the owner's file is waited out to the documented staleness (a second service
+  started inside the window is **refused**, which is the one-writer rule working); the
+  successor adopts, logs what it inherited and what it put back; and once it stops
+  cleanly the kernel file reads **`2`** — the value the dead owner recorded, not the `1` it
+  found. **Mutation-checked**: with the adoption call removed the test fails.
+
+### 4. The verification pass (all commands re-run at `c657987`, nothing carried over)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `rustup run 1.98.1 cargo fmt --all -- --check` | exit 0 |
+| 2 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0 |
+| 3 | `cargo test --workspace --locked` | **586 passed, 0 failed**, 50 test-result lines |
+| 4 | `cargo deny check` | advisories ok, bans ok, licenses ok, sources ok |
+| 5 | `scripts/versions.py check --remote --generated` | OK: 13 catalogue entries; application version 0.1.11; published releases verified on GitHub |
+| 5b | `scripts/check-artefact-names.py` | OK: desktop `openhardwareos` and CLI `ohm-cli` agree with their sources; 16 install entries point at a downloadable version |
+| 5c | `unittest discover -s scripts/tests -p 'test_*.py'` | 48 tests, OK |
+| 6 | `npm run typecheck` / `npm test` / `npm run build` | clean / 46 tests / clean |
+| 7 | `scripts/tests/make-acceptance-package.test.sh` | 4 cases, 0 failures |
+| 8 | `scripts/release/test-packaging.ps1` | 6 cases, 0 failures |
+| 8b | `scripts/tests/package-linux.test.sh` | 11 cases, 58 checks, 0 failures |
+| 8c | `scripts/tests/linux-install-doc.test.sh` | 6 cases, 34 checks, 0 failures |
+| 8d | `scripts/tests/verify-linux-readings.test.sh` | 6 cases, 21 checks, 0 failures |
+| 9 | `docs/windows-validation/.../run-script-tests.ps1` | 18 cases, 151 checks, 0 failures (doubles only) |
+| 10 | cross-target `cargo check` for `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu` | exit 0, plus Linux-target Clippy |
+| 11 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** — 51 `PASS`, 0 `FAIL` |
+| 12 | delivered source packages still verify | every file matches its manifest |
+| 13 | repository hygiene | only `Prospector/` and `k10max-prospector/` untracked, untouched |
+
+`non-zero steps: 0`.
+
+### 5. What round 19 could **not** verify
+
+* **Real hardware, and real Windows/Linux.** The hand-over is exercised against a
+  *prepared sysfs tree* — real files, real `rename`, real signals, but not a real
+  motherboard, not a real driver, and not a real crash of a real service.
+* **The residue of the publishing window.** A process killed between switching a channel
+  and writing that down leaves a manual channel with no record; the successor cannot
+  recover the original and will say so rather than guess. The window is now milliseconds
+  (it was up to a heartbeat), and how often a real crash lands in it has not been
+  measured — no fault-injection run, and no real machine.
+* **A real kernel suspend.** Unchanged from round 18: the detector's premise (monotonic
+  clocks stopping across suspend while wall time continues) is untested on a machine that
+  can sleep.
+* **A second adapter's hand-over.** Only the hwmon adapter switches a channel away from
+  its driver today, and only it implements `taken_controls`; the trait's default is empty,
+  so this is a contract other adapters may or may not honour when they acquire hardware to
+  hand back. Nothing else was implemented speculatively.
+
+### Deliberately **not** done in round 19
+
+No hardware was written to outside `OHM_HWMON_ROOT` fixture trees; no autostart entry was
+created and no global environment value was changed; nothing was installed on the host; no
+licence was approved on the user's behalf (ADR 0002 and ADR 0004 remain **Proposed**);
+`Prospector/` and `k10max-prospector/` were left exactly as found. v0.1.11 remains prepared
+and unpublished.
