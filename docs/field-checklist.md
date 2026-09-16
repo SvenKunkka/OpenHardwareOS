@@ -80,7 +80,15 @@ Linux 上再跑一次逐项对照（`AGREE` / `DIFFER` / `NO-SOURCE` / `NOT-CHEC
 
 ---
 
-## 3. 确认控制（Windows：受限调速；逐通道）
+## 3. 确认控制（逐通道；Windows 与 Linux 都做）
+
+> **Linux 需要额外记录四件事**，它们是开放某一路写入的唯一依据（见
+> [Linux 安装说明](linux-install.md#写入-pwm默认关闭按通道开启)）：
+> 芯片名与通道号（`ohm-cli doctor` 里的 `fan.system.<芯片>_fan<N>`）、
+> `cat /sys/class/hwmon/*/pwm<N>_enable` 的当前值、
+> 这一路 `pwm` 对应主板上的哪个物理接口（查手册或逐通道试）、
+> 以及写入后**转速是否真的跟着变**（`cat /sys/class/hwmon/*/fan<N>_input`）。
+> 软件无法推断 `pwm<N>` 与 `fan<N>_input` 是否同一个物理接口，所以这四件事必须是人记录的。
 
 > 只做**一个**通道，先选一个**机箱风扇**，不要选 CPU 风扇。
 
@@ -130,6 +138,32 @@ Linux 上再跑一次逐项对照（`AGREE` / `DIFFER` / `NO-SOURCE` / `NOT-CHEC
 
 **判定**：转速确实变化 = 真控制；转速不动但审计说写入成功 = 需要记录的实际问题；
 写入被拒 = 记录拒绝原因（这同样是有价值的结论）。
+
+### Linux 的逐通道写入（确认之后）
+
+1. 先停掉所有会写这个通道的东西（包括本程序的服务：`ohm-cli service status` 确认没有在跑）。
+2. 用 **root** 直接写一次，绕开本程序，确认物理对应关系：
+   ```bash
+   echo 128 | sudo tee /sys/class/hwmon/*/pwm<N>     # 50 %
+   cat /sys/class/hwmon/*/fan<N>_input              # 转速是否跟着变
+   ```
+   变了 → 这一路 `pwm` 与这一路测速是同一个接口；没变 → **不要**把它加进白名单。
+3. 记录 `pwm<N>_enable` 的当前值，然后把它切到手动并交给本程序（修改
+   `settings.json` 的 `pwm_write_allow`，见 Linux 安装说明），跑一条只改这一路、
+   占空比恒定的规则，观察 `ohm-cli watch` 与 `ohm-cli audit`。
+4. **撤回**（三步都做）：
+   ```bash
+   ohm-cli rules set-enabled field-test false
+   ohm-cli rules delete field-test
+   # 退出服务：本程序会把 pwm<N>_enable 恢复成记录下来的原值
+   ohm-cli service status
+   cat /sys/class/hwmon/*/pwm<N>_enable     # 应等于第 3 步记录的原值
+   ```
+   若原值与现在不同，把 `pwm_write_allow` 清空，并**直接写回原值**：
+   ```bash
+   echo <原值> | sudo tee /sys/class/hwmon/*/pwm<N>_enable
+   ```
+   然后重启一次让固件重新接管，并把这台机器的记录发回——这正是需要证据的那一步。
 
 ---
 

@@ -12,10 +12,21 @@
 //! pure path and parse work. The Linux-only part is choosing the directory and
 //! calling into here.
 //!
-//! **Read-only, deliberately.** Writing `pwm<N>` needs root, and a wrong value
-//! on a board whose channel mapping nobody verified is the classic "fans stop"
-//! failure. Monitoring is what this release promises; control over an confirmed
-//! channel is separate work.
+//! **Reading is unconditional; writing is per channel and opt-in.**
+//!
+//! Writing `pwm<N>` needs root, and a wrong value on a board whose channel mapping
+//! nobody verified is the classic "fans stop" failure. `pwm<N>` and `fan<N>_input`
+//! share a chip and a channel number, which is *not* a promise that `pwm1` drives
+//! the header `fan1_input` measures — that pairing is a property of the board, and
+//! no kernel interface states it. So this module can write, and the adapter only
+//! exposes a writable duty for a channel somebody listed in
+//! `adapter_settings.system.pwm_write_allow` after checking it on their machine.
+//!
+//! Taking control is explicit and reversible. If the driver owns the channel
+//! (`pwm<N>_enable` is automatic) the adapter switches it to manual and remembers
+//! what it was, so it can put it back on release; if the channel's ownership cannot
+//! be read at all, nothing is written — a channel whose current owner is unknown is
+//! not one to take over.
 
 use std::fs;
 use std::io::ErrorKind;
@@ -53,7 +64,13 @@ impl ControlMode {
             Ok(2 | 3) => Self::Automatic,
             Ok(0) => Self::Other(0),
             Ok(other) => Self::Other(other),
-            Err(_) => Self::Other(-1),
+            // Not a number at all: that is not "a mode this build does not know",
+            // it is ownership that could not be read. The difference decides
+            // whether a write may take the channel over, so it is kept.
+            Err(_) => Self::Unknown(
+                UnavailableReason::ReadError,
+                format!("pwm_enable is not a number ({:?})", raw.trim()),
+            ),
         }
     }
 
@@ -123,6 +140,98 @@ impl FanChannel {
         Some(read_number(path))
     }
 
+    /// Set this channel's duty, as a percentage.
+    ///
+    /// Returns the raw byte the kernel was given, so the caller can report what it
+    /// actually asked for rather than what it meant to ask for. The percentage is
+    /// clamped to the interface's range here as well as by the safety layer: a
+    /// negative or absurd value must never reach a fan because something upstream
+    /// mis-computed it.
+    pub fn set_pwm(&self, percent: f64) -> Result<i64, (UnavailableReason, String)> {
+        let Some(path) = self.pwm.as_ref() else {
+            return Err((
+                UnavailableReason::Unsupported,
+                format!(
+                    "{} channel {} exposes no pwm file, so this build cannot set its duty",
+                    self.chip, self.channel
+                ),
+            ));
+        };
+        if !percent.is_finite() {
+            return Err((
+                UnavailableReason::ReadError,
+                format!("refusing to write a non-finite duty ({percent})"),
+            ));
+        }
+        let clamped = percent.clamp(0.0, 100.0);
+        let raw = (clamped / 100.0 * PWM_FULL_SCALE).round() as i64;
+        fs::write(path, format!("{raw}\n")).map_err(|error| classify(&error, path))?;
+        Ok(raw)
+    }
+
+    /// Take control of this channel, returning what it was so it can be put back.
+    ///
+    /// `Ok(None)` means the channel is already ours to drive (or has no ownership
+    /// file at all); `Err` means it must not be written, with the reason.
+    pub fn take_control(&self) -> Result<Option<ControlMode>, (UnavailableReason, String)> {
+        let Some((path, _)) = self.mode.as_ref() else {
+            // No `pwm<N>_enable`: the driver left the channel to software, or the
+            // kernel does not model ownership for this chip.
+            return Ok(None);
+        };
+        let mode = match self.current_mode() {
+            Some(mode) => mode,
+            None => return Ok(None),
+        };
+        match &mode {
+            ControlMode::Manual => Ok(None),
+            ControlMode::Automatic | ControlMode::Other(_) => {
+                if mode.restorable_value().is_none() {
+                    return Err((
+                        UnavailableReason::Unsupported,
+                        format!(
+                            "refusing to take control of {} channel {}: {}",
+                            self.chip,
+                            self.channel,
+                            mode.describe()
+                        ),
+                    ));
+                }
+                fs::write(path, "1\n").map_err(|error| classify(&error, path))?;
+                Ok(Some(mode))
+            }
+            ControlMode::Unknown(reason, detail) => Err((
+                *reason,
+                format!(
+                    "refusing to write {} channel {}: its ownership could not be read ({detail})",
+                    self.chip, self.channel
+                ),
+            )),
+        }
+    }
+
+    /// Put the channel back under whatever drove it before.
+    ///
+    /// Never writes a value it did not read: a mode that could not be read is
+    /// reported instead, because guessing here decides who owns a fan.
+    pub fn restore_control(&self, original: Option<ControlMode>) -> Result<(), String> {
+        let Some(original) = original else {
+            return Ok(());
+        };
+        let Some((path, _)) = self.mode.as_ref() else {
+            return Ok(());
+        };
+        match original.restorable_value() {
+            Some(value) => fs::write(path, format!("{value}\n"))
+                .map_err(|error| format!("could not restore {}: {error}", path.display())),
+            None => Err(format!(
+                "not restoring {} channel {}: the mode it had could not be read, and writing \
+                 a guess would decide who owns this fan",
+                self.chip, self.channel
+            )),
+        }
+    }
+
     /// Control mode, read from the filesystem now (not from discovery).
     pub fn read_mode(&self) -> Option<(UnavailableReason, String)> {
         let (path, _) = self.mode.as_ref()?;
@@ -145,6 +254,22 @@ impl FanChannel {
                 let _ = fallback;
                 Some(ControlMode::Unknown(reason, detail))
             }
+        }
+    }
+}
+
+/// The raw `pwm<N>_enable` value to write for a mode we read earlier.
+impl ControlMode {
+    /// The integer to write back to restore this mode, when there is one.
+    ///
+    /// `None` for a mode we could not read: restoring an unknown value means
+    /// guessing, and guessing here changes who drives a fan.
+    pub fn restorable_value(&self) -> Option<i64> {
+        match self {
+            Self::Manual => Some(1),
+            Self::Automatic => Some(2),
+            Self::Other(value) => Some(*value),
+            Self::Unknown(..) => None,
         }
     }
 }
@@ -177,6 +302,13 @@ impl HwmonTree {
 
     pub fn is_empty(&self) -> bool {
         self.chips.iter().all(|chip| chip.fans.is_empty())
+    }
+
+    /// The channel with this device id, when the tree has it.
+    pub fn channel_by_device_id(&self, device_id: &str) -> Option<&FanChannel> {
+        self.channels()
+            .map(|(_, fan)| fan)
+            .find(|fan| fan.device_id() == device_id)
     }
 }
 
@@ -425,6 +557,158 @@ mod tests {
     }
 
     /// A fan the driver reports as stopped is a reading, not a missing sensor.
+    /// A tree with one chip, one tachometer and one PWM channel, plus the file
+    /// contents, so a write can be checked by reading the file back.
+    fn writable_fixture(mode: Option<&str>) -> (tempfile::TempDir, FanChannel) {
+        let dir = tempfile::tempdir().unwrap();
+        let chip = dir.path().join("hwmon0");
+        fs::create_dir_all(&chip).unwrap();
+        fs::write(chip.join("name"), "nct6798d\n").unwrap();
+        fs::write(chip.join("fan1_input"), "1200\n").unwrap();
+        fs::write(chip.join("pwm1"), "128\n").unwrap();
+        if let Some(mode) = mode {
+            fs::write(chip.join("pwm1_enable"), format!("{mode}\n")).unwrap();
+        }
+        let tree = discover(dir.path());
+        let (_, fan) = tree.channels().next().expect("one channel");
+        (dir, fan.clone())
+    }
+
+    #[test]
+    fn a_percentage_becomes_the_byte_the_kernel_expects() {
+        let (dir, fan) = writable_fixture(Some("1"));
+        assert_eq!(fan.set_pwm(50.0).unwrap(), 128, "50 % of 255, rounded");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("hwmon0/pwm1")).unwrap(),
+            "128\n"
+        );
+        assert_eq!(fan.set_pwm(100.0).unwrap(), 255);
+        assert_eq!(fan.set_pwm(0.0).unwrap(), 0);
+        // Out-of-range values are clamped here too, not only by the safety layer:
+        // a negative duty reaching a fan is the failure this exists to prevent.
+        assert_eq!(fan.set_pwm(-10.0).unwrap(), 0);
+        assert_eq!(fan.set_pwm(1000.0).unwrap(), 255);
+    }
+
+    #[test]
+    fn a_non_finite_duty_is_refused() {
+        let (_dir, fan) = writable_fixture(Some("1"));
+        let error = fan.set_pwm(f64::NAN).unwrap_err();
+        assert!(error.1.contains("non-finite"), "{}", error.1);
+    }
+
+    #[test]
+    fn taking_control_switches_the_driver_off_and_remembers_what_it_was() {
+        let (dir, fan) = writable_fixture(Some("2"));
+        let original = fan.take_control().unwrap().expect("it was the driver's");
+        assert_eq!(original, ControlMode::Automatic);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("hwmon0/pwm1_enable")).unwrap(),
+            "1\n",
+            "manual, so the write is not ignored by a driver curve"
+        );
+
+        // And putting it back is exact.
+        fan.restore_control(Some(original)).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("hwmon0/pwm1_enable")).unwrap(),
+            "2\n"
+        );
+    }
+
+    #[test]
+    fn a_channel_already_in_manual_needs_no_switch_and_nothing_to_restore() {
+        let (dir, fan) = writable_fixture(Some("1"));
+        assert_eq!(fan.take_control().unwrap(), None);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("hwmon0/pwm1_enable")).unwrap(),
+            "1\n"
+        );
+        fan.restore_control(None).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("hwmon0/pwm1_enable")).unwrap(),
+            "1\n"
+        );
+    }
+
+    #[test]
+    fn an_ownership_that_cannot_be_read_is_not_taken_over() {
+        // No `pwm1_enable` at all is fine — that is a chip without ownership
+        // modelling. A file that exists but cannot be parsed is different: writing
+        // over it would decide who owns a fan without knowing who did.
+        let (dir, fan) = writable_fixture(None);
+        assert_eq!(fan.take_control().unwrap(), None, "no ownership file");
+
+        fs::write(dir.path().join("hwmon0/pwm1_enable"), "automatic\n").unwrap();
+        let tree = discover(dir.path());
+        let (_, fan) = tree.channels().next().unwrap();
+        let mode = fan.current_mode().expect("a mode");
+        assert!(matches!(mode, ControlMode::Unknown(..)), "{mode:?}");
+        assert_eq!(
+            mode.restorable_value(),
+            None,
+            "an unknown *number* can be restored verbatim; a value that is not a              number cannot, because writing it back would be a guess"
+        );
+        let error = fan.take_control().unwrap_err();
+        assert!(
+            error.1.contains("ownership could not be read"),
+            "{}",
+            error.1
+        );
+    }
+
+    #[test]
+    fn a_channel_without_a_pwm_file_cannot_be_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let chip = dir.path().join("hwmon0");
+        fs::create_dir_all(&chip).unwrap();
+        fs::write(chip.join("name"), "nct6798d\n").unwrap();
+        fs::write(chip.join("fan1_input"), "1200\n").unwrap();
+        let tree = discover(dir.path());
+        let (_, fan) = tree.channels().next().expect("a tachometer channel");
+        let error = fan.set_pwm(50.0).unwrap_err();
+        assert!(error.1.contains("no pwm file"), "{}", error.1);
+    }
+
+    #[test]
+    fn ownership_that_is_not_a_number_is_neither_taken_nor_restored() {
+        // `pwm1_enable` exists and says something that is not a mode. Taking the
+        // channel over would decide who owns a fan without knowing who did; putting
+        // it back would write a value that was never there.
+        let (dir, fan) = writable_fixture(Some("automatic"));
+        let mode = fan.current_mode().expect("a mode");
+        assert!(matches!(mode, ControlMode::Unknown(..)), "{mode:?}");
+
+        let error = fan.take_control().unwrap_err();
+        assert!(
+            error.1.contains("ownership could not be read"),
+            "{}",
+            error.1
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("hwmon0/pwm1_enable")).unwrap(),
+            "automatic\n",
+            "nothing was written over it"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("hwmon0/pwm1")).unwrap(),
+            "128\n",
+            "and the duty was left alone"
+        );
+
+        let refused = fan.restore_control(Some(mode)).unwrap_err();
+        assert!(refused.contains("not restoring"), "{refused}");
+    }
+
+    #[test]
+    fn a_chip_without_an_ownership_file_is_left_to_software_without_a_switch() {
+        // No `pwm<N>_enable` at all: the kernel does not model ownership for this
+        // chip, so there is nothing to switch and nothing to restore.
+        let (_dir, fan) = writable_fixture(None);
+        assert_eq!(fan.take_control().unwrap(), None);
+        assert!(fan.restore_control(None).is_ok());
+    }
+
     #[test]
     fn a_zero_rpm_is_a_reading_not_an_absence() {
         let temp = fixture();
@@ -490,6 +774,16 @@ mod tests {
         assert_eq!(ControlMode::from_sysfs("0\n"), ControlMode::Other(0));
         assert_eq!(ControlMode::from_sysfs("7\n"), ControlMode::Other(7));
         assert!(ControlMode::from_sysfs("7").describe().contains('7'));
-        assert_eq!(ControlMode::from_sysfs("bogus\n"), ControlMode::Other(-1));
+        // A value that is not a number is ownership we could not read, and it is
+        // deliberately *not* restorable: writing back a guess would decide who owns
+        // a fan.
+        let bogus = ControlMode::from_sysfs("bogus\n");
+        assert!(matches!(bogus, ControlMode::Unknown(..)), "{bogus:?}");
+        assert_eq!(bogus.restorable_value(), None);
+        assert!(
+            bogus.describe().contains("unreadable"),
+            "{}",
+            bogus.describe()
+        );
     }
 }

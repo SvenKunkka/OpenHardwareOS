@@ -62,6 +62,17 @@ pub struct SystemAdapter {
     hwmon_root: Option<std::path::PathBuf>,
     /// The chips and fan channels found at the last discovery.
     hwmon: Mutex<Option<hwmon::HwmonTree>>,
+    /// hwmon channels this build is allowed to write, by device id.
+    ///
+    /// Empty unless somebody listed a channel in
+    /// `adapter_settings.system.pwm_write_allow`. Reading never depends on this.
+    pwm_allow: std::collections::BTreeSet<String>,
+    /// Channels whose ownership this adapter switched, and what it was.
+    ///
+    /// Filled when a write takes a channel away from its driver, drained by
+    /// `shutdown` to put it back. Only channels that were actually switched appear
+    /// here: a channel that was already manual has nothing to restore.
+    taken: Mutex<std::collections::BTreeMap<String, hwmon::ControlMode>>,
 }
 
 impl Default for SystemAdapter {
@@ -108,6 +119,23 @@ impl SystemAdapter {
         Self::with_hwmon_root(default_hwmon_root())
     }
 
+    /// An adapter allowed to write the listed hwmon channels, by device id.
+    ///
+    /// The list is a person's confirmation that `pwm<N>` drives the header
+    /// `fan<N>_input` measures on *their* board. Nothing in the kernel states that,
+    /// so nothing in this program can infer it, and an id that matches no device
+    /// allows nothing.
+    pub fn with_pwm_allow(allow: &[String]) -> Arc<dyn HardwareAdapter> {
+        let mut adapter = Self::with_hwmon_root(default_hwmon_root());
+        adapter.pwm_allow = allow.iter().cloned().collect();
+        Arc::new(adapter)
+    }
+
+    /// `true` when this channel may be written.
+    fn pwm_writable(&self, device_id: &str) -> bool {
+        self.pwm_allow.contains(device_id)
+    }
+
     /// Read fan channels from `root` instead of the platform default.
     ///
     /// Used by the tests with a fixture tree, and by anyone whose sysfs is
@@ -136,6 +164,9 @@ impl SystemAdapter {
             cpu_brand: Mutex::new(cpu_brand),
             hwmon_root: None,
             hwmon: Mutex::new(None),
+            // Read-only until somebody says otherwise, per channel.
+            pwm_allow: std::collections::BTreeSet::new(),
+            taken: Mutex::new(std::collections::BTreeMap::new()),
         }
     }
 
@@ -509,6 +540,21 @@ impl SystemAdapter {
                             Unit::Percent,
                         ));
                     }
+                    // A writable duty, and *only* for a channel somebody listed.
+                    // `pwm<N>` and `fan<N>_input` share a channel number, which is
+                    // not a promise that they are the same physical header; that
+                    // pairing is a property of the board and no kernel interface
+                    // states it, so a person confirms it per channel.
+                    let writable = self.pwm_writable(&fan.device_id()) && fan.pwm.is_some();
+                    if writable {
+                        capabilities.push(Capability::actuator(
+                            ohm_device_model::caps::FAN_SPEED_PERCENT,
+                            "Fan Duty",
+                            Unit::Percent,
+                            0.0,
+                            100.0,
+                        ));
+                    }
                     if capabilities.is_empty() {
                         continue;
                     }
@@ -523,7 +569,14 @@ impl SystemAdapter {
                     .with_capabilities(capabilities)
                     .with_metadata("hwmon_chip", chip.name.clone())
                     .with_metadata("hwmon_channel", fan.channel.to_string())
-                    .with_metadata("source", "linux hwmon (read-only)");
+                    .with_metadata(
+                        "source",
+                        if writable {
+                            "linux hwmon (writable: this channel was allowed in settings)"
+                        } else {
+                            "linux hwmon (read-only)"
+                        },
+                    );
                     if let Some(path) = &fan.rpm {
                         device = device.with_metadata("fan_input", path.display().to_string());
                     }
@@ -737,12 +790,28 @@ fn disk_index_of(device: &Device) -> Option<usize> {
 #[async_trait]
 impl HardwareAdapter for SystemAdapter {
     fn info(&self) -> AdapterInfo {
+        // Writability is per channel and comes from configuration, so the adapter's
+        // own answer depends on it: an adapter with no allowed channel is exactly
+        // the read-only provider it has always been.
+        let capabilities = if self.pwm_allow.is_empty() {
+            AdapterCapabilities::read_only()
+        } else {
+            // Writing `pwm<N>` needs root on Linux; and this adapter *does* put the
+            // channel back under its driver on shutdown, which is why it says so.
+            AdapterCapabilities::cooling_control().hands_back_control()
+        };
+        let description = if self.pwm_allow.is_empty() {
+            "CPU utilisation and clock, OS thermal zones, disk space and hwmon fan \
+             tachometers. Read-only: no hwmon channel is allowed to be written."
+        } else {
+            "CPU utilisation and clock, OS thermal zones, disk space and hwmon fan \
+             tachometers, with the channels listed in \
+             adapter_settings.system.pwm_write_allow writable. Needs root to write; \
+             hands control back to the driver on shutdown."
+        };
         AdapterInfo::new(ADAPTER_ID, ADAPTER_NAME, ADAPTER_ID)
-            .with_description(
-                "CPU utilisation and clock, OS thermal zones and disk space. Read-only: \
-                 operating systems expose no fan tachometer or PWM control.",
-            )
-            .with_capabilities(AdapterCapabilities::read_only())
+            .with_description(description)
+            .with_capabilities(capabilities)
     }
 
     async fn probe(&self) -> AdapterStatus {
@@ -799,11 +868,134 @@ impl HardwareAdapter for SystemAdapter {
         &self,
         device: &Device,
         capability: &Capability,
-        _value: &Value,
+        value: &Value,
     ) -> Result<WriteOutcome> {
-        Err(OhmError::CapabilityNotWritable {
+        let not_writable = || OhmError::CapabilityNotWritable {
             device: device.id.to_string(),
             capability: capability.id.to_string(),
+        };
+
+        if !device.id.as_str().starts_with("fan.system.")
+            || capability.id.as_str() != ohm_device_model::caps::FAN_SPEED_PERCENT
+        {
+            return Err(not_writable());
+        }
+        if !self.pwm_writable(device.id.as_str()) {
+            // A capability that is not advertised cannot be targeted by a rule, so
+            // reaching here means something bypassed the registry. Refusing with the
+            // reason is the only honest answer.
+            return Ok(WriteOutcome::rejected(format!(
+                "{} is not in adapter_settings.system.pwm_write_allow, so this build \
+                 does not write it",
+                device.id
+            )));
+        }
+        let Some(percent) = value.as_f64() else {
+            return Ok(WriteOutcome::rejected(format!(
+                "a fan duty has to be a number, not {value}"
+            )));
+        };
+        let Some(fan) = self.hwmon_channel(device) else {
+            return Ok(WriteOutcome::rejected(
+                "the kernel no longer exposes this fan channel".to_string(),
+            ));
+        };
+
+        // Take the channel away from its driver only if it is not already ours, and
+        // only when we could read who owns it. `Err` here is a refusal to write at
+        // all: a channel whose owner is unknown is not one to take over.
+        match fan.take_control() {
+            Ok(Some(previous)) => {
+                self.taken
+                    .lock()
+                    .insert(device.id.to_string(), previous.clone());
+                tracing::info!(
+                    channel = %device.id,
+                    previous = %previous.describe(),
+                    "took manual control of an hwmon channel"
+                );
+            }
+            Ok(None) => {}
+            Err((_reason, detail)) => {
+                return Ok(WriteOutcome::rejected(detail));
+            }
+        }
+
+        match fan.set_pwm(percent) {
+            Ok(raw) => {
+                let mut outcome = WriteOutcome::applied(
+                    // The kernel's own units, so the report says what the file was
+                    // given as well as what was asked for.
+                    Value::Number((percent * 10.0).round() / 10.0),
+                );
+                outcome.detail = Some(format!(
+                    "wrote {raw} to {} ({} % of the interface's 255)",
+                    fan.pwm
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "pwm".to_string()),
+                    percent.round()
+                ));
+                Ok(outcome)
+            }
+            Err((reason, detail)) => {
+                // A failed write must not leave the channel switched to us.
+                if let Some(previous) = self.taken.lock().remove(device.id.as_str()) {
+                    let _ = fan.restore_control(Some(previous));
+                }
+                Ok(WriteOutcome::rejected(format!(
+                    "{}: {detail}",
+                    reason.as_str()
+                )))
+            }
+        }
+    }
+
+    /// Put every channel this adapter switched back under its original owner.
+    ///
+    /// This is what "hand back to firmware control" means for hwmon: the driver's
+    /// curve resumes when `pwm<N>_enable` says so again. A channel whose original
+    /// mode could not be read is reported rather than guessed at, and every channel
+    /// is attempted even if one fails.
+    async fn shutdown(&self) -> Result<()> {
+        let taken: Vec<(String, hwmon::ControlMode)> = {
+            let mut guard = self.taken.lock();
+            let entries = guard.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            guard.clear();
+            entries
+        };
+        if taken.is_empty() {
+            return Ok(());
+        }
+
+        let failures: Vec<String> = {
+            let tree = self.hwmon.lock();
+            taken
+                .into_iter()
+                .filter_map(|(device_id, previous)| {
+                    let fan = tree
+                        .as_ref()
+                        .and_then(|tree| tree.channel_by_device_id(&device_id));
+                    match fan {
+                        Some(fan) => fan.restore_control(Some(previous)).err(),
+                        None => Some(format!(
+                            "{device_id}: the channel is gone, so its owner cannot be restored"
+                        )),
+                    }
+                })
+                .collect()
+        };
+
+        if failures.is_empty() {
+            tracing::info!("hwmon channels handed back to their drivers");
+            return Ok(());
+        }
+        Err(OhmError::Adapter {
+            adapter: ADAPTER_ID.to_string(),
+            detail: format!(
+                "could not hand every hwmon channel back: {}",
+                failures.join("; ")
+            ),
         })
     }
 
@@ -815,6 +1007,8 @@ impl HardwareAdapter for SystemAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ohm_adapter_api::WriteStatus;
+    use ohm_core::CapabilityId;
     use ohm_device_model::{DeviceType, caps};
 
     /// A sysfs tree with one SuperIO chip: two fans, one driver-controlled.
@@ -852,6 +1046,198 @@ mod tests {
             "a machine reporting no memory is not believable"
         );
         assert!(used > 0.0 && used < total, "used {used} of {total}");
+    }
+
+    /// The opt-in path, end to end: capability, write, and hand-back.
+    ///
+    /// The allow-list is a person's confirmation that `pwm<N>` drives the header
+    /// `fan<N>_input` measures on their board — nothing in the kernel says so — and
+    /// these tests are about what the code does once that confirmation exists.
+    #[tokio::test]
+    async fn an_allowed_channel_becomes_writable_and_the_others_do_not() {
+        let temp = hwmon_fixture();
+        let allow = vec!["fan.system.nct6798d_fan1".to_string()];
+        let mut adapter = SystemAdapter::with_hwmon_root(Some(temp.path().to_path_buf()));
+        adapter.pwm_allow = allow.into_iter().collect();
+
+        let devices = adapter.discover().await.unwrap();
+        let allowed = devices
+            .iter()
+            .find(|device| device.id.as_str() == "fan.system.nct6798d_fan1")
+            .expect("the allowed channel");
+        assert!(
+            allowed.is_controllable(),
+            "an allowed channel is drivable: {:?}",
+            allowed.capabilities
+        );
+        assert!(allowed.supports(caps::FAN_SPEED_PERCENT));
+
+        let other = devices
+            .iter()
+            .find(|device| device.id.as_str() == "fan.system.nct6798d_fan2")
+            .expect("the other channel");
+        assert!(
+            !other.is_controllable(),
+            "a channel nobody allowed stays read-only: {:?}",
+            other.capabilities
+        );
+        assert!(!other.supports(caps::FAN_SPEED_PERCENT));
+
+        // And the adapter says so about itself, including the hand-back.
+        let info = adapter.info();
+        assert!(info.capabilities.can_write);
+        assert!(info.capabilities.can_control_cooling);
+        assert!(
+            info.capabilities.hands_back_control_on_shutdown,
+            "this adapter puts the channel back under its driver"
+        );
+        assert!(
+            info.capabilities.write_requires_admin,
+            "writing pwm<N> needs root on Linux"
+        );
+    }
+
+    #[tokio::test]
+    async fn writing_an_allowed_channel_takes_control_and_shutdown_puts_it_back() {
+        let temp = hwmon_fixture();
+        let mut adapter = SystemAdapter::with_hwmon_root(Some(temp.path().to_path_buf()));
+        adapter.pwm_allow = ["fan.system.nct6798d_fan1".to_string()]
+            .into_iter()
+            .collect();
+
+        let devices = adapter.discover().await.unwrap();
+        let device = devices
+            .iter()
+            .find(|device| device.id.as_str() == "fan.system.nct6798d_fan1")
+            .expect("the channel");
+        let capability = device
+            .capability(&CapabilityId::new_unchecked(caps::FAN_SPEED_PERCENT))
+            .unwrap();
+
+        // The fixture's chip is driver-controlled (`pwm1_enable` = 2).
+        let enable = temp.path().join("hwmon3/pwm1_enable");
+        assert_eq!(std::fs::read_to_string(&enable).unwrap().trim(), "2");
+
+        let outcome = adapter
+            .write(device, capability, &Value::Number(45.0))
+            .await
+            .expect("a write");
+        assert_eq!(outcome.status, WriteStatus::Applied);
+        assert_eq!(outcome.applied, Some(Value::Number(45.0)));
+        assert!(
+            outcome
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("wrote 115"),
+            "45 % of 255 is 115, and the report says what the file was given: {:?}",
+            outcome.detail
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("hwmon3/pwm1"))
+                .unwrap()
+                .trim(),
+            "115"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&enable).unwrap().trim(),
+            "1",
+            "manual, so a driver curve cannot overwrite the value"
+        );
+
+        // Shutdown is where control goes back.
+        adapter.shutdown().await.expect("hand-back succeeds");
+        assert_eq!(
+            std::fs::read_to_string(&enable).unwrap().trim(),
+            "2",
+            "the driver owns the channel again"
+        );
+        // And the duty it last wrote is left where the runtime's fail-safe put it —
+        // the mode is what governs, so the leftover byte is the driver's business.
+    }
+
+    #[tokio::test]
+    async fn a_channel_that_was_not_allowed_refuses_to_be_written() {
+        let temp = hwmon_fixture();
+        let adapter = SystemAdapter::with_hwmon_root(Some(temp.path().to_path_buf()));
+        let devices = adapter.discover().await.unwrap();
+        let device = devices
+            .iter()
+            .find(|device| device.id.as_str() == "fan.system.nct6798d_fan1")
+            .expect("the channel");
+
+        // No allow-list at all: the capability is not even advertised, but a caller
+        // that reaches the write path anyway must be told why, not given silence.
+        let capability = Capability::actuator(
+            caps::FAN_SPEED_PERCENT,
+            "Fan Duty",
+            Unit::Percent,
+            0.0,
+            100.0,
+        );
+        let outcome = adapter
+            .write(device, &capability, &Value::Number(45.0))
+            .await
+            .expect("a refusal, not an error");
+        assert_eq!(outcome.status, WriteStatus::Rejected);
+        assert!(
+            outcome
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("pwm_write_allow"),
+            "{:?}",
+            outcome.detail
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("hwmon3/pwm1"))
+                .unwrap()
+                .trim(),
+            "128",
+            "and nothing was written"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_read_only_capability_of_an_allowed_channel_is_still_refused() {
+        let temp = hwmon_fixture();
+        let mut adapter = SystemAdapter::with_hwmon_root(Some(temp.path().to_path_buf()));
+        adapter.pwm_allow = ["fan.system.nct6798d_fan1".to_string()]
+            .into_iter()
+            .collect();
+        let devices = adapter.discover().await.unwrap();
+        let device = devices
+            .iter()
+            .find(|device| device.id.as_str() == "fan.system.nct6798d_fan1")
+            .expect("the channel");
+        let rpm = device
+            .capability(&CapabilityId::new_unchecked(caps::FAN_RPM))
+            .unwrap();
+        assert!(
+            adapter
+                .write(device, rpm, &Value::Number(1200.0))
+                .await
+                .is_err(),
+            "a tachometer is not an actuator"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_without_a_write_has_nothing_to_hand_back() {
+        let temp = hwmon_fixture();
+        let mut adapter = SystemAdapter::with_hwmon_root(Some(temp.path().to_path_buf()));
+        adapter.pwm_allow = ["fan.system.nct6798d_fan1".to_string()]
+            .into_iter()
+            .collect();
+        let _ = adapter.discover().await.unwrap();
+        adapter.shutdown().await.expect("no-op shutdown");
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("hwmon3/pwm1_enable"))
+                .unwrap()
+                .trim(),
+            "2",
+            "a channel nobody wrote is left exactly as it was"
+        );
     }
 
     #[tokio::test]

@@ -1,7 +1,7 @@
 # Linux 安装
 
 公开源码：<https://github.com/SvenKunkka/OpenHardwareOS>。
-本页安装 Linux x86_64 预览版本 `v0.1.8`，两种方式：**命令行（CLI）** 与 **桌面应用（.deb）**。
+本页安装 Linux x86_64 预览版本 `v0.1.9`，两种方式：**命令行（CLI）** 与 **桌面应用（.deb）**。
 两者都是预编译产物，安装无需 Rust 或 Node.js。
 
 [查看全部版本](versions.md) · [交互版本树](https://svenkunkka.github.io/OpenHardwareOS/)
@@ -10,7 +10,7 @@
 
 ```bash
 set -euo pipefail
-ohm_version=v0.1.8
+ohm_version=v0.1.9
 ohm_platform=linux-x86_64
 ohm_asset="ohm-cli-$ohm_version-$ohm_platform.tar.gz"
 ohm_meta="release-$ohm_platform.json"
@@ -47,10 +47,10 @@ tar -xzf "$ohm_tmp/$ohm_asset" -C "$ohm_dir"
 不需要 root，也不修改 `PATH`。目标目录已存在时会停止并保留原有文件。
 `doctor` 打印这台机器上每个来源的可用性与不可用的原因。
 
-把 `~/.local/share/OpenHardwareOS/cli-v0.1.8` 加入 `PATH` 之后，可以直接运行：
+把 `~/.local/share/OpenHardwareOS/cli-v0.1.9` 加入 `PATH` 之后，可以直接运行：
 
 ```bash
-export PATH="$HOME/.local/share/OpenHardwareOS/cli-v0.1.8:$PATH"
+export PATH="$HOME/.local/share/OpenHardwareOS/cli-v0.1.9:$PATH"
 ohm-cli demo --steps 60     # 模拟设备，不接触真实硬件
 ohm-cli status              # 读真实设备（只读）
 ```
@@ -61,7 +61,7 @@ ohm-cli status              # 读真实设备（只读）
 
 ```bash
 set -euo pipefail
-ohm_version=v0.1.8
+ohm_version=v0.1.9
 ohm_platform=linux-x86_64
 ohm_deb="OpenHardwareOS-$ohm_version-$ohm_platform.deb"
 ohm_meta="release-$ohm_platform.json"
@@ -109,7 +109,7 @@ dpkg -s open-hardware-os | grep '^Depends:' || true
 
 ```bash
 set -euo pipefail
-ohm_version=v0.1.8
+ohm_version=v0.1.9
 ohm_platform=linux-x86_64
 ohm_image="OpenHardwareOS-$ohm_version-$ohm_platform.AppImage"
 ohm_sums="SHA256SUMS-$ohm_platform"
@@ -147,9 +147,59 @@ Linux 上每个读数的来源都写在 `doctor` 输出里，能读就给出值�
 风扇通道的**设备身份取自芯片名与通道号**，例如 `fan.system.nct6798d_fan1`。
 内核把 `hwmon*` 重新编号不会改变这个身份，所以规则不会因此指向别的风扇。
 
-**为什么这一版不写 PWM。** 写 `pwm<N>` 需要 root，而且哪一路 `pwm` 对应机箱上的哪个
-接口取决于主板与驱动；在确认的通道映射与实机证据出现之前，这个项目只读不写。
-`pwm<N>_enable` 的值会显示出来，说明当前是驱动/固件在控制还是留给软件。
+## 写入 PWM：默认关闭，按通道开启
+
+**读取不需要任何配置；写入需要你逐通道确认。** 原因是硬件事实，不是保守：
+
+`pwm<N>` 与 `fan<N>_input` 共用同一颗芯片和通道号，但这**不保证** `pwm1` 驱动的是
+`fan1_input` 测速的那个接口——这个对应关系是主板属性，内核接口不声明它。所以这个项目
+把"哪一路 pwm 对应哪个物理接口"当成**必须由人确认**的信息，并且默认一个通道都不写。
+
+### 先确认，再开启
+
+在**你的机器**上按 [实机核对清单](field-checklist.md) 的第 2、3 步做，记录：
+
+| 要记的事实 | 从哪里 | 为什么需要 |
+|---|---|---|
+| 芯片名与通道号 | `ohm-cli doctor` 的设备 id，例如 `fan.system.nct6798d_fan1` | 它就是下面要填的 id |
+| `pwm<N>_enable` 当前值 | `cat /sys/class/hwmon/*/pwm<N>_enable` | 现在是驱动/固件在控制还是留给软件 |
+| 该 `pwm` 对应哪个物理接口 | 主板手册 + 逐通道试写（见清单） | 唯一无法由软件推断的事实 |
+| 转速是否真的跟着变 | 写入前后 `fan<N>_input` 与 `ohm-cli watch` | 证明"写的这一路"确实是"测的那一路" |
+
+确认之后，**只把那一个通道**写进配置（`~/.config/OpenHardwareOS/settings.json`）：
+
+```json
+{
+  "adapter_settings": {
+    "system": {
+      "pwm_write_allow": ["fan.system.nct6798d_fan1"]
+    }
+  }
+}
+```
+
+```bash
+ohm-cli doctor | grep -A 3 'system'   # 提供方应显示可以写入，并声明会交还控制
+ohm-cli status --json | grep -A 2 fan.speed_percent
+```
+
+### 开启之后会发生什么
+
+* 只有列出的通道会出现**可写**的 `fan.speed_percent`；其余通道仍然只读。
+* 第一次写入时，如果该通道由驱动控制（`pwm<N>_enable` 是自动），本程序会把它切成手动
+  并**记住原来的值**；退出时恢复原值，驱动/固件重新接管。
+* 通道的**当前归属读不出来**时（文件不可读、内容不是数字），本程序**不写**：
+  归属未知的通道不该被接管，也不会把猜测写回去。
+* 写 `pwm<N>` 需要 **root**；`ohm-cli doctor` 会把这一点写在提供方能力里。
+* 写入仍然经过运行时的安全层：最小值限制、斜坡限制、紧急上限都会生效，
+  每一次写入都进审计（`ohm-cli audit`）。
+
+### 这一条**尚未在真实硬件上验证**
+
+按通道写入的代码有测试（假 sysfs 树：能力声明、百分比到 255 的换算、接管与恢复、
+未授权通道被拒），但**没有任何一台真实机器**跑过它。清单第 3 步的意义正是把第一次
+真机写入变成一条可归档、可回退的记录。在你自己的机器上确认之前，把上面那行配置留空
+——默认（只读）永远可用。
 
 ## 读数如何与系统来源核对
 

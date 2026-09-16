@@ -70,6 +70,13 @@ pub struct AdapterOptions {
     pub protocol_device: bool,
     /// Simulated hardware.
     pub mock: bool,
+    /// Linux hwmon channels this build is allowed to write.
+    ///
+    /// Empty by default, and empty is the safe default: `pwm<N>` and `fan<N>_input`
+    /// share a channel number, which is not a promise that `pwm1` drives the header
+    /// `fan1_input` measures. Somebody has to check that on the board and list the
+    /// channel here. Read from `adapter_settings.system.pwm_write_allow`.
+    pub system_pwm_allow: Vec<String>,
     /// Configuration of the simulated machine.
     pub mock_config: MockConfig,
 }
@@ -78,6 +85,7 @@ impl Default for AdapterOptions {
     fn default() -> Self {
         Self {
             system: true,
+            system_pwm_allow: Vec::new(),
             lhm: true,
             lhm_config: WebConfig::default(),
             nvidia: true,
@@ -113,6 +121,7 @@ impl AdapterOptions {
     pub fn simulated_only() -> Self {
         Self {
             system: false,
+            system_pwm_allow: Vec::new(),
             lhm: false,
             nvidia: false,
             nvidia_fallback: true,
@@ -150,6 +159,7 @@ impl AdapterOptions {
 
         Self {
             system: settings.adapter_enabled(ohm_adapter_system::ADAPTER_ID),
+            system_pwm_allow: pwm_allow_from_settings(settings),
             lhm: lhm_enabled,
             lhm_config: WebConfig::from_json(settings.adapter_config(ohm_adapter_lhm::ADAPTER_ID)),
             // Registered on its own merits. Whether it ends up reporting devices
@@ -218,6 +228,26 @@ fn mock_config_from_settings(settings: &Settings) -> MockConfig {
     config
 }
 
+/// Linux hwmon channels the user has confirmed and allowed this build to write.
+///
+/// An entry is a device id (`fan.system.nct6798d_fan1`). Anything else — a
+/// capability name, a path, an id with a typo — matches no device and therefore
+/// allows nothing, which is the direction a mistake here must fail in.
+fn pwm_allow_from_settings(settings: &Settings) -> Vec<String> {
+    settings
+        .adapter_config(ohm_adapter_system::ADAPTER_ID)
+        .and_then(|bag| bag.get("pwm_write_allow").cloned())
+        .and_then(|value| value.as_array().cloned())
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry.as_str().map(|text| text.trim().to_string()))
+                .filter(|text| !text.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Instantiate the adapters described by `options`.
 pub fn build_adapters(options: &AdapterOptions) -> Vec<Arc<dyn HardwareAdapter>> {
     let mut adapters: Vec<Arc<dyn HardwareAdapter>> = Vec::new();
@@ -232,7 +262,7 @@ pub fn build_adapters(options: &AdapterOptions) -> Vec<Arc<dyn HardwareAdapter>>
         adapters.push(NvidiaAdapter::boxed_yielding_to(primary));
     }
     if options.system {
-        adapters.push(SystemAdapter::boxed());
+        adapters.push(SystemAdapter::with_pwm_allow(&options.system_pwm_allow));
     }
     if options.protocol_device {
         adapters.push(OpdAdapter::boxed());
@@ -282,6 +312,63 @@ mod tests {
         assert!(!only.system && !only.lhm && !only.nvidia);
         assert!(only.mock_config.clock == ohm_adapter_mock::ClockMode::Manual);
         assert_eq!(only.enabled_ids(), vec!["opd", "mock"]);
+    }
+
+    /// The user-facing path for the Linux write opt-in: a settings file names the
+    /// channels, and only those channels end up writable.
+    #[test]
+    fn pwm_write_allow_comes_from_settings_and_is_empty_by_default() {
+        let mut settings = Settings::default();
+        assert!(
+            AdapterOptions::from_settings(&settings)
+                .system_pwm_allow
+                .is_empty(),
+            "reading is unconditional; writing is not"
+        );
+
+        settings.set_adapter_setting(
+            ohm_adapter_system::ADAPTER_ID,
+            "pwm_write_allow",
+            serde_json::json!(["fan.system.nct6798d_fan1", "  ", 42, "fan.system.fake_fan2"]),
+        );
+        let options = AdapterOptions::from_settings(&settings);
+        assert_eq!(
+            options.system_pwm_allow,
+            vec![
+                "fan.system.nct6798d_fan1".to_string(),
+                "fan.system.fake_fan2".to_string()
+            ],
+            "blank entries and non-strings are dropped rather than matched"
+        );
+
+        // And an adapter built from those options exposes exactly that channel.
+        let mut options = options;
+        options.mock = false;
+        options.lhm = false;
+        options.nvidia = false;
+        options.protocol_device = false;
+        let adapters = build_adapters(&options);
+        let system = adapters
+            .iter()
+            .find(|adapter| adapter.info().id.as_str() == ohm_adapter_system::ADAPTER_ID)
+            .expect("the system adapter is registered");
+        assert!(system.info().capabilities.can_write);
+        assert!(
+            system.info().capabilities.hands_back_control_on_shutdown,
+            "and it says it puts the channel back"
+        );
+
+        // With no allow-list the same adapter is read-only.
+        let plain = AdapterOptions {
+            system_pwm_allow: Vec::new(),
+            ..options
+        };
+        let adapters = build_adapters(&plain);
+        let system = adapters
+            .iter()
+            .find(|adapter| adapter.info().id.as_str() == ohm_adapter_system::ADAPTER_ID)
+            .expect("the system adapter is registered");
+        assert!(!system.info().capabilities.can_write);
     }
 
     #[test]
