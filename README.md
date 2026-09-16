@@ -36,7 +36,7 @@ verifies its checksum and installs to a new per-user version directory:
 & {
     $ErrorActionPreference = 'Stop'
     if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -and $env:PROCESSOR_ARCHITEW6432 -ne 'AMD64') { throw 'Windows x64 is required.' }
-    $ohmVersion = 'v0.1.10'
+    $ohmVersion = 'v0.1.11'
     $ohmAsset = "ohm-cli-$ohmVersion-windows-x86_64.zip"
     $ohmUrl = "https://github.com/SvenKunkka/OpenHardwareOS/releases/download/$ohmVersion"
     $ohmInstall = Join-Path $env:LOCALAPPDATA "OpenHardwareOS\cli-$ohmVersion"
@@ -58,7 +58,7 @@ verifies its checksum and installs to a new per-user version directory:
 }
 ```
 
-The CLI is installed at `%LOCALAPPDATA%\OpenHardwareOS\cli-v0.1.10\ohm-cli.exe`.
+The CLI is installed at `%LOCALAPPDATA%\OpenHardwareOS\cli-v0.1.11\ohm-cli.exe`.
 An existing version directory is preserved and stops installation. These commands
 do not change PowerShell execution policy or PATH; `doctor` reads device capabilities.
 The download checksum is checked before extraction or execution.
@@ -68,8 +68,8 @@ optional installer supports CLI updates in a separate managed `cli` directory an
 desktop installation with `-Desktop`:
 
 ```powershell
-Invoke-WebRequest -UseBasicParsing 'https://github.com/SvenKunkka/OpenHardwareOS/releases/download/v0.1.10/install.ps1' -OutFile "$env:TEMP\OpenHardwareOS-install.ps1"
-& "$env:TEMP\OpenHardwareOS-install.ps1" -Version v0.1.10 -Desktop
+Invoke-WebRequest -UseBasicParsing 'https://github.com/SvenKunkka/OpenHardwareOS/releases/download/v0.1.11/install.ps1' -OutFile "$env:TEMP\OpenHardwareOS-install.ps1"
+& "$env:TEMP\OpenHardwareOS-install.ps1" -Version v0.1.11 -Desktop
 ```
 
 The optional script and desktop installer are unsigned. The desktop installer
@@ -79,10 +79,10 @@ LibreHardwareMonitor requires that separate application; it is not bundled.
 The CLI is also available to Rust users directly from source:
 
 ```powershell
-cargo install --git https://github.com/SvenKunkka/OpenHardwareOS --tag v0.1.10 --locked ohm-cli
+cargo install --git https://github.com/SvenKunkka/OpenHardwareOS --tag v0.1.11 --locked ohm-cli
 ```
 
-[Release assets and checksums](https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.10)
+[Release assets and checksums](https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.11)
 · [Windows installation details](docs/windows-install.md)
 · [Linux installation details](docs/linux-install.md)
 · [Running the rules in the background](docs/background-service.md)
