@@ -2503,6 +2503,7 @@ dependencies = [
  "ohm-core",
  "ohm-device-model",
  "parking_lot",
+ "rustix",
  "serde",
  "sysinfo",
  "tempfile",

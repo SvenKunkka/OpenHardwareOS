@@ -273,6 +273,8 @@ Well-known capability ids — `ohm_core::ids::capability`, re-exported as
 | `MEMORY_USED` | `memory.used` | byte |
 | `DISK_FREE` | `storage.free` | byte |
 
+`storage.free` is the space **this user can write now**: on Unix it comes from `statvfs` (`f_bavail × f_frsize`), which is the number `df` prints in its `Available` column and what `diskutil` reports as free space. It deliberately is *not* the library's answer on macOS, which is Apple's "available capacity" and counts space the system can only reclaim later (purgeable): on the machine this was found on the two differed by 6.1 GB, and a reading that matches no tool a person can check it with is not verifiable. `scripts/verify-linux-readings.sh` compares this reading with `df` for the same mount on every platform, and `the_free_space_reading_is_the_number_df_prints` requires the reading to equal `statvfs`.
+
 ### Why business logic keys off id + kind + unit, never vendor/model
 
 The automation editor populates itself from `CapabilityRegistry::sources` (any

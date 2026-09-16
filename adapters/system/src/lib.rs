@@ -616,6 +616,26 @@ impl SystemAdapter {
             .map(|(_, fan)| fan.clone())
     }
 
+    /// Space a user can write on this mount, straight from `statvfs`.
+    ///
+    /// `f_bavail` (not `f_bfree`) is what `df` calls "Available": the blocks the current
+    /// user may actually use, with the reserved-for-root portion excluded. `f_frsize` is
+    /// the block size to multiply by, with `f_bsize` as the fallback some filesystems
+    /// leave as the only meaningful one.
+    #[cfg(unix)]
+    fn available_bytes(mount: &str) -> Option<u64> {
+        // `rustix` rather than `libc`: this crate denies `unsafe_code`, and a syscall
+        // wrapper is exactly the kind of thing that should not be hand-rolled to get
+        // around that.
+        let stats = rustix::fs::statvfs(mount).ok()?;
+        let block = if stats.f_frsize > 0 {
+            stats.f_frsize as u64
+        } else {
+            stats.f_bsize as u64
+        };
+        Some((stats.f_bavail as u64).saturating_mul(block))
+    }
+
     /// Read one device.
     fn read_one(&self, device: &Device) -> DeviceState {
         let mut state = DeviceState::new(device.id.clone(), ohm_core::now_ms());
@@ -731,7 +751,7 @@ impl SystemAdapter {
         }
 
         if let Some(index) = disk_index_of(device) {
-            let (free_space, name, mount) = {
+            let (mut free_space, name, mount) = {
                 let disks = self.disks.lock();
                 match disks.list().get(index) {
                     Some(disk) => (
@@ -742,6 +762,16 @@ impl SystemAdapter {
                     None => (None, String::new(), String::new()),
                 }
             };
+            // On macOS the library answer is Apple's "available capacity", which counts
+            // space the system can reclaim later (purgeable). Every tool a person would
+            // check against — `df`, `diskutil`, `statvfs` — reports the space that can be
+            // written *now*, and on the machine this was found on the two differed by
+            // 6.1 GB. A reading that matches no platform tool is not checkable, so on
+            // Unix the kernel is asked directly.
+            #[cfg(unix)]
+            {
+                free_space = Self::available_bytes(&mount).or(free_space);
+            }
             let Some(free_space) = free_space else {
                 return state.offline(
                     UnavailableReason::NotPresent,
@@ -1897,6 +1927,46 @@ mod tests {
                 .unwrap_or_default()
                 .contains("no longer exposes"),
             "{access:?}"
+        );
+    }
+
+    /// The free-space reading has to be the number the platform's own tools print.
+    ///
+    /// On macOS the library's answer was Apple's "available capacity", which counts space
+    /// the system may reclaim later: on the machine this was found on it read 48.39 GB
+    /// while `df`, `diskutil` and `statvfs` all said 42.29 GB, so the reading matched no
+    /// tool a person could check it with — and CI's macOS job said so. This test asks the
+    /// kernel the same question the reading does and requires the answers to agree
+    /// (allowing for the filesystem changing between the two calls).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_free_space_reading_is_the_number_df_prints() {
+        let adapter = writable_and_discovered(std::path::Path::new("/"), &[]).await;
+        let devices = adapter.discover().await.unwrap();
+        let Some(device) = devices
+            .iter()
+            .find(|device| device.id.as_str() == "storage.system.0")
+        else {
+            return; // no non-removable storage on this machine
+        };
+        let state = adapter.read_state(device).await.unwrap();
+        let ours = state.number(caps::DISK_FREE).expect("a free-space reading");
+        let mount = device
+            .metadata
+            .get("mount_point")
+            .cloned()
+            .unwrap_or_default();
+        let stats = rustix::fs::statvfs(mount.as_str()).expect("statvfs");
+        let platform = (stats.f_bavail as u64).saturating_mul(if stats.f_frsize > 0 {
+            stats.f_frsize as u64
+        } else {
+            stats.f_bsize as u64
+        });
+
+        let difference = (ours as i64 - platform as i64).abs();
+        assert!(
+            difference < 64 * 1024 * 1024,
+            "ours {ours} vs statvfs {platform} on {mount} (delta {difference} B)"
         );
     }
 }

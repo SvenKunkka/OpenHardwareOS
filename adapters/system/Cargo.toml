@@ -8,6 +8,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# `statvfs` for the free-space reading: the answer has to be the one `df` prints, and
+# the library helper answers a different question on macOS (see `available_bytes`).
+# `rustix` is already in the tree, and its wrapper keeps this crate free of `unsafe`.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs"] }
 ohm-core.workspace = true
 ohm-device-model.workspace = true
 ohm-adapter-api.workspace = true
