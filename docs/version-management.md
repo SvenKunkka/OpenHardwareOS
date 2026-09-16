@@ -43,6 +43,27 @@ python scripts/versions.py check --generated
 
 发布前还要把 README 的第一个 PowerShell 安装块、其他安装示例及 `docs/windows-install.md` 更新为目标版本；这些文档由维护者审核，不由版本工具批量改写。公开安装检查会读取目标 tag 的 README，发现版本不符立即停止。
 
+## 名字与安装入口：只有一个来源
+
+内建产物的名字、以及安装入口指向的版本，各自只有一个来源，其他任何地方都必须**推导**或**与之一致**：
+
+| 东西 | 唯一来源 | 必须一致的对方 |
+|---|---|---|
+| 桌面产物名（`openhardwareos`） | `apps/desktop/src-tauri/tauri.conf.json` 的 `mainBinaryName` | Linux 安装页写明的 `/usr/bin/<名字>` 与自检命令；`.deb` 实际装的二进制；`scripts/verify-ipc-roundtrip.sh`（它按配置读名字，脚本里不许出现写死的 `target/release/<名字>`） |
+| CLI 产物名（`ohm-cli`） | `apps/cli/Cargo.toml` | Linux 打包器暂存/归档的名字、`install.ps1` 的 `<名字>.exe`、安装页与 README 写的命令 |
+| 安装入口的版本 | `docs/versions.json` 里**最新已发布**的版本（准备期间可以是正在准备的开发版本） | README 的 `$ohmVersion`、安装页的 `ohm_version`、`releases/download/vX.Y.Z/…` 链接与 `cargo install --tag` |
+
+检查它：
+
+```bash
+python scripts/check-artefact-names.py                  # 当前目录
+python -m unittest discover -s scripts/tests -p 'test_*.py'
+```
+
+CI 的 `Version catalogue and lifecycle` 作业同时跑这两条，本地验证脚本也会跑。检查器会在以下情况失败：改名后文档/打包器没跟上、脚本里写死了产物路径、安装入口指向更旧的已发布版本或尚未发布的计划版本、`mainBinaryName` 缺失。`scripts/tests/test_artefact_names.py` 在临时目录里复制并**故意改坏**每一处来源，确保失败真的会发生，而不是永远通过的检查。
+
+这一节存在的原因写在 `docs/verification-log.md` 第 15、16 轮：`29b95dd` 按 `mainBinaryName` 改了产物名，验证脚本仍找旧路径，于是"真实桌面 IPC 往返"这一步从 v0.1.4 起连续六轮没有真正运行，而每一步都以非零退出被记成红——直到有人去读日志。项目最初审查时也出现过相反方向的问题：README 指向了一个从未发布的版本。
+
 ## 发布一版并留下证据
 
 1. 提交目标源码，运行 CI，并以明确的 `vMAJOR.MINOR.PATCH` 触发 `Release assets (Windows and Linux)`。工作流检查版本、测试，并分别构建两个平台的产物：Windows 侧是 CLI 与 NSIS 桌面安装包，Linux 侧是 CLI 归档、`.deb` 与 AppImage；输出安装文件、SHA-256 和包含源码提交的 `release.json` / `release-linux-x86_64.json`。打包前先跑夹具测试（`test-install.ps1`、`test-packaging.ps1`、`package-linux.test.sh`、`linux-install-doc.test.sh`）；打包脚本还会自检发布资产的行尾、可追溯性与内容——`SHA256SUMS` 必须是 LF，`install.ps1` 必须与提交内的 blob 逐字节一致，`.deb` 必须声明本次发布的版本并装一个能启动的 64 位 x86_64 ELF，否则不出包。Linux 作业随后按安装页的方式装上 `.deb` 并运行它。

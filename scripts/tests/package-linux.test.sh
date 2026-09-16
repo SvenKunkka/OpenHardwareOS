@@ -69,10 +69,16 @@ fake_appimage() { # path
 }
 
 # A throwaway repository with the files the packager insists on.
-new_repo() {
-  local repo="$ROOT/repo-$1"
+new_repo() { # name [mainBinaryName] — the second argument builds a checkout that
+             # declares a different artefact name, which is how a rename is simulated
+  local repo="$ROOT/repo-$1" binary_name="${2:-openhardwareos}"
   rm -rf "$repo"
-  mkdir -p "$repo/scripts/release" "$repo/scripts/tests"
+  mkdir -p "$repo/scripts/release" "$repo/scripts/tests" \
+           "$repo/apps/desktop/src-tauri"
+  # The packager ties the installed binary's name to `mainBinaryName`, so the
+  # fixture checkout has to declare one. Only that key is read.
+  printf '{\n  "productName": "OpenHardwareOS",\n  "mainBinaryName": "%s"\n}\n' \
+    "$binary_name" > "$repo/apps/desktop/src-tauri/tauri.conf.json"
   cp "$SCRIPT" "$repo/scripts/release/package-linux.sh"
   # The packager reads a .deb with this tool; the fixture repository is the only
   # checkout the packager sees, so it has to be there too.
@@ -383,6 +389,38 @@ if run_packager "$repo" --desktop-deb "$ROOT/desktop-args.deb" \
 else
   bad "an Exec line with a field code is accepted ($(grep -m1 '^error:' "$ROOT/desktop-args.log"))"
 fi
+
+# ---------------------------------------------------------------- case 8c
+echo
+echo "--- the installed binary's name must be the one mainBinaryName declares"
+CASES=$((CASES + 1))
+# Nothing used to connect these two: a rename through `mainBinaryName` would have
+# shipped a .deb whose binary no documented command can find, and every check here
+# would still have passed. This case is the connection.
+repo="$(new_repo renamed-binary)"
+fake_deb "$ROOT/desktop-renamed.deb" --binary-name ohm-desktop
+if run_packager "$repo" --desktop-deb "$ROOT/desktop-renamed.deb" \
+     --desktop-appimage "$ROOT/desktop-good.AppImage" > "$ROOT/renamed.log" 2>&1; then
+  bad "a .deb installing usr/bin/ohm-desktop is refused"
+else
+  ok "a .deb installing usr/bin/ohm-desktop is refused ($(grep -m1 '^error:' "$ROOT/renamed.log" | sed 's/^error: //'))"
+fi
+grep -q 'mainBinaryName' "$ROOT/renamed.log" \
+  && ok "  and the refusal names the setting that decides the name" \
+  || bad "  and the refusal names the setting that decides the name"
+
+# The expectation must follow the configuration rather than a constant, so the
+# same good package is offered to a checkout that declares another name.
+repo="$(new_repo renamed-config ohm-desktop)"
+if run_packager "$repo" --desktop-deb "$ROOT/desktop-good.deb" \
+     --desktop-appimage "$ROOT/desktop-good.AppImage" > "$ROOT/renamed-config.log" 2>&1; then
+  bad "a checkout declaring another name refuses the good package"
+else
+  ok "a checkout declaring another name refuses the good package"
+fi
+grep -q "declares 'ohm-desktop'" "$ROOT/renamed-config.log" \
+  && ok "  and the refusal quotes what that checkout declares" \
+  || bad "  and the refusal quotes what that checkout declares"
 
 # ---------------------------------------------------------------- case 9
 echo

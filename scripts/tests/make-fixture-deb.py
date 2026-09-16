@@ -91,7 +91,10 @@ def main() -> int:
     parser.add_argument("--binary-missing", action="store_true")
     parser.add_argument("--desktop-missing", action="store_true")
     parser.add_argument("--icon-missing", action="store_true")
-    parser.add_argument("--exec-name", default="openhardwareos")
+    parser.add_argument("--binary-name", default="openhardwareos",
+                        help="the file name staged under usr/bin; the packager ties it to mainBinaryName")
+    parser.add_argument("--exec-name", default=None,
+                        help="the program the .desktop entry launches (default: the binary's name)")
     parser.add_argument("--exec-args", default="")
     parser.add_argument("--compression", default="gz", choices=["gz", "xz", "none"])
     args = parser.parse_args()
@@ -113,9 +116,9 @@ def main() -> int:
     }
     if not args.binary_missing:
         binary = SCRIPT_BINARY if args.binary_script else ELF_X86_64
-        files["usr/bin/openhardwareos"] = (binary, 0o755)
+        files[f"usr/bin/{args.binary_name}"] = (binary, 0o755)
     if not args.desktop_missing:
-        exec_line = f"Exec={args.exec_name}"
+        exec_line = f"Exec={args.exec_name or args.binary_name}"
         if args.exec_args:
             exec_line += f" {args.exec_args}"
         entry = DESKTOP_ENTRY.replace(b"Exec=openhardwareos", exec_line.encode())

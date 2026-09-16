@@ -77,10 +77,18 @@ cargo test --workspace && \
 cargo clippy --workspace --all-targets && \
 (cd apps/desktop && npm run build) && \
 cargo run -p ohm-cli -- demo && \
-cargo run -p ohm-desktop -- --selftest
+cargo run -p ohm-desktop -- --selftest && \
+python scripts/versions.py check --generated && \
+python scripts/check-artefact-names.py && \
+python -m unittest discover -s scripts/tests -p 'test_*.py'
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same checks in five jobs: `lint`
+The last three need no toolchain and catch a class of defect no compiler sees: a built
+artefact renamed in one place and not the others, or an install entry pointing at a
+version nobody can download. Both have already happened here once — the details are in
+`docs/verification-log.md` (rounds 15 and 16) and `docs/version-management.md`.
+
+CI (`.github/workflows/ci.yml`) runs the same checks in six jobs: `lint`
 (`cargo fmt --all -- --check`, then `cargo clippy --workspace --all-targets -- -D
 warnings`), `rust` (`cargo build --workspace --all-targets`, `cargo test
 --workspace`, the headless `ohm-cli demo` and `ohm-desktop --selftest --mock`
@@ -88,7 +96,9 @@ normally and in `--dry-run`, on Linux, macOS and Windows), `frontend` (`npm ci`,
 typecheck, behaviour tests, build), `windows-bundle` (the NSIS installer, uploaded
 for review — never published) and `hygiene` (a crate opting out of `unsafe_code =
 "deny"` or any ADL/ADLX reference in code fails the build, and `cargo deny check`
-runs for licences, advisories and sources).
+runs for licences, advisories and sources). `Version catalogue and lifecycle`
+(`scripts/versions.py check --generated`, the `scripts/tests` unit tests and
+`scripts/check-artefact-names.py`) is the sixth.
 
 There is **no `continue-on-error` anywhere** in that workflow: an earlier revision
 made the clippy and `cargo deny` steps advisory, and that is exactly how a lint

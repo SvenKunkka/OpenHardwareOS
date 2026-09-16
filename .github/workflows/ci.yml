@@ -26,7 +26,13 @@ jobs:
       - name: Check catalogue and generated views
         run: python -B scripts/versions.py check --generated
       - name: Test version changes and publication checks
-        run: python -B -m unittest discover -s scripts/tests -p test_versions.py -v
+        run: python -B -m unittest discover -s scripts/tests -p 'test_*.py' -v
+      # A renamed artefact, or an install entry pointing at a version nobody can
+      # download, is a defect no compiler sees. Both classes have already happened
+      # once in this repository's history (rounds 9-14 and the original review), so
+      # they are checked here rather than remembered.
+      - name: Check artefact names and install entries against their sources
+        run: python -B scripts/check-artefact-names.py
 
   # Formatting and lints are *required*: a warning tolerated silently is a warning
   # nobody fixes. The machine this repository was developed on had a split

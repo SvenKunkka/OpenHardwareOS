@@ -219,10 +219,29 @@ PY_READ
   deb_icon="$(read_field 'desktop_fields.Icon')"
   deb_icons="$(read_field 'icons')"
 
+  # The installed binary's name is not this script's choice. `mainBinaryName` in
+  # tauri.conf.json is what the bundler uses, and the Linux install page tells users
+  # to run `/usr/bin/openhardwareos`. Nothing used to connect the two: this comment
+  # claimed the relationship while no check enforced it, so a rename would have
+  # shipped a package whose binary no documented command could find — the same
+  # defect that had silently disabled the desktop IPC round trip since v0.1.4.
+  DESKTOP_CONFIG="$REPO/apps/desktop/src-tauri/tauri.conf.json"
+  [ -f "$DESKTOP_CONFIG" ] || die "missing $DESKTOP_CONFIG"
+  declared_binary_name="$(python3 - "$DESKTOP_CONFIG" <<'PY_NAME'
+import json, sys
+config = json.load(open(sys.argv[1], encoding="utf-8"))
+name = config.get("mainBinaryName")
+if not name:
+    raise SystemExit("tauri.conf.json declares no mainBinaryName")
+print(name)
+PY_NAME
+)" || die "cannot read mainBinaryName from $DESKTOP_CONFIG"
+
   # Print the facts before judging them: a refusal in the release log then shows
   # *what* the package declared, not only which sentence rejected it.
   echo "desktop package : $declared_package $declared_version ($declared_arch)"
   echo "desktop binary  : $deb_binary ($deb_class $deb_machine)"
+  echo "desktop name    : mainBinaryName declares '$declared_binary_name'"
   echo "desktop entry   : $deb_desktop -> $deb_exec"
   echo "desktop icons   : $deb_icons"
   echo "desktop depends : $declared_depends"
@@ -242,6 +261,8 @@ PY_READ
   esac
   [ -n "$declared_depends" ] || die "the desktop package declares no dependencies"
   [ -n "$deb_binary" ] || die "the desktop package installs no ELF binary under usr/bin"
+  [ "$deb_binary" = "usr/bin/$declared_binary_name" ] \
+    || die "the desktop package installs '$deb_binary', but mainBinaryName declares '$declared_binary_name' (expected 'usr/bin/$declared_binary_name')"
   [ "$deb_class" = "64-bit" ] || die "the desktop binary is $deb_class, expected 64-bit"
   [ "$deb_machine" = "x86_64" ] || die "the desktop binary is for $deb_machine, expected x86_64"
   [ -n "$deb_desktop" ] || die "the desktop package installs no .desktop entry"
