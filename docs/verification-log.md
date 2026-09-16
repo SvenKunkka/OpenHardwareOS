@@ -3085,6 +3085,17 @@ now declares the target-specific tables after the general ones, with the reason 
 the file, and `cargo check --target x86_64-pc-windows-msvc` passes for the crate again —
 verified locally on both targets before pushing.
 
+**Both fixes, verified at `234199d`:**
+
+* the pass re-run under the corrected counter: **0 failing steps, and the failure file is
+  empty** (598 Rust tests across 51 test-result lines, every fixture suite green, IPC round
+  trip verified);
+* CI ([run 35062176644](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/35062176644)):
+  all eight jobs green on Windows, Linux and macOS, with `Rust (macos-latest)` now reporting
+  `AGREE storage.system.0/storage.free ours 97894117376 B vs df 97877307392 B (Δ 16809984 B)`
+  and `RESULT: every comparable reading agrees with the platform's own source` — the same job
+  that had failed two runs earlier.
+
 ### 6. What round 20 could **not** verify
 
 * **Real permissions.** The refusal in the tests is produced by `chmod 0444` on a prepared
