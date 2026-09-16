@@ -110,13 +110,42 @@ fn the_report_carries_our_readings_and_the_platforms_own_answer() {
     );
 
     // And an explanation for a section that is empty, rather than silence.
+    // And an explanation for a section that is empty, rather than silence — which means
+    // two different assertions, because the answer depends on the platform. Linux has
+    // `/proc/meminfo` and must show it; everywhere else must say why it has nothing.
+    // Writing only the second version made this test pass on macOS and fail on CI's
+    // Ubuntu runner: the fourth time in three rounds that an assertion depended on the
+    // machine it ran on. Both cases are asserted now, so either platform failing is a
+    // failure.
     let notes = report["platform"]["notes"].as_array().expect("notes");
-    assert!(
-        notes
-            .iter()
-            .any(|note| note.as_str().unwrap_or_default().contains("/proc/meminfo")),
-        "a platform with no /proc/meminfo says so: {notes:?}"
-    );
+    let meminfo = report["platform"]["meminfo"].as_array().expect("meminfo");
+    if cfg!(target_os = "linux") {
+        assert!(
+            meminfo
+                .iter()
+                .any(|line| line.as_str().unwrap_or_default().starts_with("MemTotal")),
+            "Linux has /proc/meminfo, so the report carries the total a reader can \
+             compare against: {meminfo:?}"
+        );
+        assert!(
+            !notes.iter().any(|note| note
+                .as_str()
+                .unwrap_or_default()
+                .contains("meminfo: not readable")),
+            "and does not claim it is missing: {notes:?}"
+        );
+    } else {
+        assert!(
+            meminfo.is_empty(),
+            "there is no /proc/meminfo here, so there is nothing to carry: {meminfo:?}"
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.as_str().unwrap_or_default().contains("/proc/meminfo")),
+            "and the report says so rather than staying silent: {notes:?}"
+        );
+    }
 }
 
 #[test]
