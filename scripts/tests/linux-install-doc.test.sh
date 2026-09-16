@@ -96,8 +96,15 @@ SH
 # the honest outcome the page describes.
 cat > "$WORK/bin/ohm-cli" <<'SH'
 #!/bin/sh
+# Enough of the CLI for the page's commands to run: machine-readable readings, and a
+# provider list for the snippet that checks whether a channel became writable.
 if [ "${1:-}" = "status" ] && [ "${2:-}" = "--json" ]; then
   cat "$OHM_TEST_READINGS"
+fi
+if [ "${1:-}" = "doctor" ]; then
+  printf '  Providers\n'
+  printf '  system   available    9   device(s) — hwmon fan tachometers\n'
+  printf '  notes    system channels listed in pwm_write_allow are writable\n'
 fi
 exit 0
 SH

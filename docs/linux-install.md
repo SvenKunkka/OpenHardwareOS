@@ -179,8 +179,9 @@ Linux 上每个读数的来源都写在 `doctor` 输出里，能读就给出值�
 ```
 
 ```bash
-ohm-cli doctor | grep -A 3 'system'   # 提供方应显示可以写入，并声明会交还控制
-ohm-cli status --json | grep -A 2 fan.speed_percent
+# 提供方应显示 system 可写；这台机器没有可写的 hwmon 通道时，下面两行会各自说明。
+ohm-cli doctor | grep -E 'system|pwm_write_allow' || echo "  (没有可写的 system 通道)"
+ohm-cli status --json | grep -A 2 fan.speed_percent || echo "  (没有风扇通道读数)"
 ```
 
 ### 开启之后会发生什么
