@@ -33,7 +33,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use ohm_adapter_api::{
-    AdapterCapabilities, AdapterInfo, AdapterState, AdapterStatus, HardwareAdapter, WriteOutcome,
+    AdapterCapabilities, AdapterInfo, AdapterState, AdapterStatus, HardwareAdapter, TakenControl,
+    WriteOutcome,
 };
 use ohm_core::{AdapterId, DeviceId, OhmError, Result};
 use ohm_device_model::{Capability, Device, DeviceState, Reading, UnavailableReason, Unit, Value};
@@ -951,6 +952,80 @@ impl HardwareAdapter for SystemAdapter {
         }
     }
 
+    /// What this adapter switched away from its driver and still owes back.
+    ///
+    /// Published in the service's state file, so a process that takes over after this
+    /// one is killed can finish the job instead of reading the switched value as the
+    /// original.
+    fn taken_controls(&self) -> Vec<TakenControl> {
+        self.taken
+            .lock()
+            .iter()
+            .map(|(device_id, mode)| TakenControl {
+                device_id: device_id.clone(),
+                original: mode.restorable_value(),
+                original_text: mode.describe(),
+            })
+            .collect()
+    }
+
+    /// Take responsibility for channels a previous process switched.
+    ///
+    /// The recorded value is remembered as *this* process's original — that is what
+    /// makes its own shutdown put the channel back where it started — and it is also
+    /// written back straight away, because a channel left in manual mode by a process
+    /// that died should not wait for this one to exit cleanly as well. Channels this
+    /// adapter is not allowed to write are skipped and said so: adopting one would be
+    /// touching hardware the configuration does not permit.
+    fn adopt_taken_controls(&self, taken: &[TakenControl]) -> Vec<String> {
+        let mut problems = Vec::new();
+        for entry in taken {
+            if !self.pwm_allow.contains(&entry.device_id) {
+                problems.push(format!(
+                    "{}: left in manual mode by a previous owner, but it is not in \
+                     `adapter_settings.system.pwm_write_allow`, so this process may not put it \
+                     back ({})",
+                    entry.device_id, entry.original_text
+                ));
+                continue;
+            }
+            let Some(value) = entry.original else {
+                problems.push(format!(
+                    "{}: the previous owner did not record a value it could write back ({}), so \
+                     this channel is left exactly as it is rather than guessed at",
+                    entry.device_id, entry.original_text
+                ));
+                continue;
+            };
+
+            let mode = hwmon::ControlMode::from_restored(value);
+            self.taken
+                .lock()
+                .insert(entry.device_id.clone(), mode.clone());
+            let tree = self.hwmon.lock();
+            let Some(fan) = tree
+                .as_ref()
+                .and_then(|tree| tree.channel_by_device_id(&entry.device_id))
+            else {
+                problems.push(format!(
+                    "{}: adopted, but the channel is not in this hwmon tree, so it cannot be \
+                     written back until it returns",
+                    entry.device_id
+                ));
+                continue;
+            };
+            match fan.restore_control(Some(mode.clone())) {
+                Ok(()) => tracing::info!(
+                    channel = %entry.device_id,
+                    restored = value,
+                    "put a channel left in manual mode by a previous owner back under its driver"
+                ),
+                Err(detail) => problems.push(format!("{}: {detail}", entry.device_id)),
+            }
+        }
+        problems
+    }
+
     /// Put every channel this adapter switched back under its original owner.
     ///
     /// This is what "hand back to firmware control" means for hwmon: the driver's
@@ -1469,5 +1544,166 @@ mod tests {
         }
         assert_eq!(SystemAdapter::default().info().namespace, ADAPTER_ID);
         assert_eq!(SystemAdapter::boxed().info().id.as_str(), ADAPTER_ID);
+    }
+
+    // --- handing a switched channel over to the next process ---------------------
+
+    /// An adapter pointed at a fixture tree, allowed to write the listed channels.
+    fn writable(root: &std::path::Path, allow: &[&str]) -> SystemAdapter {
+        let mut adapter = SystemAdapter::with_hwmon_root(Some(root.to_path_buf()));
+        adapter.pwm_allow = allow.iter().map(|id| id.to_string()).collect();
+        adapter
+    }
+
+    /// The same, with its tree already read.
+    ///
+    /// Adoption writes a channel back, and a channel is something discovery found: the
+    /// runtime starts (which enumerates) before it adopts, so the tests do too.
+    async fn writable_and_discovered(root: &std::path::Path, allow: &[&str]) -> SystemAdapter {
+        let adapter = writable(root, allow);
+        adapter.discover().await.expect("discovery");
+        adapter
+    }
+
+    fn tree_file(root: &std::path::Path, file: &str) -> String {
+        std::fs::read_to_string(root.join("hwmon3").join(file))
+            .unwrap()
+            .trim()
+            .to_string()
+    }
+
+    fn a_recorded_original(value: Option<i64>) -> TakenControl {
+        TakenControl {
+            device_id: "fan.system.nct6798d_fan1".to_string(),
+            original: value,
+            original_text: "the driver controls this channel".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn what_this_adapter_switched_is_reported_for_the_next_owner() {
+        let temp = hwmon_fixture();
+        let adapter = writable(temp.path(), &["fan.system.nct6798d_fan1"]);
+        let devices = adapter.discover().await.unwrap();
+        let device = devices
+            .iter()
+            .find(|device| device.id.as_str() == "fan.system.nct6798d_fan1")
+            .expect("the channel");
+        let capability = device
+            .capability(&CapabilityId::new_unchecked(caps::FAN_SPEED_PERCENT))
+            .unwrap();
+
+        // Nothing is owed before a write.
+        assert!(adapter.taken_controls().is_empty());
+
+        adapter
+            .write(device, capability, &Value::Number(45.0))
+            .await
+            .expect("a write");
+        assert_eq!(
+            tree_file(temp.path(), "pwm1_enable"),
+            "1",
+            "it took control"
+        );
+
+        // The record the next process needs: which channel, and what it was.
+        let taken = adapter.taken_controls();
+        assert_eq!(taken.len(), 1, "{taken:?}");
+        assert_eq!(taken[0].device_id, "fan.system.nct6798d_fan1");
+        assert_eq!(taken[0].original, Some(2));
+        assert!(taken[0].is_restorable());
+        assert!(
+            taken[0].original_text.contains("driver controls"),
+            "{}",
+            taken[0].original_text
+        );
+
+        adapter.shutdown().await.unwrap();
+        assert_eq!(
+            tree_file(temp.path(), "pwm1_enable"),
+            "2",
+            "and it gave it back"
+        );
+        assert!(
+            adapter.taken_controls().is_empty(),
+            "nothing is owed once it has been given back"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_channel_left_switched_by_a_dead_process_is_put_back() {
+        let temp = hwmon_fixture();
+        // What a process that was killed leaves behind: the channel switched to manual
+        // and its record the only place the original value still exists.
+        std::fs::write(temp.path().join("hwmon3/pwm1_enable"), "1\n").unwrap();
+        let adapter = writable_and_discovered(temp.path(), &["fan.system.nct6798d_fan1"]).await;
+
+        let problems = adapter.adopt_taken_controls(&[a_recorded_original(Some(2))]);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(
+            tree_file(temp.path(), "pwm1_enable"),
+            "2",
+            "the channel goes back under its driver straight away, not at some later exit"
+        );
+        // And this process now owes it back too, so its own clean stop is idempotent
+        // rather than a second opinion.
+        let taken = adapter.taken_controls();
+        assert_eq!(taken.len(), 1);
+        assert_eq!(taken[0].original, Some(2));
+    }
+
+    #[tokio::test]
+    async fn the_exact_mode_is_restored_not_the_nearest_known_one() {
+        let temp = hwmon_fixture();
+        std::fs::write(temp.path().join("hwmon3/pwm1_enable"), "1\n").unwrap();
+        let adapter = writable_and_discovered(temp.path(), &["fan.system.nct6798d_fan1"]).await;
+
+        // 3 is "automatic, using the driver's own curve"; 2 is plain automatic. A
+        // hand-over must not decay one into the other.
+        let problems = adapter.adopt_taken_controls(&[a_recorded_original(Some(3))]);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(tree_file(temp.path(), "pwm1_enable"), "3");
+    }
+
+    #[tokio::test]
+    async fn a_recorded_mode_that_could_not_be_read_is_refused_rather_than_guessed() {
+        let temp = hwmon_fixture();
+        std::fs::write(temp.path().join("hwmon3/pwm1_enable"), "1\n").unwrap();
+        let adapter = writable_and_discovered(temp.path(), &["fan.system.nct6798d_fan1"]).await;
+
+        let mut entry = a_recorded_original(None);
+        entry.original_text = "control mode unreadable (read_error): not a number".to_string();
+        let problems = adapter.adopt_taken_controls(&[entry]);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("did not record a value it could write back"),
+            "{problems:?}"
+        );
+        assert_eq!(
+            tree_file(temp.path(), "pwm1_enable"),
+            "1",
+            "a mode nobody could read is never written back as a guess"
+        );
+        assert!(
+            adapter.taken_controls().is_empty(),
+            "and this process does not claim to owe a channel it cannot put back"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_channel_this_adapter_may_not_write_is_left_alone_and_said_so() {
+        let temp = hwmon_fixture();
+        std::fs::write(temp.path().join("hwmon3/pwm1_enable"), "1\n").unwrap();
+        // The configuration does not confirm this channel, so this build must not
+        // touch it — recovering somebody else's mistake is not an exception to that.
+        let adapter = writable_and_discovered(temp.path(), &[]).await;
+
+        let problems = adapter.adopt_taken_controls(&[a_recorded_original(Some(2))]);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("pwm_write_allow"),
+            "the refusal names the setting: {problems:?}"
+        );
+        assert_eq!(tree_file(temp.path(), "pwm1_enable"), "1");
     }
 }

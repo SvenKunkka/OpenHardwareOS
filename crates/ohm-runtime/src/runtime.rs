@@ -250,6 +250,64 @@ impl Runtime {
     /// back. Each of those is audited separately, and a problem is recorded as a
     /// problem — the exit path no longer reports an unconfirmed write as a
     /// successful hand-back.
+    /// Channels the adapters have switched away from their drivers and still owe back.
+    ///
+    /// The service publishes this in its state file so that a process taking over after
+    /// a crash can put those channels back. Without it, a takeover reads the switched
+    /// value as the original and restores *that* — leaving a fan in manual mode for
+    /// good, which is the failure this whole handover exists to prevent.
+    pub fn taken_controls(&self) -> Vec<ohm_adapter_api::TakenControl> {
+        self.inner
+            .discovery
+            .adapters()
+            .iter()
+            .flat_map(|adapter| adapter.taken_controls())
+            .collect()
+    }
+
+    /// Accept responsibility for channels a previous process switched.
+    ///
+    /// Returns one sentence per channel that could **not** be adopted. A non-empty
+    /// result is not an error to ignore: it names channels that nobody will put back
+    /// unless a person does it, so callers are expected to report it rather than
+    /// swallow it.
+    pub fn adopt_taken_controls(&self, taken: &[ohm_adapter_api::TakenControl]) -> Vec<String> {
+        if taken.is_empty() {
+            return Vec::new();
+        }
+        let adapters = self.inner.discovery.adapters();
+        let mut problems: Vec<String> = adapters
+            .iter()
+            .flat_map(|adapter| adapter.adopt_taken_controls(taken))
+            .collect();
+
+        // Whatever no adapter now holds is a channel nobody will put back. Adapters are
+        // expected to say so themselves; this is the net under that expectation, and it
+        // stays quiet for channels already mentioned so the report does not repeat itself.
+        let held: std::collections::BTreeSet<String> = adapters
+            .iter()
+            .flat_map(|adapter| adapter.taken_controls())
+            .map(|entry| entry.device_id)
+            .collect();
+        for entry in taken {
+            if held.contains(&entry.device_id) {
+                continue;
+            }
+            if problems
+                .iter()
+                .any(|problem| problem.contains(&entry.device_id))
+            {
+                continue;
+            }
+            problems.push(format!(
+                "{}: no adapter took responsibility for this channel, so nothing will put it back \
+                 ({})",
+                entry.device_id, entry.original_text
+            ));
+        }
+        problems
+    }
+
     pub async fn shutdown(&self) -> Result<ControlRelease> {
         if !self.inner.running.swap(false, Ordering::SeqCst) {
             // Still safe to call twice.

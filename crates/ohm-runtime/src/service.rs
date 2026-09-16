@@ -82,6 +82,14 @@ pub struct ServiceState {
     /// The most recent such gap, in wall-clock milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_resume_gap_ms: Option<i64>,
+    /// Channels this owner switched away from their drivers and still owes back.
+    ///
+    /// Published for the same reason the heartbeat is: a process that takes over after
+    /// this one dies inherits its channels, and "which ones, and what were they before"
+    /// is knowledge that dies with it. [`crate::Runtime::taken_controls`] is where the
+    /// list comes from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub taken: Vec<ohm_adapter_api::TakenControl>,
 }
 
 impl ServiceState {
@@ -107,6 +115,7 @@ impl ServiceState {
             dry_run,
             resumes: 0,
             last_resume_gap_ms: None,
+            taken: Vec::new(),
         }
     }
 
@@ -320,11 +329,18 @@ fn pid_plausible(pid: u32) -> bool {
 pub struct ServiceGuard {
     path: PathBuf,
     state: ServiceState,
+    /// The record this process replaced, when it took over an abandoned file.
+    ///
+    /// Kept because it carries the one thing the successor cannot work out for itself:
+    /// which channels the previous owner switched away from their drivers. See
+    /// [`ServiceGuard::predecessor`].
+    predecessor: Option<ServiceState>,
 }
 
 impl ServiceGuard {
     /// Claim the state file, or explain who already has it.
     pub fn acquire(path: &Path, state: ServiceState) -> Result<Self, ServiceError> {
+        let mut predecessor = None;
         if let Some((existing, fresh)) = stale_or_running(path) {
             if fresh {
                 let age = existing.age_ms(ohm_core::now_ms());
@@ -333,6 +349,7 @@ impl ServiceGuard {
                     age_ms: age,
                 });
             }
+            predecessor = Some(existing);
             // Abandoned: the owner stopped writing heartbeats and never cleaned
             // up (killed with SIGKILL, a power cut, a suspended machine that was
             // restarted). Removing it is not enough on its own — two processes
@@ -345,10 +362,23 @@ impl ServiceGuard {
             // file by hand.
             let _ = fs::remove_file(path);
         }
-        Self::create(path, state)
+        Self::create(path, state, predecessor)
     }
 
-    fn create(path: &Path, state: ServiceState) -> Result<Self, ServiceError> {
+    /// The abandoned record this process replaced, if any.
+    ///
+    /// A successor is expected to adopt its `taken` list before it writes anything: a
+    /// channel the previous owner switched stays switched, and reading its current
+    /// value as "the original" is how a fan is left in manual mode for good.
+    pub fn predecessor(&self) -> Option<&ServiceState> {
+        self.predecessor.as_ref()
+    }
+
+    fn create(
+        path: &Path,
+        state: ServiceState,
+        predecessor: Option<ServiceState>,
+    ) -> Result<Self, ServiceError> {
         if let Some(parent) = path.parent()
             && let Err(error) = fs::create_dir_all(parent)
         {
@@ -372,6 +402,7 @@ impl ServiceGuard {
                 Ok(Self {
                     path: path.to_path_buf(),
                     state,
+                    predecessor,
                 })
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -413,6 +444,11 @@ impl ServiceGuard {
                 found: found.map(Box::new),
             }),
         }
+    }
+
+    /// Publish what this owner has switched away from its drivers.
+    pub fn set_taken(&mut self, taken: Vec<ohm_adapter_api::TakenControl>) {
+        self.state.taken = taken;
     }
 
     /// Record a wake-up that spanned wall-clock time this process did not run.
@@ -758,5 +794,68 @@ mod tests {
         let state: ServiceState = serde_json::from_str(json).expect("an older file parses");
         assert_eq!(state.resumes, 0);
         assert_eq!(state.last_resume_gap_ms, None);
+    }
+
+    // --- handing a switched channel to the process that takes over ----------------
+
+    fn taken_entry() -> ohm_adapter_api::TakenControl {
+        ohm_adapter_api::TakenControl {
+            device_id: "fan.system.nct6798d_fan1".to_string(),
+            original: Some(2),
+            original_text: "the driver controls this channel".to_string(),
+        }
+    }
+
+    #[test]
+    fn what_an_owner_switched_is_published_for_whoever_comes_next() {
+        let path = temp_path("taken").join("service.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut guard = ServiceGuard::acquire(&path, state(1, 100)).expect("claim");
+        guard.set_taken(vec![taken_entry()]);
+        guard.heartbeat(1, 1, Vec::new()).expect("heartbeat");
+
+        let written = read_state(&path).expect("state file");
+        assert_eq!(written.taken, vec![taken_entry()]);
+    }
+
+    #[test]
+    fn a_successor_is_given_its_predecessors_record() {
+        let path = temp_path("predecessor").join("service.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        // A first owner that switched a channel and then died: stale heartbeat, record
+        // intact.
+        let mut dead = ServiceState::claim(1, "0.1.10", 100, false, false);
+        dead.taken = vec![taken_entry()];
+        dead.heartbeat_at_ms = ohm_core::now_ms() - 600_000;
+        fs::write(&path, serde_json::to_string_pretty(&dead).unwrap()).unwrap();
+
+        let guard = ServiceGuard::acquire(&path, state(2, 100)).expect("take over");
+        let predecessor = guard.predecessor().expect("the record it replaced");
+        assert_eq!(predecessor.pid, 1);
+        assert_eq!(predecessor.version, "0.1.10");
+        assert_eq!(
+            predecessor.taken,
+            vec![taken_entry()],
+            "the successor must be able to adopt what the dead owner switched"
+        );
+
+        // A fresh start has nothing to adopt, and says so by being empty rather than
+        // by inventing a predecessor.
+        let fresh = temp_path("fresh").join("service.json");
+        fs::create_dir_all(fresh.parent().unwrap()).unwrap();
+        let guard = ServiceGuard::acquire(&fresh, state(3, 100)).expect("claim");
+        assert!(guard.predecessor().is_none());
+    }
+
+    #[test]
+    fn a_state_file_written_before_this_version_has_nothing_to_adopt() {
+        // Upgrade path: the field is additive, or an old file would either fail to
+        // parse (blocking takeover) or be read as "the previous owner switched
+        // something" when it switched nothing.
+        let json = r#"{"pid":1,"version":"0.1.10","started_at_ms":1,"heartbeat_at_ms":2,
+                       "heartbeat_interval_ms":100,"ticks":3,"rules":1}"#;
+        let state: ServiceState = serde_json::from_str(json).expect("an older file parses");
+        assert!(state.taken.is_empty());
     }
 }

@@ -43,8 +43,15 @@ const PWM_FULL_SCALE: f64 = 255.0;
 /// Who currently owns a channel's duty, as `pwm<N>_enable` reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlMode {
-    /// The driver is driving the channel (a curve, a table, firmware).
-    Automatic,
+    /// The driver is driving the channel, with the kernel's own value kept.
+    ///
+    /// `2` is "automatic", `3` is "automatic, using the driver's own curve" — the
+    /// difference is real on boards whose driver has a curve, so the number is kept
+    /// rather than collapsed: a value this program writes back must be the value the
+    /// channel actually had. Distinguishing them matters more than it used to,
+    /// because a mode is now also recorded for a process that may have to restore it
+    /// after a crash (`TakenControl`).
+    Automatic(i64),
     /// Software is expected to set the duty — but not this program, yet.
     Manual,
     /// A value this build does not know how to read.
@@ -61,7 +68,7 @@ impl ControlMode {
     pub fn from_sysfs(raw: &str) -> Self {
         match raw.trim().parse::<i64>() {
             Ok(1) => Self::Manual,
-            Ok(2 | 3) => Self::Automatic,
+            Ok(value @ (2 | 3)) => Self::Automatic(value),
             Ok(0) => Self::Other(0),
             Ok(other) => Self::Other(other),
             // Not a number at all: that is not "a mode this build does not know",
@@ -77,7 +84,8 @@ impl ControlMode {
     /// One line for the UI and the audit trail.
     pub fn describe(&self) -> String {
         match self {
-            Self::Automatic => "the driver controls this channel".to_string(),
+            Self::Automatic(3) => "the driver controls this channel with its own curve".to_string(),
+            Self::Automatic(_) => "the driver controls this channel".to_string(),
             Self::Manual => "software is expected to set this channel".to_string(),
             Self::Other(0) => "no control; the channel runs at full speed".to_string(),
             Self::Other(value) => format!("unrecognised control mode {value}"),
@@ -185,7 +193,7 @@ impl FanChannel {
         };
         match &mode {
             ControlMode::Manual => Ok(None),
-            ControlMode::Automatic | ControlMode::Other(_) => {
+            ControlMode::Automatic(_) | ControlMode::Other(_) => {
                 if mode.restorable_value().is_none() {
                     return Err((
                         UnavailableReason::Unsupported,
@@ -264,10 +272,23 @@ impl ControlMode {
     ///
     /// `None` for a mode we could not read: restoring an unknown value means
     /// guessing, and guessing here changes who drives a fan.
+    /// Rebuild a mode from a value another process recorded.
+    ///
+    /// The inverse of [`Self::restorable_value`], so a value handed over between
+    /// processes comes back as the same mode — including `3`, which is automatic with
+    /// the driver's own curve and must not decay into plain automatic.
+    pub fn from_restored(value: i64) -> Self {
+        match value {
+            1 => Self::Manual,
+            2 | 3 => Self::Automatic(value),
+            other => Self::Other(other),
+        }
+    }
+
     pub fn restorable_value(&self) -> Option<i64> {
         match self {
             Self::Manual => Some(1),
-            Self::Automatic => Some(2),
+            Self::Automatic(value) => Some(*value),
             Self::Other(value) => Some(*value),
             Self::Unknown(..) => None,
         }
@@ -601,7 +622,7 @@ mod tests {
     fn taking_control_switches_the_driver_off_and_remembers_what_it_was() {
         let (dir, fan) = writable_fixture(Some("2"));
         let original = fan.take_control().unwrap().expect("it was the driver's");
-        assert_eq!(original, ControlMode::Automatic);
+        assert_eq!(original, ControlMode::Automatic(2));
         assert_eq!(
             fs::read_to_string(dir.path().join("hwmon0/pwm1_enable")).unwrap(),
             "1\n",
@@ -718,7 +739,7 @@ mod tests {
             .find(|(_, fan)| fan.channel == 2)
             .expect("channel 2 exists");
         assert_eq!(fan.read_rpm().unwrap().unwrap(), 0.0);
-        assert_eq!(fan.current_mode(), Some(ControlMode::Automatic));
+        assert_eq!(fan.current_mode(), Some(ControlMode::Automatic(2)));
     }
 
     #[test]
@@ -769,7 +790,11 @@ mod tests {
 
     #[test]
     fn a_control_mode_this_build_does_not_know_is_reported_verbatim() {
-        assert_eq!(ControlMode::from_sysfs("2\n"), ControlMode::Automatic);
+        assert_eq!(ControlMode::from_sysfs("2\n"), ControlMode::Automatic(2));
+        // 3 is automatic *with the driver's curve*: a value written back must be the
+        // value that was there, not the nearest known mode.
+        assert_eq!(ControlMode::from_sysfs("3\n"), ControlMode::Automatic(3));
+        assert_eq!(ControlMode::from_sysfs("3\n").restorable_value(), Some(3));
         assert_eq!(ControlMode::from_sysfs("1\n"), ControlMode::Manual);
         assert_eq!(ControlMode::from_sysfs("0\n"), ControlMode::Other(0));
         assert_eq!(ControlMode::from_sysfs("7\n"), ControlMode::Other(7));

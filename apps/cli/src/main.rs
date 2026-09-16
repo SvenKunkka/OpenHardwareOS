@@ -1159,6 +1159,29 @@ async fn service_run(cli: &Cli, use_mock: bool, heartbeat_ms: u64, max_ticks: u6
     };
 
     session.runtime.start().await?;
+
+    // Adopt whatever the previous owner left switched, *before* this process writes
+    // anything: the channel is in manual mode because that process died, and reading
+    // its current value as the original would make this process restore manual mode
+    // for good. Reported per channel, because a channel nobody put back is a fan
+    // nobody controls.
+    if let Some(previous) = guard.predecessor() {
+        if !previous.taken.is_empty() {
+            println!(
+                "the previous owner (pid {}, version {}) left {} channel(s) switched to manual \
+                 mode; putting them back the way it recorded them",
+                previous.pid,
+                previous.version,
+                previous.taken.len()
+            );
+        }
+        let problems = session.runtime.adopt_taken_controls(&previous.taken);
+        for problem in &problems {
+            tracing::warn!(target: "ohm::service", "{problem}");
+            println!("warning: {problem}");
+        }
+    }
+
     session.engine.start().await?;
 
     // A local helper, because the same answer is needed here and in the loop, and
@@ -1168,6 +1191,10 @@ async fn service_run(cli: &Cli, use_mock: bool, heartbeat_ms: u64, max_ticks: u6
     // says "crash" instead of "somebody else is driving now".
     let beat = |guard: &mut ServiceGuard, session: &Session| -> Result<bool, ServiceError> {
         let stats = session.engine.stats();
+        // Publish what this process has switched away from its drivers: if it is killed
+        // or taken over, the next owner needs to know, or it will read the switched
+        // value as the original and restore that.
+        guard.set_taken(session.runtime.taken_controls());
         match guard.heartbeat(stats.ticks, stats.rules, rule_outcomes(session)) {
             Ok(()) => Ok(false),
             Err(error @ ServiceError::OwnershipLost { .. }) => {
@@ -1233,10 +1260,25 @@ file was left untouched"
     let process_start = std::time::Instant::now();
     let mut wakeups = ohm_runtime::service::WakeupDetector::new(heartbeat_ms.max(50) as i64);
     let mut heartbeat = tokio::time::interval(Duration::from_millis(heartbeat_ms.max(50)));
+    // A second, faster ticker that publishes *changes* rather than the clock. Taking
+    // control of a channel is the one thing a successor cannot work out for itself, so
+    // it must not wait up to a whole heartbeat to be written down: a service killed in
+    // that window would leave a channel switched with no record of what it was.
+    let mut watch = tokio::time::interval(Duration::from_millis(25));
+    let mut published: Vec<ohm_adapter_api::TakenControl> = Vec::new();
     let mut lost_ownership = false;
     let reason = loop {
         tokio::select! {
             _ = stop.notified() => break "stop requested",
+            _ = watch.tick() => {
+                if session.runtime.taken_controls() != published {
+                    if beat(&mut guard, &session)? {
+                        lost_ownership = true;
+                        break "another process took over the channels";
+                    }
+                    published = guard.state().taken.clone();
+                }
+            }
             _ = heartbeat.tick() => {
                 let wall = ohm_core::now_ms();
                 let process_ms = process_start.elapsed().as_millis() as i64;
@@ -1256,6 +1298,7 @@ file was left untouched"
                     break "another process took over the channels";
                 }
                 let stats = session.engine.stats();
+                published = guard.state().taken.clone();
                 if max_ticks > 0 && stats.ticks >= max_ticks {
                     break "reached --max-ticks";
                 }

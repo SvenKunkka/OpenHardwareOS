@@ -397,6 +397,35 @@ impl WriteOutcome {
 /// A batch read result: one entry per requested device.
 pub type BatchStateResult = Vec<(DeviceId, Result<DeviceState>)>;
 
+/// A channel an adapter switched away from its driver, and what it was before.
+///
+/// This exists because "hand control back on exit" is not enough on its own. A process
+/// that is killed — or taken over while it is suspended — never gets to run its own
+/// shutdown, and the channel it switched stays switched. The process that takes over
+/// needs to be told what was taken, or it will read the *switched* value as the
+/// original and faithfully restore that: a fan left in manual mode for good.
+///
+/// Deliberately the smallest thing that can be handed over: the device, the value the
+/// kernel's own file had, and a sentence about it. `original` is `None` when that value
+/// could not be read — a mode nobody can write back, which the adopter must refuse to
+/// guess rather than invent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TakenControl {
+    pub device_id: String,
+    /// The exact value of the kernel's ownership file, when it could be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original: Option<i64>,
+    /// What that value meant, for a log a person reads.
+    pub original_text: String,
+}
+
+impl TakenControl {
+    /// Whether an adopter can put this channel back at all.
+    pub fn is_restorable(&self) -> bool {
+        self.original.is_some()
+    }
+}
+
 /// The hardware provider interface.
 ///
 /// Implementors must never panic on missing hardware: report
@@ -455,6 +484,25 @@ pub trait HardwareAdapter: Send + Sync + 'static {
     /// fan control is handed back to the BIOS/firmware.
     async fn shutdown(&self) -> Result<()> {
         Ok(())
+    }
+
+    /// Channels this adapter has switched away from their driver and still owes back.
+    ///
+    /// Published so that whoever takes over after a crash can finish the job; adapters
+    /// that switch nothing return an empty list.
+    fn taken_controls(&self) -> Vec<TakenControl> {
+        Vec::new()
+    }
+
+    /// Accept responsibility for channels a previous process switched.
+    ///
+    /// Implementations must remember `original` as the value to restore on their own
+    /// shutdown — **not** the value the channel has now, which is the switched one —
+    /// and must return one sentence per channel they could not adopt (an unreadable
+    /// original, a channel that is no longer there, a channel this adapter is not
+    /// allowed to write). Silence would mean a channel nobody will ever put back.
+    fn adopt_taken_controls(&self, _taken: &[TakenControl]) -> Vec<String> {
+        Vec::new()
     }
 
     /// Downcast hook so the UI can reach adapter specific controls (for

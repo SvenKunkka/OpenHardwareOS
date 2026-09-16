@@ -64,6 +64,66 @@ impl Fixture {
         Self { dir }
     }
 
+    /// A fixture whose rule drives the prepared hwmon channel itself.
+    ///
+    /// The other fixtures drive the simulated fan, which is the right default — but a
+    /// channel can only be *switched* by writing it, so a test about handing a switched
+    /// channel over needs the real one: `pwm1_enable` starts at 2 (the driver controls
+    /// it), the configuration confirms the channel, and the service is started without
+    /// `--mock`, so its writes land in the prepared tree.
+    fn writable(name: &str) -> Self {
+        let fixture = Self::new(name);
+        let hwmon = fixture.dir.join("hwmon").join("hwmon0");
+        fs::write(hwmon.join("pwm1_enable"), "2\n").expect("driver-controlled mode");
+        fs::write(
+            fixture.dir.join("settings.json"),
+            format!(
+                r#"{{"adapter_settings": {{"system": {{"pwm_write_allow": ["fan.system.{CHIP}_fan1"]}}}}}}"#
+            ),
+        )
+        .expect("settings");
+        fs::write(
+            fixture.dir.join("rules").join("chassis.yaml"),
+            format!(
+                "name: Chassis intake\n\
+                 id: chassis-intake\n\
+                 enabled: true\n\
+                 source: {{ device: fan.system.{CHIP}_fan1, capability: fan.rpm }}\n\
+                 target: {{ device: fan.system.{CHIP}_fan1, capability: fan.speed_percent }}\n\
+                 curve:\n\
+                 \x20 - [0, 40]\n\
+                 \x20 - [3000, 100]\n\
+                 hysteresis: 2\n\
+                 deadband: 0\n\
+                 update_interval_ms: 250\n"
+            ),
+        )
+        .expect("rule file");
+        fixture
+    }
+
+    /// The kernel's ownership file of the prepared channel.
+    fn pwm_enable(&self) -> String {
+        fs::read_to_string(self.dir.join("hwmon").join("hwmon0").join("pwm1_enable"))
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    }
+
+    /// Wait until the kernel file says `expected`.
+    fn wait_for_pwm_enable(&self, expected: &str, what: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut last = String::new();
+        while Instant::now() < deadline {
+            last = self.pwm_enable();
+            if last == expected {
+                return last;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("pwm1_enable never became {expected} ({what}); it is {last}");
+    }
+
     fn tachometer(&self) -> PathBuf {
         self.dir.join("hwmon").join("hwmon0").join("fan1_input")
     }
@@ -206,6 +266,12 @@ struct Running {
 
 impl Running {
     fn start(fixture: &Fixture, extra: &[&str]) -> Self {
+        Self::start_with(fixture, true, extra)
+    }
+
+    /// `mock: false` starts the real providers, which is what writes to the prepared
+    /// tree instead of reporting the write as simulated.
+    fn start_with(fixture: &Fixture, mock: bool, extra: &[&str]) -> Self {
         let log = fixture.next_service_log();
         let out = fs::File::create(&log).expect("output file");
         let mut args = vec![
@@ -213,10 +279,14 @@ impl Running {
             "debug",
             "service",
             "run",
-            "--mock",
             "--heartbeat-ms",
             "100",
         ];
+        if mock {
+            args.push("--mock");
+        }
+        // Without `--mock` every write must still be real, and a dry-run would make the
+        // whole point of this test unreachable.
         args.extend_from_slice(extra);
         let child = Command::new(BIN)
             .args(args)
@@ -238,6 +308,14 @@ impl Running {
     /// Everything this process has written, once it has exited.
     fn log(&self) -> String {
         fs::read_to_string(&self.log).unwrap_or_default()
+    }
+
+    /// `SIGKILL`: no shutdown, no cleanup — the state file and the switched channel
+    /// stay exactly as they are, which is the case the hand-over exists for.
+    #[cfg(unix)]
+    fn kill_hard(mut self) {
+        self.signal("-KILL");
+        let _ = self.child.wait();
     }
 
     #[cfg(unix)]
@@ -537,6 +615,117 @@ fn a_service_that_wakes_up_after_a_takeover_stands_down_instead_of_writing() {
 #[test]
 fn a_service_suspended_during_its_own_start_up_also_stands_down() {
     takeover_after_a_stop("takeover-starting", true);
+}
+
+/// The hand-over the previous round recorded as a known gap.
+///
+/// A service that switches a channel to manual mode and is then killed never runs its
+/// own shutdown, so the channel stays switched and the only record of what it was
+/// before is the state file it left behind. A successor that does not adopt that
+/// record reads the *switched* value as the original and faithfully restores it — a fan
+/// left in manual mode for good. This test walks that whole path with a real file.
+#[cfg(unix)]
+#[test]
+fn a_channel_left_switched_by_a_killed_service_comes_back() {
+    let fixture = Fixture::writable("handover");
+    assert_eq!(
+        fixture.pwm_enable(),
+        "2",
+        "the driver controls the channel to begin with"
+    );
+
+    // The first service takes control of the channel to write it.
+    let first = Running::start_with(&fixture, false, &[]);
+    fixture.wait_for_pwm_enable("1", "the first service switched the channel to manual");
+    // And it publishes what it switched, which is the only thing that can save the
+    // channel after it is gone. The publication does not wait for the next heartbeat:
+    // a service killed in that window would leave a switched channel with no record.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut taken = Vec::new();
+    while Instant::now() < deadline {
+        taken = fixture
+            .state()
+            .and_then(|state| state["taken"].as_array().cloned())
+            .unwrap_or_default();
+        if !taken.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert_eq!(
+        taken.len(),
+        1,
+        "the owner publishes what it switched: {taken:?}"
+    );
+    assert_eq!(taken[0]["device_id"], format!("fan.system.{CHIP}_fan1"));
+    assert_eq!(taken[0]["original"], 2, "{taken:?}");
+
+    // Killed hard: no shutdown, no release — exactly a crash or a power cut.
+    first.kill_hard();
+    assert_eq!(fixture.pwm_enable(), "1", "the channel is still switched");
+    assert!(
+        fixture.state_path().exists(),
+        "and its record is still there, which is what the next start takes over"
+    );
+
+    // Nothing was cleaned up, so the file still looks alive for one heartbeat window —
+    // three intervals, which is exactly the latency this design accepts for a crash.
+    // A second service started inside that window is refused, and that is the
+    // one-writer rule working, not a failure: wait for the documented staleness instead
+    // of guessing a sleep.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if fixture.run_cli(&["service", "status"]).status.code() == Some(1) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the killed owner's file never went stale"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // The successor takes the record over and puts the channel back where the dead
+    // service said it was — then takes control again for its own writes, remembering
+    // the *original* value rather than the one it found.
+    let second = Running::start_with(&fixture, false, &[]);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut adopted = None;
+    while Instant::now() < deadline {
+        if let Some(state) = fixture.state()
+            && state["pid"].as_u64() == Some(u64::from(second.pid()))
+            && state["ticks"].as_u64().unwrap_or(0) > 0
+        {
+            adopted = Some(state);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let log = second.log();
+    assert!(
+        adopted.is_some(),
+        "the successor runs the rules; its log so far:\n{log}"
+    );
+    assert!(
+        log.contains("left 1 channel(s) switched to manual mode"),
+        "it says what it inherited:\n{log}"
+    );
+    assert!(
+        log.contains("put a channel left in manual mode by a previous owner back under its driver"),
+        "and that it put that channel back:\n{log}"
+    );
+
+    // The proof is the state of the kernel file once the successor stops cleanly: 2,
+    // the value the *first* service recorded. Without the hand-over this process would
+    // have remembered the 1 it found and written that back instead.
+    let exit = second.stop();
+    assert_eq!(exit.code(), Some(0), "the successor stops cleanly");
+    assert_eq!(
+        fixture.pwm_enable(),
+        "2",
+        "the driver owns the channel again, because the dead owner's record was adopted"
+    );
+    assert!(!fixture.state_path().exists());
 }
 
 /// The override the fixtures above depend on, checked where it is cheap to check:
