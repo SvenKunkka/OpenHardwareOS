@@ -3005,7 +3005,46 @@ this can run while another service owns the channels.
 
 `non-zero steps: 0`.
 
-### 5. What round 20 could **not** verify
+### 5. What CI found after this round was already recorded
+
+The pass above was green, and CI was not: `Rust (macos-latest)` failed the readings
+cross-check with
+
+```
+DIFFER      storage.system.0/storage.free      ours 99122482821 B, df says 97948209152 B (Δ 1174273669 B)
+```
+
+It reproduces on the machine this was written on, at a larger gap: our reading said
+**48.39 GB** while `df`, `diskutil` and `statvfs` all said **42.29 GB**, a difference of
+6.1 GB. The cause was the library's macOS answer — Apple's *available capacity*, which
+counts space the system can only reclaim later (purgeable). Three platform tools agreed
+with each other and **none of them agreed with us**, which makes the reading
+unverifiable on macOS, the one property this project's readings are supposed to have.
+
+Fixed at the root: on Unix `storage.free` now comes from `statvfs`'s `f_bavail × f_frsize`
+— what `df` calls `Available` and what `diskutil` reports as free space — asked through
+`rustix`, which was already in the dependency tree and wraps the syscall safely, so this
+crate keeps denying `unsafe_code` rather than growing an exception for one call. Linux was
+already agreeing with `df` and does not move. **Verified after the change, on this
+machine:**
+
+```
+AGREE       storage.system.0/storage.free      ours 42185498624 B vs df 42185408512 B (Δ 90112 B)
+RESULT: every comparable reading agrees with the platform's own source
+```
+
+and the definition is now written down in `docs/device-model.md`, because "free space" is
+two different questions and a reading has to say which one it answers. A new test,
+`the_free_space_reading_is_the_number_df_prints`, requires the reading to equal `statvfs`
+for the same mount; `cargo deny check` was re-run for the new direct dependency
+(advisories, bans, licences, sources all ok).
+
+**This is what the round-20 entry above did not catch, and could not:** the local pass has
+no live readings cross-check on macOS in it — the fixture suite (8d) checks the checker,
+not this machine. CI's macOS job was the only thing running that comparison, which is
+exactly why it exists.
+
+### 6. What round 20 could **not** verify
 
 * **Real permissions.** The refusal in the tests is produced by `chmod 0444` on a prepared
   file, and it is skipped where root makes it unproducible. No real Linux has been run as a
