@@ -49,6 +49,9 @@
 | CI 八个 job 全部通过（含报告收集器的双侧断言） | v0.1.8 | [run 35044211595](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/35044211595) |
 | Windows 与 Linux 构建、夹具测试、装机与桌面应用自检、读数对照 | v0.1.8 | [run 35044209421](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/35044209421) |
 | 公开下载、校验、版本化安装、源码提交核对、诊断与模拟运行（PowerShell 5.1） | v0.1.8 | [run 35045369898](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/35045369898) |
+| CI 八个 job 全部通过（含按通道开启的 hwmon 写入测试） | v0.1.9 | [run 35047646450](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/35047646450) |
+| Windows 与 Linux 构建、夹具测试、装机与桌面应用自检、读数对照（首次包含带文档路由套件的 Linux 作业） | v0.1.9 | [run 35047644405](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/35047644405) |
+| 公开下载、校验、版本化安装、源码提交核对、诊断与模拟运行（PowerShell 5.1） | v0.1.9 | [run 35049344138](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/35049344138) |
 
 这些 run 的**结论、提交与 job 明细**都在 GitHub 上可查，本页只引用，不复制数字。
 它们证明"代码能在 Windows 上编译、测试、打包、安装"，**不证明**任何一台真实机器上的风扇、水泵、
@@ -80,7 +83,8 @@
 | `5ec543a`（v0.1.5 发布提交） | `dist/acceptance/OpenHardwareOS-5ec543a-windows-acceptance{,.zip}` | 258 | `166ab3f38525c5c9b0556fc43f41bee4a658f3288fc303bd4b4ef48473e6c705`（清单文件本身：`2f322b2a915687058236a53152ffaadd88e853833b09e5bf453ece8717736df5`） |
 | `0c6e20c`（v0.1.6 发布提交） | `dist/acceptance/OpenHardwareOS-0c6e20c-windows-acceptance{,.zip}` | 262 | `9ff0a677347ab09c704b2a2237f75a7a03712c0e8c959afb30f3ec4858eea3e2`（清单文件本身：`920ee0731616277925a3e43c28573c009eac8cbde14667d4063711abb354ce0e`） |
 | `1c427e7`（v0.1.7 发布提交） | `dist/acceptance/OpenHardwareOS-1c427e7-windows-acceptance{,.zip}` | 263 | `8e1e47f700057e95699ac2121068de073d71fa49a154a3293bba2ae00c0da9b8`（清单文件本身：`adf9087dfead69dc8b304fd281ceb70a58ec9158fce1be7f8c0df13a8e465a94`） |
-| `9c4ffe2`（**v0.1.8 发布提交**，推荐给操作者） | `dist/acceptance/OpenHardwareOS-9c4ffe2-windows-acceptance{,.zip}` | 265 | `e15cf4924a2dad0a45fce0dd924597693750b730cd20edeeadc57ff551f9b4da`（清单文件本身：`6b5b85e40da780fb12cdce55943c88a4e10b72947237d3e5388f89c8af6751c9`） |
+| `9c4ffe2`（v0.1.8 发布提交） | `dist/acceptance/OpenHardwareOS-9c4ffe2-windows-acceptance{,.zip}` | 265 | `e15cf4924a2dad0a45fce0dd924597693750b730cd20edeeadc57ff551f9b4da`（清单文件本身：`6b5b85e40da780fb12cdce55943c88a4e10b72947237d3e5388f89c8af6751c9`） |
+| `fe39d19`（**v0.1.9 发布提交**，推荐给操作者） | `dist/acceptance/OpenHardwareOS-fe39d19-windows-acceptance{,.zip}` | 265 | `55be0265aa48284f6f6b8a9327b9fed25ab37a5a51450129be01a56725dd7954`（清单文件本身：`dae5a19ccdba60d5d2ef40cf5da9ea76b8766a1613a7f03310cf653550e64c64`） |
 
 **你手上的这一包是哪一版**：看包根 `README-ACCEPTANCE.md` 顶部的 `Commit` 行（打包时写入），
 摘要看与压缩包同目录的 `<同名>.zip.sha256`（第一行是压缩包，第二行是包内清单文件）。

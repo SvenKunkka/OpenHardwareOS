@@ -2183,3 +2183,120 @@ started despite being the obvious way to close the local-verification gap — th
 host change and the user's call; no licence was approved on the user's behalf (ADR 0002
 and ADR 0004 remain **Proposed**); `Prospector/` and `k10max-prospector/` were left
 exactly as found.
+
+---
+
+## 2026-09-15 — round 14: writing a fan channel, and the fact only a person can supply
+
+**Revision: `fe39d19`** — the pass below ran at that commit, which is the commit the tag
+points at. The commits carrying this entry follow it and change documentation only.
+
+### 1. The reason for read-only became the switch
+
+The Linux preview has been read-only since it shipped, and the reason was written in the
+module rather than hidden: writing `pwm<N>` needs root, and `pwm<N>` and `fan<N>_input`
+share a chip and a channel number, which is *not* a promise that they are the same
+physical header. That pairing is a property of the board; no kernel interface states it.
+
+So the write path exists now, and the thing only a person can supply is the switch:
+
+* `adapter_settings.system.pwm_write_allow` names the channels somebody has confirmed.
+  Empty is the default and empty means read-only.
+* Only a listed channel gains a writable `fan.speed_percent`. The others stay read-only,
+  and a write that reaches the path anyway is `Rejected` naming the setting that would
+  have allowed it — a mistake fails towards allowing nothing, and a blank or non-string
+  entry matches no device.
+* The first write switches `pwm<N>_enable` to manual (so a driver curve cannot overwrite
+  it) and remembers what it was; `shutdown` restores it. That is why the adapter now
+  declares `hands_back_control_on_shutdown` — it used to declare itself read-only — and
+  why it declares `write_requires_admin`: writing `pwm<N>` costs root on Linux.
+* **Ownership that cannot be read is not taken over.** An unreadable `pwm<N>_enable`, or
+  a value that is not a number, refuses the write and refuses to restore "the mode it
+  had", because writing a guess back would decide who owns a fan. This came out of
+  writing the test: the first version parsed a non-numeric mode as `Other(-1)`, which is
+  restorable, and restoring it would have written `-1` to the kernel.
+
+A failed write puts the channel back before reporting the failure, and a shutdown that
+cannot restore one channel still attempts the rest and reports every failure. Writes
+continue to pass the runtime's safety layer (floor, ramp, emergency) and are audited.
+
+### 2. Thirteen tests, and what they can and cannot say
+
+On a prepared sysfs tree: capability exposure with and without consent; the
+percentage-to-255 conversion including out-of-range and non-finite values; taking control
+and giving it back; an unauthorised channel refused with its file untouched; a read-only
+capability still refused; a shutdown with nothing to hand back; and the settings path
+that turns a `pwm_write_allow` list into exactly those writable channels.
+
+What none of them can say is whether `pwm1` drives the header `fan1_input` measures on
+any real board. That is the whole reason the list is per channel and empty by default,
+and why `docs/field-checklist.md` §3 now spells out the procedure: write one channel
+directly as root and watch whether the tachometer follows, record `pwm<N>_enable`, hand
+the channel over, then a three-step rollback — with the note that a rollback failure is
+itself worth reporting rather than fixing quietly.
+
+### 3. The pass caught the documentation before CI did
+
+The documented-route fixture suite failed on the block added to the Linux page, and both
+findings were the page's fault: it printed nothing when the machine has no writable
+channel, so "verify the channel became writable" failed on exactly the machine where the
+answer is "there is nothing to make writable"; and the fixture's `ohm-cli` shim answered
+`status --json` but not `doctor`, so the check had nothing to grep. The block now says so
+in words, and the shim answers both — the test keeps running the page's commands as
+written rather than a paraphrase of them.
+
+This is the first time in several rounds that the local pass caught a release-blocking
+problem before CI did, and the reason is not subtle: the failure was in *documentation
+that a test executes*, not in an assertion whose meaning depends on the platform.
+
+### 4. Publication
+
+v0.1.9 = `fe39d19`, tagged and published as a preview with 12 assets. Both checksum lists
+verify as a whole from the download, `install.ps1` is byte-identical to the tagged blob,
+and both metadata files name the tagged commit. The public Windows install check passed
+against the tag
+([run 35049344138](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/35049344138)),
+`main` was fast-forwarded so the version-tree page names v0.1.9, and the acceptance source
+package was rebuilt from the release commit
+(`dist/acceptance/OpenHardwareOS-fe39d19-windows-acceptance.zip`, 265 files).
+
+### The verification pass (all commands re-run at `fe39d19`, nothing carried over)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `rustup run 1.98.1 cargo fmt --all -- --check` | exit 0 |
+| 2 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0 |
+| 3 | `cargo test --workspace --locked` | **558 passed, 0 failed**, 50 test-result lines |
+| 4 | `cargo deny check` | advisories ok, bans ok, licenses ok, sources ok |
+| 5 | `scripts/versions.py check --remote --generated` | OK; 11 catalogue entries |
+| 6 | `scripts/tests/test_versions.py` | 30 tests, OK |
+| 7 | `npm run typecheck` / `npm test` / `npm run build` | clean / 44 tests / clean |
+| 8 | `scripts/tests/make-acceptance-package.test.sh` | 4 cases, 0 failures |
+| 9 | `scripts/release/test-packaging.ps1` | 6 cases, 0 failures |
+| 10 | `scripts/tests/package-linux.test.sh` | 10 cases, 54 checks, 0 failures |
+| 11 | `scripts/tests/linux-install-doc.test.sh` | 6 cases, **34 checks**, 0 failures |
+| 12 | `scripts/tests/verify-linux-readings.test.sh` | 6 cases, 21 checks, 0 failures |
+| 13 | `docs/windows-validation/.../run-script-tests.ps1` | 18 cases, 151 checks, 0 failures (doubles only) |
+| 14 | cross-target `cargo check` (Windows and Linux targets) | exit 0, plus Linux-target Clippy |
+| 15 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** |
+| 16 | delivered packages still match their manifests | every file |
+| 17 | `scripts/verify-linux-readings.sh` against the kernel's own sources | every comparable reading `AGREE` |
+
+### What round 14 could **not** verify
+
+* **Real hardware, again — and now it matters more.** The write path has never touched a
+  fan. Every claim about it rests on a prepared sysfs tree, and the confirmation the
+  design depends on (which `pwm` drives which header) is by construction something this
+  repository cannot supply.
+* **Whether a real `pwm<N>_enable` round-trips.** The code writes back the value it read;
+  no kernel has been asked to accept it.
+* **Permission behaviour under a real root/non-root split**: the tests run as one user,
+  so "writing needs root" is asserted from the capability declaration, not exercised.
+
+### Deliberately **not** done in round 14
+
+No hardware was written to; no autostart entry was created and no global environment
+value was changed; nothing was installed on the host (colima was again left alone, per
+the open question from last round); no licence was approved on the user's behalf (ADR
+0002 and ADR 0004 remain **Proposed**); `Prospector/` and `k10max-prospector/` were left
+exactly as found.
