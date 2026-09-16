@@ -65,9 +65,14 @@ SEMVER = re.compile(r"v(\d+)\.(\d+)\.(\d+)\Z")
 # The four shapes an install entry takes in this repository's documentation.
 ENTRY_PATTERNS = (
     (re.compile(r"releases/download/(v\d+\.\d+\.\d+)/"), "download URL"),
+    (re.compile(r"releases/tag/(v\d+\.\d+\.\d+)"), "release page link"),
     (re.compile(r"\$ohmVersion\s*=\s*'(v\d+\.\d+\.\d+)'"), "PowerShell $ohmVersion"),
     (re.compile(r"^\s*ohm_version=(v\d+\.\d+\.\d+)\s*$", re.MULTILINE), "shell ohm_version"),
     (re.compile(r"--tag\s+(v\d+\.\d+\.\d+)"), "cargo install --tag"),
+    # The installed CLI's directory carries the version in its name, so these paths
+    # have to move with the entry above them. Anchored on a path separator so that a
+    # sentence *about* an older layout ("since cli-v0.1.3 …") is not mistaken for one.
+    (re.compile(r"[\\/]cli-(v\d+\.\d+\.\d+)"), "versioned CLI install path"),
 )
 
 # What the CLI artefact's name must look like in each file that names it.

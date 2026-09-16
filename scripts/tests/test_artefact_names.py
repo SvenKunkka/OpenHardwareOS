@@ -142,14 +142,43 @@ class InstallEntryTests(unittest.TestCase):
         found = [problem for problem in checker.problems(root) if "not downloadable" in problem]
         self.assertEqual(found, [], found)
 
+    def test_a_stale_release_page_link_is_reported(self):
+        root = fixture(**{
+            checker.README: lambda text: text.replace("releases/tag/v0.1.10",
+                                                      "releases/tag/v0.1.8"),
+        })
+        found = checker.problems(root)
+        self.assertTrue(any("v0.1.8" in problem and "newest released" in problem
+                            for problem in found), found)
+
+    def test_a_versioned_install_path_that_did_not_move_is_reported(self):
+        # The installed CLI lives in `…/cli-vX.Y.Z/`, so those paths have to move with
+        # the version above them; a partially bumped page sends users to a directory
+        # that is not there.
+        root = fixture(**{
+            checker.WINDOWS_PAGE: lambda text: text.replace("cli-v0.1.10", "cli-v0.1.9"),
+        })
+        found = checker.problems(root)
+        self.assertTrue(any("versioned CLI install path" in problem for problem in found), found)
+
+    def test_a_sentence_about_an_older_layout_is_not_an_entry(self):
+        root = fixture(**{
+            checker.WINDOWS_PAGE: lambda text: text + (
+                "\nCLI 目录自 cli-v0.1.3 起就是版本化的。\n"),
+        })
+        found = [problem for problem in checker.problems(root) if "not downloadable" in problem]
+        self.assertEqual(found, [], found)
+
     def test_every_entry_is_found(self):
         entries = list(checker.install_entries(REPO_ROOT))
-        self.assertGreaterEqual(len(entries), 8)
+        self.assertGreaterEqual(len(entries), 15)
         shapes = {shape for _, _, _, shape in entries}
         self.assertIn("download URL", shapes)
+        self.assertIn("release page link", shapes)
         self.assertIn("PowerShell $ohmVersion", shapes)
         self.assertIn("shell ohm_version", shapes)
         self.assertIn("cargo install --tag", shapes)
+        self.assertIn("versioned CLI install path", shapes)
 
 
 def _catalogue_with(text, **changes):
