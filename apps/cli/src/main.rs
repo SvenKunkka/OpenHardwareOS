@@ -295,6 +295,23 @@ enum Command {
         #[command(subcommand)]
         action: ServiceAction,
     },
+    /// Collect everything needed to judge this machine, into one file to send back.
+    ///
+    /// Two people need this: whoever is validating the hardware on a real machine,
+    /// and whoever reads the result afterwards. It gathers what *we* report and, where
+    /// the platform has one, the platform's own answer to the same question — the raw
+    /// `hwmon` files, `/proc/meminfo`, `df` — so a reading can be checked without
+    /// being taken on trust, and so a disagreement can be seen by somebody who is not
+    /// sitting at that machine.
+    Report {
+        /// Where to write it. Defaults to a timestamped file in the config directory's
+        /// `reports/`.
+        #[arg(long)]
+        out: Option<String>,
+        /// Also register the simulated providers, for a dry run of the collector.
+        #[arg(long)]
+        mock: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -456,6 +473,7 @@ async fn main() -> Result<()> {
             } => service_run(&cli, *mock, *heartbeat_ms, *max_ticks).await,
             ServiceAction::Status => service_status(&cli),
         },
+        Command::Report { out, mock } => report(&cli, out.as_deref(), *mock).await,
     }
 }
 
@@ -637,6 +655,347 @@ async fn doctor(cli: &Cli, use_mock: bool, json: bool) -> Result<()> {
 
     session.stop().await?;
     Ok(())
+}
+
+/// One machine's report: our readings, and the platform's own answers beside them.
+///
+/// The shape is deliberately flat JSON that a person can read in a text editor and a
+/// script can parse, because the file is meant to travel: from a Windows desktop or a
+/// Linux box, to whoever has to decide whether a reading is real.
+#[derive(Debug, serde::Serialize)]
+struct FieldReport {
+    generated_at_ms: i64,
+    version: String,
+    os: String,
+    arch: String,
+    /// `uname -r` where there is one, so "which kernel" is answered by the file.
+    kernel: Option<String>,
+    config_dir: String,
+    simulated: bool,
+    dry_run: bool,
+    /// Providers with their status and the reason for it.
+    providers: Vec<ohm_runtime::AdapterView>,
+    /// Every device, its readings, and the reason for each missing one.
+    devices: Vec<ohm_runtime::DeviceView>,
+    capabilities: ohm_runtime::CapabilityIndex,
+    /// What a reader of the MVP sensor list would expect and this machine cannot give.
+    notes: Vec<String>,
+    /// The rules installed here, as configured.
+    rules: Vec<ReportRule>,
+    /// The platform's own evidence, read directly rather than through this project.
+    platform: PlatformEvidence,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ReportRule {
+    id: String,
+    name: String,
+    enabled: bool,
+    source: String,
+    target: String,
+}
+
+/// What the operating system itself says, gathered from files rather than from an API
+/// this project wrote. A reader can compare these with the readings above.
+#[derive(Debug, Default, serde::Serialize)]
+struct PlatformEvidence {
+    /// Where the hwmon files were read from — an override tree, or the real sysfs.
+    hwmon_root: Option<String>,
+    /// One entry per chip directory, with the raw contents of every fan, pwm and
+    /// temperature file, exactly as the kernel presents them.
+    hwmon: Vec<HwmonChipEvidence>,
+    /// `MemTotal` and `MemAvailable` from `/proc/meminfo`, in the file's own units.
+    meminfo: Vec<String>,
+    /// `df -k` for the filesystems this report covers.
+    df: Vec<String>,
+    /// Notes about what could not be read, so an empty section is explained.
+    notes: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct HwmonChipEvidence {
+    directory: String,
+    name: Option<String>,
+    /// `file name` → its raw contents, whitespace trimmed.
+    files: std::collections::BTreeMap<String, String>,
+    /// A file that could not be read, with the error.
+    unreadable: std::collections::BTreeMap<String, String>,
+}
+
+/// Read the platform's own view of the machine.
+///
+/// Every failure here becomes a note rather than an error: a report from a machine
+/// with no `hwmon` at all is still a useful report, and saying *why* a section is
+/// empty is the whole point of collecting one.
+fn platform_evidence() -> PlatformEvidence {
+    let mut evidence = PlatformEvidence::default();
+
+    let root: Option<std::path::PathBuf> =
+        match std::env::var_os(ohm_adapters::prelude::ENV_HWMON_ROOT) {
+            Some(value) if value.is_empty() => None,
+            Some(value) => Some(std::path::PathBuf::from(value)),
+            None => {
+                #[cfg(target_os = "linux")]
+                {
+                    Some(std::path::PathBuf::from("/sys/class/hwmon"))
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    None
+                }
+            }
+        };
+
+    match &root {
+        None => evidence.notes.push(if cfg!(target_os = "linux") {
+            format!(
+                "hwmon: disabled by an empty {}. Nothing to compare fan readings with.",
+                ohm_adapters::prelude::ENV_HWMON_ROOT
+            )
+        } else {
+            "hwmon: this platform has no sysfs, so fan tachometers and PWM values have              no file to compare with. On Windows the same numbers come from              LibreHardwareMonitor, and its window is the source to compare against."
+                .to_string()
+        }),
+        Some(path) => {
+            evidence.hwmon_root = Some(path.display().to_string());
+            match std::fs::read_dir(path) {
+                Err(error) => evidence.notes.push(format!("hwmon: cannot read {}: {error}", path.display())),
+                Ok(entries) => {
+                    let mut directories: Vec<std::path::PathBuf> = entries
+                        .flatten()
+                        .map(|entry| entry.path())
+                        .filter(|path| path.is_dir())
+                        .collect();
+                    directories.sort();
+                    for directory in directories {
+                        let mut chip = HwmonChipEvidence {
+                            directory: directory.display().to_string(),
+                            name: None,
+                            files: std::collections::BTreeMap::new(),
+                            unreadable: std::collections::BTreeMap::new(),
+                        };
+                        if let Ok(name) = std::fs::read_to_string(directory.join("name")) {
+                            chip.name = Some(name.trim().to_string());
+                        }
+                        if let Ok(files) = std::fs::read_dir(&directory) {
+                            let mut names: Vec<(String, std::path::PathBuf)> = files
+                                .flatten()
+                                .map(|entry| {
+                                    (
+                                        entry.file_name().to_string_lossy().to_string(),
+                                        entry.path(),
+                                    )
+                                })
+                                .filter(|(name, _)| {
+                                    name.starts_with("fan")
+                                        || name.starts_with("pwm")
+                                        || name.starts_with("temp")
+                                })
+                                .collect();
+                            names.sort();
+                            for (name, path) in names {
+                                match std::fs::read_to_string(&path) {
+                                    Ok(content) => {
+                                        chip.files.insert(name, content.trim().to_string());
+                                    }
+                                    Err(error) => {
+                                        chip.unreadable.insert(name, error.to_string());
+                                    }
+                                }
+                            }
+                        }
+                        evidence.hwmon.push(chip);
+                    }
+                    if evidence.hwmon.is_empty() {
+                        evidence.notes.push(format!(
+                            "hwmon: {} exists but has no chip directories",
+                            path.display()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    match std::fs::read_to_string("/proc/meminfo") {
+        Ok(text) => {
+            evidence.meminfo = text
+                .lines()
+                .filter(|line| line.starts_with("MemTotal") || line.starts_with("MemAvailable"))
+                .map(|line| line.trim().to_string())
+                .collect();
+            if evidence.meminfo.is_empty() {
+                evidence.notes.push("/proc/meminfo has no MemTotal or MemAvailable line".into());
+            }
+        }
+        Err(error) => evidence.notes.push(format!(
+            "/proc/meminfo: not readable ({error}); on Windows and macOS the platform's own memory figure comes from its own tools"
+        )),
+    }
+
+    // `df -k` for the filesystems this machine reports, so the free-space reading has
+    // a second opinion beside it. Coarse on purpose: the point is the order of
+    // magnitude and the mount point, not a byte-for-byte match against a moving number.
+    match std::process::Command::new("df").arg("-k").output() {
+        Ok(output) if output.status.success() => {
+            evidence.df = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(|line| line.trim_end().to_string())
+                .collect();
+        }
+        Ok(output) => evidence
+            .notes
+            .push(format!("df -k exited with {}", output.status)),
+        Err(error) => evidence
+            .notes
+            .push(format!("df is not available here: {error}")),
+    }
+
+    evidence
+}
+
+/// `uname -r`, where there is a `uname`.
+fn kernel_version() -> Option<String> {
+    let output = std::process::Command::new("uname")
+        .arg("-r")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+async fn report(cli: &Cli, out: Option<&str>, use_mock: bool) -> Result<()> {
+    let session = Session::open(cli, use_mock, None).await?;
+    session.start().await?;
+
+    let platform = platform_evidence();
+
+    let settings = session.runtime.settings();
+    let rules = session
+        .engine
+        .rules()
+        .into_iter()
+        .map(|rule| ReportRule {
+            id: rule.id.to_string(),
+            name: rule.name.clone(),
+            enabled: rule.enabled,
+            source: rule.source.label(),
+            target: rule.target.qualified_id(),
+        })
+        .collect();
+
+    let report = FieldReport {
+        generated_at_ms: ohm_core::now_ms(),
+        version: ohm_core::VERSION.to_string(),
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        kernel: kernel_version(),
+        config_dir: session.paths.root().display().to_string(),
+        simulated: use_mock,
+        dry_run: settings.dry_run,
+        providers: session.runtime.adapter_views(),
+        devices: session.runtime.devices(),
+        capabilities: session.runtime.capability_index(),
+        notes: capability_notes(&session),
+        rules,
+        platform,
+    };
+
+    let path = match out {
+        Some(path) => std::path::PathBuf::from(path),
+        None => {
+            std::fs::create_dir_all(session.paths.reports_dir())?;
+            session
+                .paths
+                .reports_dir()
+                .join(format!("report-{}.json", ohm_core::now_ms()))
+        }
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+
+    print_header("OpenHardwareOS report");
+    println!("written to: {}", path.display());
+    println!(
+        "version:    {} on {} {}",
+        report.version,
+        report.os,
+        report.kernel.as_deref().unwrap_or("(no uname)")
+    );
+    println!(
+        "providers:  {}",
+        report
+            .providers
+            .iter()
+            .map(|view| format!("{}={}", view.id(), view.status.state.as_str()))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    println!("devices:    {}", report.devices.len());
+    println!(
+        "platform:   {} hwmon chip(s), {} meminfo line(s), {} df line(s)",
+        report.platform.hwmon.len(),
+        report.platform.meminfo.len(),
+        report.platform.df.len()
+    );
+    for note in &report.platform.notes {
+        println!("note:       {note}");
+    }
+    println!();
+    println!("Send this file with `ohm-cli doctor` output and, on Linux, the output of");
+    println!("`scripts/verify-linux-readings.sh`. See docs/field-checklist.md.");
+
+    session.stop().await?;
+    Ok(())
+}
+
+/// The capability notes `doctor` prints, reused so a report carries the same
+/// explanation of what this machine cannot give.
+fn capability_notes(session: &Session) -> Vec<String> {
+    let devices = session.runtime.devices();
+    let mut notes = Vec::new();
+    let has = |capability: &str| {
+        devices
+            .iter()
+            .any(|view| view.device.capability_str(capability).is_some())
+    };
+    let readable = |capability: &str| {
+        devices.iter().any(|view| {
+            view.device.capability_str(capability).is_some()
+                && view
+                    .state
+                    .as_ref()
+                    .and_then(|state| state.get(capability))
+                    .is_some_and(|reading| reading.is_ok())
+        })
+    };
+    if readable(ohm_core::ids::capability::POWER_TOTAL) {
+        notes.push("CPU package power is available from this machine".to_string());
+    } else {
+        notes.push(
+            "CPU package power: not available. There is no native collector in this build;              on Windows it comes from LibreHardwareMonitor (Provider: lhm), which needs LHM              running with its web server enabled."
+                .to_string(),
+        );
+    }
+    if !has(ohm_core::ids::capability::TEMPERATURE_HOTSPOT) {
+        notes.push(
+            "GPU hotspot temperature: not available from any registered provider.".to_string(),
+        );
+    }
+    if !has(ohm_core::ids::capability::FAN_SPEED_PERCENT)
+        && !has(ohm_core::ids::capability::PUMP_SPEED_PERCENT)
+    {
+        notes.push(
+            "Fan control: no writable cooling channel on this machine. On Windows this              needs LibreHardwareMonitor (SuperIO); on Linux this build does not write PWM              at all."
+                .to_string(),
+        );
+    }
+    notes
 }
 
 /// A compact picture of every rule, for the state file.

@@ -38,7 +38,7 @@ pub mod prelude {
     pub use ohm_adapter_mock::MockAdapter;
     pub use ohm_adapter_nvidia::NvidiaAdapter;
     pub use ohm_adapter_opd::OpdAdapter;
-    pub use ohm_adapter_system::SystemAdapter;
+    pub use ohm_adapter_system::{ENV_HWMON_ROOT, SystemAdapter};
 }
 
 use std::sync::Arc;

@@ -1,7 +1,7 @@
 # Linux 安装
 
 公开源码：<https://github.com/SvenKunkka/OpenHardwareOS>。
-本页安装 Linux x86_64 预览版本 `v0.1.7`，两种方式：**命令行（CLI）** 与 **桌面应用（.deb）**。
+本页安装 Linux x86_64 预览版本 `v0.1.8`，两种方式：**命令行（CLI）** 与 **桌面应用（.deb）**。
 两者都是预编译产物，安装无需 Rust 或 Node.js。
 
 [查看全部版本](versions.md) · [交互版本树](https://svenkunkka.github.io/OpenHardwareOS/)
@@ -10,7 +10,7 @@
 
 ```bash
 set -euo pipefail
-ohm_version=v0.1.7
+ohm_version=v0.1.8
 ohm_platform=linux-x86_64
 ohm_asset="ohm-cli-$ohm_version-$ohm_platform.tar.gz"
 ohm_meta="release-$ohm_platform.json"
@@ -47,10 +47,10 @@ tar -xzf "$ohm_tmp/$ohm_asset" -C "$ohm_dir"
 不需要 root，也不修改 `PATH`。目标目录已存在时会停止并保留原有文件。
 `doctor` 打印这台机器上每个来源的可用性与不可用的原因。
 
-把 `~/.local/share/OpenHardwareOS/cli-v0.1.7` 加入 `PATH` 之后，可以直接运行：
+把 `~/.local/share/OpenHardwareOS/cli-v0.1.8` 加入 `PATH` 之后，可以直接运行：
 
 ```bash
-export PATH="$HOME/.local/share/OpenHardwareOS/cli-v0.1.7:$PATH"
+export PATH="$HOME/.local/share/OpenHardwareOS/cli-v0.1.8:$PATH"
 ohm-cli demo --steps 60     # 模拟设备，不接触真实硬件
 ohm-cli status              # 读真实设备（只读）
 ```
@@ -61,7 +61,7 @@ ohm-cli status              # 读真实设备（只读）
 
 ```bash
 set -euo pipefail
-ohm_version=v0.1.7
+ohm_version=v0.1.8
 ohm_platform=linux-x86_64
 ohm_deb="OpenHardwareOS-$ohm_version-$ohm_platform.deb"
 ohm_meta="release-$ohm_platform.json"
@@ -109,7 +109,7 @@ dpkg -s open-hardware-os | grep '^Depends:' || true
 
 ```bash
 set -euo pipefail
-ohm_version=v0.1.7
+ohm_version=v0.1.8
 ohm_platform=linux-x86_64
 ohm_image="OpenHardwareOS-$ohm_version-$ohm_platform.AppImage"
 ohm_sums="SHA256SUMS-$ohm_platform"

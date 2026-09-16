@@ -69,6 +69,14 @@ impl ConfigPaths {
         self.root.join("logs")
     }
 
+    /// Where a machine's own report goes when somebody collects one.
+    ///
+    /// Kept apart from the logs so that "the file I was asked to send" is obvious:
+    /// a report is written on purpose, and it is meant to be handed to somebody else.
+    pub fn reports_dir(&self) -> PathBuf {
+        self.root.join("reports")
+    }
+
     /// What a running background service says about itself.
     ///
     /// One writer at a time: the file is created atomically by whoever starts the
@@ -87,7 +95,12 @@ impl ConfigPaths {
 
     /// Create the directories the runtime needs. Idempotent.
     pub fn ensure(&self) -> Result<()> {
-        for dir in [self.root.clone(), self.rules_dir(), self.logs_dir()] {
+        for dir in [
+            self.root.clone(),
+            self.rules_dir(),
+            self.logs_dir(),
+            self.reports_dir(),
+        ] {
             std::fs::create_dir_all(&dir).map_err(|e| OhmError::io(&dir, e))?;
         }
         Ok(())
@@ -96,11 +109,12 @@ impl ConfigPaths {
     /// Render the layout for `--print-config-paths` style diagnostics.
     pub fn describe(&self) -> String {
         format!(
-            "root:      {}\nsettings:  {}\nrules:     {}\nlogs:      {}\nservice:   {}\naudit:     {}",
+            "root:      {}\nsettings:  {}\nrules:     {}\nlogs:      {}\nreports:   {}\nservice:   {}\naudit:     {}",
             self.root.display(),
             self.settings_file().display(),
             self.rules_dir().display(),
             self.logs_dir().display(),
+            self.reports_dir().display(),
             self.service_state_file().display(),
             self.audit_log().display(),
         )
