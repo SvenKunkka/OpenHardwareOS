@@ -44,6 +44,7 @@ LINUX_PACKAGER = "scripts/release/package-linux.sh"
 LINUX_PAGE = "docs/linux-install.md"
 WINDOWS_PAGE = "docs/windows-install.md"
 README = "README.md"
+RELEASE_WORKFLOW = ".github/workflows/release.yml"
 
 # Everything this module reads. The test suite copies exactly these into a fixture
 # tree and mutates one of them, so the fixture can never drift from what is checked.
@@ -56,6 +57,7 @@ READS = (
     LINUX_PAGE,
     WINDOWS_PAGE,
     README,
+    RELEASE_WORKFLOW,
 )
 
 SEMVER = re.compile(r"v(\d+)\.(\d+)\.(\d+)\Z")
@@ -78,6 +80,7 @@ CLI_EXPECTATIONS = (
     (LINUX_PACKAGER, '"$STAGE/{name}"', "the name the packager stages the CLI under"),
     (LINUX_PACKAGER, '"$STAGE" {name} LICENSE', "the name the packager archives"),
     (LINUX_PACKAGER, "grep -qx '{name}'", "the packager's own archive assertion"),
+    (RELEASE_WORKFLOW, "target/release/{name}", "the binary the release workflow packages"),
 )
 
 
