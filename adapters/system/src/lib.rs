@@ -34,7 +34,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use ohm_adapter_api::{
     AdapterCapabilities, AdapterInfo, AdapterState, AdapterStatus, HardwareAdapter, TakenControl,
-    WriteOutcome,
+    WriteAccess, WriteOutcome,
 };
 use ohm_core::{AdapterId, DeviceId, OhmError, Result};
 use ohm_device_model::{Capability, Device, DeviceState, Reading, UnavailableReason, Unit, Value};
@@ -952,6 +952,51 @@ impl HardwareAdapter for SystemAdapter {
         }
     }
 
+    /// Ask the kernel whether this process may write the channel, before anything is
+    /// switched.
+    ///
+    /// The answer comes from the filesystem rather than from a comparison of user ids:
+    /// opening `pwm<N>` for writing is refused by the kernel when the process is not
+    /// allowed, and it is refused for every other reason too (a read-only mount, a
+    /// policy module, a file that is not there). The platform's own message is part of
+    /// the refusal because that is the sentence that tells a person what to fix — and
+    /// the open is closed again without writing, so asking changes nothing.
+    fn write_access(&self, device: &Device, capability: &Capability) -> WriteAccess {
+        let wanted = matches!(
+            capability.id.as_str(),
+            ohm_device_model::caps::FAN_SPEED_PERCENT | ohm_device_model::caps::PUMP_SPEED_PERCENT
+        );
+        if !device.id.as_str().starts_with("fan.system.") || !wanted {
+            // Not something this adapter offers to write, so it has no opinion about it.
+            return WriteAccess::Unknown;
+        }
+        if !self.pwm_writable(device.id.as_str()) {
+            return WriteAccess::Denied(format!(
+                "{} is not in adapter_settings.system.pwm_write_allow, so this build does not \
+                 write it",
+                device.id
+            ));
+        }
+        let Some(fan) = self.hwmon_channel(device) else {
+            return WriteAccess::Denied(
+                "the kernel no longer exposes this fan channel".to_string(),
+            );
+        };
+        let Some(path) = fan.pwm.clone() else {
+            return WriteAccess::Denied(format!(
+                "{} has no pwm file, so there is nothing to write",
+                device.id
+            ));
+        };
+        match std::fs::OpenOptions::new().write(true).open(&path) {
+            Ok(_) => WriteAccess::Permitted,
+            Err(error) => WriteAccess::Denied(format!(
+                "the platform refuses to open {} for writing: {error}",
+                path.display()
+            )),
+        }
+    }
+
     /// What this adapter switched away from its driver and still owes back.
     ///
     /// Published in the service's state file, so a process that takes over after this
@@ -1083,8 +1128,12 @@ impl HardwareAdapter for SystemAdapter {
 mod tests {
     use super::*;
     use ohm_adapter_api::WriteStatus;
+    // Mode bits are how the refusal below is produced, and they are Unix-only; the
+    // helper and the test that uses them carry the same gate.
     use ohm_core::CapabilityId;
     use ohm_device_model::{DeviceType, caps};
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     /// A sysfs tree with one SuperIO chip: two fans, one driver-controlled.
     fn hwmon_fixture() -> tempfile::TempDir {
@@ -1705,5 +1754,149 @@ mod tests {
             "the refusal names the setting: {problems:?}"
         );
         assert_eq!(tree_file(temp.path(), "pwm1_enable"), "1");
+    }
+
+    // --- what the platform says before a write is attempted -----------------------
+
+    /// Whether this process can write a file it does not own, which is the only thing
+    /// that makes the "refused" case below reproducible: root ignores the mode bits, so
+    /// a test that assumes a refusal would pass for the wrong reason when run as root.
+    #[cfg(unix)]
+    fn running_as_root() -> bool {
+        let path = std::env::temp_dir().join(format!("ohm-root-probe-{}", std::process::id()));
+        std::fs::write(&path, b"probe").unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let writable = std::fs::OpenOptions::new().write(true).open(&path).is_ok();
+        permissions.set_mode(0o600);
+        let _ = std::fs::set_permissions(&path, permissions);
+        let _ = std::fs::remove_file(&path);
+        writable
+    }
+
+    fn fan_capability() -> CapabilityId {
+        CapabilityId::new_unchecked(caps::FAN_SPEED_PERCENT)
+    }
+
+    #[tokio::test]
+    async fn write_access_is_permitted_for_a_channel_the_configuration_confirms() {
+        let temp = hwmon_fixture();
+        let adapter = writable_and_discovered(temp.path(), &["fan.system.nct6798d_fan1"]).await;
+        let devices = adapter.discover().await.unwrap();
+        let device = devices
+            .iter()
+            .find(|device| device.id.as_str() == "fan.system.nct6798d_fan1")
+            .expect("the channel");
+        let capability = device.capability(&fan_capability()).unwrap();
+
+        let access = adapter.write_access(device, capability);
+        assert_eq!(access, WriteAccess::Permitted, "{access:?}");
+        assert!(access.is_permitted());
+        assert!(access.denial().is_none());
+    }
+
+    #[tokio::test]
+    async fn write_access_names_the_setting_that_would_allow_the_channel() {
+        let temp = hwmon_fixture();
+        let adapter = writable_and_discovered(temp.path(), &[]).await;
+        let devices = adapter.discover().await.unwrap();
+        let device = devices
+            .iter()
+            .find(|device| device.id.as_str() == "fan.system.nct6798d_fan1")
+            .expect("the channel");
+        // Nothing is confirmed, so the device does not advertise the actuator at all —
+        // which is itself the read-only default. The refusal is still answerable for a
+        // channel somebody asks about, so the capability is built directly.
+        assert!(
+            device.capability(&fan_capability()).is_none(),
+            "an unconfirmed channel exposes no writable capability"
+        );
+        let capability =
+            Capability::actuator(fan_capability(), "Fan Speed", Unit::Percent, 0.0, 100.0);
+
+        let access = adapter.write_access(device, &capability);
+        let reason = access.denial().expect("a refusal");
+        assert!(reason.contains("pwm_write_allow"), "{reason}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_access_reports_the_platform_refusing_the_file() {
+        if running_as_root() {
+            // Root can write a file whose mode forbids it, so the refusal cannot be
+            // produced here; the case is covered wherever the tests run unprivileged.
+            return;
+        }
+        let temp = hwmon_fixture();
+        let adapter = writable_and_discovered(temp.path(), &["fan.system.nct6798d_fan1"]).await;
+        let devices = adapter.discover().await.unwrap();
+        let device = devices
+            .iter()
+            .find(|device| device.id.as_str() == "fan.system.nct6798d_fan1")
+            .expect("the channel");
+        let capability = device.capability(&fan_capability()).unwrap();
+
+        // What a user without root, or on a read-only mount, actually has.
+        let pwm = temp.path().join("hwmon3/pwm1");
+        let mut permissions = std::fs::metadata(&pwm).unwrap().permissions();
+        permissions.set_mode(0o444);
+        std::fs::set_permissions(&pwm, permissions).unwrap();
+
+        let access = adapter.write_access(device, capability);
+        let reason = access.denial().unwrap_or_else(|| panic!("{access:?}"));
+        assert!(
+            reason.contains("pwm1"),
+            "the refusal names the file: {reason}"
+        );
+        assert!(
+            reason.contains("refuses to open"),
+            "and says who refused: {reason}"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_access_is_unknown_for_something_this_adapter_does_not_offer() {
+        let temp = hwmon_fixture();
+        let adapter = writable_and_discovered(temp.path(), &["fan.system.nct6798d_fan1"]).await;
+        let devices = adapter.discover().await.unwrap();
+        let device = devices
+            .iter()
+            .find(|device| device.id.as_str() == "fan.system.nct6798d_fan1")
+            .expect("the channel");
+        let other = CapabilityId::new_unchecked(caps::TEMPERATURE_CORE);
+
+        assert_eq!(
+            adapter.write_access(
+                device,
+                &Capability::sensor(other.clone(), "Core", Unit::Celsius)
+            ),
+            WriteAccess::Unknown,
+            "an adapter has no opinion about a capability it does not write"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_access_says_when_the_channel_is_no_longer_exposed() {
+        // Not discovered yet, so this adapter has no tree to look the channel up in —
+        // the same answer a channel that went away gets, and never a hopeful yes.
+        let temp = hwmon_fixture();
+        let adapter = writable(temp.path(), &["fan.system.nct6798d_fan1"]);
+        let other = SystemAdapter::with_hwmon_root(Some(temp.path().to_path_buf()));
+        let devices = other.discover().await.unwrap();
+        let device = devices
+            .iter()
+            .find(|device| device.id.as_str() == "fan.system.nct6798d_fan1")
+            .expect("the channel");
+        let capability =
+            Capability::actuator(fan_capability(), "Fan Speed", Unit::Percent, 0.0, 100.0);
+
+        let access = adapter.write_access(device, &capability);
+        assert!(
+            access
+                .denial()
+                .unwrap_or_default()
+                .contains("no longer exposes"),
+            "{access:?}"
+        );
     }
 }

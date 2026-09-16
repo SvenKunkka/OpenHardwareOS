@@ -335,6 +335,20 @@ enum ServiceAction {
     },
     /// Is a service running here? Exits 1 when it is not.
     Status,
+    /// Can this machine actually run the rules in the background? Read-only.
+    ///
+    /// Answers the questions a person has *before* leaving something running with no
+    /// window open: would it write at all, which channels has this configuration
+    /// confirmed, does the platform let this process write them, and is something else
+    /// already driving them. Exits 1 when a channel the configuration confirms cannot
+    /// be written by this process — the case that otherwise shows up as a stream of
+    /// refused writes nobody reads.
+    Check {
+        /// Also register the simulated providers, to check the plumbing without
+        /// hardware.
+        #[arg(long)]
+        mock: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -472,6 +486,7 @@ async fn main() -> Result<()> {
                 max_ticks,
             } => service_run(&cli, *mock, *heartbeat_ms, *max_ticks).await,
             ServiceAction::Status => service_status(&cli),
+            ServiceAction::Check { mock } => service_check(&cli, *mock).await,
         },
         Command::Report { out, mock } => report(&cli, out.as_deref(), *mock).await,
     }
@@ -1245,6 +1260,21 @@ file was left untouched"
             "disabled in settings — this service will not write to hardware"
         }
     );
+    // A channel the configuration confirms but the platform refuses is the one thing a
+    // person cannot see from the outside: the service would look healthy and write
+    // nothing, one refusal at a time. Say it once, here, with the platform's own words.
+    for (device, capability, access) in confirmed_write_channels(&session.runtime) {
+        if let Some(reason) = access.denial()
+            && !settings.dry_run
+        {
+            tracing::warn!(
+                device = %device,
+                capability = %capability,
+                "a channel this configuration confirms cannot be written: {reason}"
+            );
+            println!("warning:    {device} / {capability} cannot be written: {reason}");
+        }
+    }
     println!();
     println!("Running. Stop with Ctrl-C, or SIGTERM from a service manager.");
     println!("`ohm-cli service status` reports from the state file while this runs.");
@@ -1334,6 +1364,182 @@ file was left untouched"
 }
 
 /// Report what the state file says, without touching the runtime.
+/// The writable cooling channels this configuration confirms, with the platform's answer
+/// about each.
+///
+/// "Confirmed" means a person listed the channel: an actuator the provider offers but the
+/// configuration does not confirm is the read-only default, not a permission problem, so
+/// those are left out and the caller reports "nothing is configured to be written".
+fn confirmed_write_channels(
+    runtime: &Runtime,
+) -> Vec<(String, String, ohm_adapter_api::WriteAccess)> {
+    let mut confirmed = Vec::new();
+    for view in &runtime.devices() {
+        for capability in &view.device.capabilities {
+            if capability.kind != ohm_device_model::CapabilityKind::Actuator
+                || !matches!(
+                    capability.id.as_str(),
+                    ohm_device_model::caps::FAN_SPEED_PERCENT
+                        | ohm_device_model::caps::PUMP_SPEED_PERCENT
+                )
+            {
+                continue;
+            }
+            let access = runtime
+                .write_access(&view.device, capability)
+                .unwrap_or(ohm_adapter_api::WriteAccess::Unknown);
+            if matches!(&access, ohm_adapter_api::WriteAccess::Denied(reason)
+                if reason.contains("pwm_write_allow"))
+            {
+                continue;
+            }
+            confirmed.push((
+                view.device.id.to_string(),
+                capability.id.to_string(),
+                access,
+            ));
+        }
+    }
+    confirmed
+}
+
+/// What this machine would actually do if the rules were left running with no window
+/// open, asked before anything is installed or enabled.
+///
+/// Every line is either a fact the user can check (the state file, the settings, the
+/// provider statuses, the channels the configuration confirms) or the platform's own
+/// answer about whether it will let this process write them. The verdict is about the
+/// *configured intent*: writes that are on and cannot happen are a failure, and a
+/// read-only configuration is not.
+async fn service_check(cli: &Cli, use_mock: bool) -> Result<()> {
+    let session = Session::open(cli, use_mock, None).await?;
+    session.runtime.start().await?;
+    let settings = session.runtime.settings();
+    let paths = session.paths.clone();
+    let state_path = paths.service_state_file();
+
+    print_header("OpenHardwareOS service preflight");
+    println!("config:     {}", paths.root().display());
+    println!("version:    {}", ohm_core::VERSION);
+    println!("state file: {}", state_path.display());
+
+    // Who, if anyone, is driving the channels right now.
+    let mut owner_note = None;
+    match ohm_runtime::service::stale_or_running(&state_path) {
+        Some((state, true)) => {
+            let note = format!(
+                "a service is running here (pid {}, version {}, {} cycle(s), heartbeat {} ms ago)",
+                state.pid,
+                state.version,
+                state.ticks,
+                state.age_ms(ohm_core::now_ms())
+            );
+            println!("owner:      {note}");
+            owner_note = Some(note);
+        }
+        Some((state, false)) => println!(
+            "owner:      nobody; the file left by pid {} is stale (heartbeat {} ms ago)",
+            state.pid,
+            state.age_ms(ohm_core::now_ms())
+        ),
+        None => println!("owner:      nobody has claimed the channels"),
+    }
+
+    println!(
+        "automation: {}",
+        if settings.automation_enabled {
+            "enabled"
+        } else {
+            "disabled in settings — a service would read and display, never write"
+        }
+    );
+    println!(
+        "dry run:    {}",
+        if settings.dry_run {
+            "on — no write can reach hardware"
+        } else {
+            "off"
+        }
+    );
+
+    println!();
+    println!("providers:");
+    print_adapters(&session.runtime);
+
+    // The channels this configuration confirms, and the platform's answer about each.
+    let confirmed = confirmed_write_channels(&session.runtime);
+    let failure = !settings.dry_run
+        && confirmed
+            .iter()
+            .any(|(_, _, access)| matches!(access, ohm_adapter_api::WriteAccess::Denied(_)));
+
+    println!();
+    if confirmed.is_empty() {
+        println!("writable channels: none");
+        println!(
+            "  this configuration confirms no channel, so a service would read and log \
+             without writing"
+        );
+        println!(
+            "  (to enable one: list a confirmed channel in \
+             adapter_settings.system.pwm_write_allow)"
+        );
+    } else {
+        println!("writable channels: {}", confirmed.len());
+        for (device, capability, access) in &confirmed {
+            match access {
+                ohm_adapter_api::WriteAccess::Permitted => {
+                    println!("  • {device} / {capability}: permitted");
+                }
+                ohm_adapter_api::WriteAccess::Denied(reason) => {
+                    // Already counted in the verdict above; printed here with the
+                    // platform's own words so a person can act on it.
+                    println!("  • {device} / {capability}: REFUSED — {reason}");
+                }
+                ohm_adapter_api::WriteAccess::Unknown => {
+                    println!("  • {device} / {capability}: unknown — this provider does not say");
+                }
+            }
+        }
+    }
+
+    let rules = session.engine.stats();
+    println!();
+    println!(
+        "rules:      {} loaded, {} enabled",
+        rules.rules, rules.enabled_rules
+    );
+    println!(
+        "on exit:    {}",
+        if settings.safety.relinquish_on_exit {
+            "the fail-safe duty is written and control is handed back"
+        } else {
+            "relinquish_on_exit is off — channels keep their last duty"
+        }
+    );
+
+    println!();
+    let verdict = if failure {
+        "NOT READY — a channel this configuration confirms cannot be written by this process"
+    } else if settings.dry_run {
+        "READY (DRY RUN) — nothing will reach hardware"
+    } else if !settings.automation_enabled || confirmed.is_empty() {
+        "READY (READ ONLY) — the rules would be read and logged, not applied"
+    } else {
+        "READY — the rules would run and the channels above would be written"
+    };
+    println!("verdict:    {verdict}");
+    if let Some(note) = owner_note {
+        println!("note:       {note}; this preflight does not take the channels from it");
+    }
+
+    session.runtime.shutdown().await?;
+    if failure {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 fn service_status(cli: &Cli) -> Result<()> {
     let paths = match &cli.config_dir {
         Some(root) => ConfigPaths::from_root(root),

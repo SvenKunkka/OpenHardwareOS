@@ -426,6 +426,39 @@ impl TakenControl {
     }
 }
 
+/// Whether the platform would let this process write a capability, asked *before* a
+/// write is attempted.
+///
+/// A rule that cannot be carried out should be knowable before anything is switched:
+/// "writes to this fan need root" is a sentence a person can act on, while a stream of
+/// refused writes at one per second is not. The check must be side-effect free — it may
+/// look at permissions, never change a value — and it must not guess: an adapter that
+/// cannot tell returns [`WriteAccess::Unknown`] rather than a hopeful `Permitted`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteAccess {
+    /// This process may write the capability right now.
+    Permitted,
+    /// Refused, with the reason a person can act on. The platform's own words are part
+    /// of it where they exist: "Permission denied" is what says "you need root".
+    Denied(String),
+    /// Nothing to say.
+    Unknown,
+}
+
+impl WriteAccess {
+    pub fn is_permitted(&self) -> bool {
+        matches!(self, Self::Permitted)
+    }
+
+    /// The reason, when there is one.
+    pub fn denial(&self) -> Option<&str> {
+        match self {
+            Self::Denied(reason) => Some(reason.as_str()),
+            _ => None,
+        }
+    }
+}
+
 /// The hardware provider interface.
 ///
 /// Implementors must never panic on missing hardware: report
@@ -484,6 +517,16 @@ pub trait HardwareAdapter: Send + Sync + 'static {
     /// fan control is handed back to the BIOS/firmware.
     async fn shutdown(&self) -> Result<()> {
         Ok(())
+    }
+
+    /// Would the platform let this process write this capability, and if not, why not?
+    ///
+    /// Side-effect free, and honest about not knowing. Used by the service preflight
+    /// (`ohm-cli service check`) and by the service's own start-up banner, so that a
+    /// machine where the rules cannot reach hardware says so once, in words a person can
+    /// act on, instead of failing quietly one write at a time.
+    fn write_access(&self, _device: &Device, _capability: &Capability) -> WriteAccess {
+        WriteAccess::Unknown
     }
 
     /// Channels this adapter has switched away from their driver and still owes back.

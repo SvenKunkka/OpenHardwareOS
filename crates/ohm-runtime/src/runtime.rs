@@ -250,6 +250,22 @@ impl Runtime {
     /// back. Each of those is audited separately, and a problem is recorded as a
     /// problem — the exit path no longer reports an unconfirmed write as a
     /// successful hand-back.
+    /// Ask the adapter that owns a device whether the platform would let this process
+    /// write a capability.
+    ///
+    /// `None` when no adapter claims the device — an answer nobody gave, which callers
+    /// must report as such rather than as permission.
+    pub fn write_access(
+        &self,
+        device: &Device,
+        capability: &Capability,
+    ) -> Option<ohm_adapter_api::WriteAccess> {
+        self.inner
+            .discovery
+            .adapter(device.adapter.as_str())
+            .map(|adapter| adapter.write_access(device, capability))
+    }
+
     /// Channels the adapters have switched away from their drivers and still owe back.
     ///
     /// The service publishes this in its state file so that a process taking over after
