@@ -1594,7 +1594,7 @@ suite rather than from review:
 `sudo`, `apt-get` and `dpkg` shims so the Debian route runs on a machine that is not
 Debian.
 
-### The verification pass (all commands re-run at `RELEASE_COMMIT`, nothing carried over)
+### The verification pass (all commands re-run at `febc02a` — the v0.1.4 release commit — nothing carried over)
 
 | # | Command | Result |
 |---|---|---|
@@ -2300,3 +2300,137 @@ value was changed; nothing was installed on the host (colima was again left alon
 the open question from last round); no licence was approved on the user's behalf (ADR
 0002 and ADR 0004 remain **Proposed**); `Prospector/` and `k10max-prospector/` were left
 exactly as found.
+
+---
+
+## 2026-09-16 — round 15: a verification step that had stopped running, and six records that said otherwise
+
+**Revision: `eac158b`** — the pass below ran at that commit, which is the commit the tag
+points at. The commits carrying this entry follow it and change documentation only.
+
+### What went wrong, and how it was found
+
+Preparing the v0.1.10 release, the local pass reported two non-zero steps. One was a real
+defect with a long history:
+
+| | |
+|---|---|
+| **Symptom** | Step 11, `scripts/verify-ipc-roundtrip.sh`, exited 1 with `missing …/target/release/ohm-desktop`. |
+| **Cause** | `29b95dd` (in v0.1.4) renamed the desktop artefact through `tauri.conf.json`'s `mainBinaryName: "openhardwareos"`. The script still looked for `target/release/ohm-desktop`, a path that no longer existed. |
+| **Why it was not caught** | Every pass from v0.1.4 to v0.1.9 *did* report the step as non-zero — but the output was truncated to its last 18 lines, and the visible tail looked like the ordinary refusal-path checks. Worse, the two checks that ran **before** the missing-file guard — "a probe with no isolated configuration directory is refused" and "a probe whose settings enable a real provider is refused" — **passed on exit 127**: a command that does not exist also exits non-zero, so the checks read a missing binary as a correct refusal. That is the opposite of evidence. |
+| **Last genuine run** | The pass at `a642d1c` (round 9's preparation, before the rename): step 11 reported **IPC ROUND TRIP VERIFIED** with 0 `FAIL` lines. |
+| **False records** | Rounds 9, 10, 11, 12, 13 and 14 each listed `scripts/verify-ipc-roundtrip.sh` as **IPC ROUND TRIP VERIFIED**. All six were wrong: in those rounds the step exited 1 and the round trip never ran. The six rows are corrected in place above this entry, and the per-round counts they contributed are the reason this section exists rather than a quiet edit. While correcting them, round 9's table header was found to still read "all commands re-run at `RELEASE_COMMIT`" — a placeholder that was never substituted, so that table named no revision at all; it now names `febc02a`, the v0.1.4 release commit whose pass it records (522 tests over 46 lines, frontend 43 — matching the pass at that revision). |
+
+**What changed.** `scripts/verify-ipc-roundtrip.sh` now:
+
+* reads the artefact name from `apps/desktop/src-tauri/tauri.conf.json` (and stops with a
+  reason if that key is missing) instead of assuming a name;
+* requires the artefact to exist **before** the refusal checks, so those checks can never
+  again pass because nothing ran;
+* checks that the artefact's own `--selftest` version equals the version
+  `tauri.conf.json` declares — a stale binary carrying the correct name can no longer
+  stand in for this revision's code;
+* prints `artefact: <path>` before any judgement.
+
+The pass harness was also changed: step 11 now writes the script's complete output to
+`$TMP/ipc.log`, prints its `PASS`/`FAIL` lines and summary, and names that file — the
+truncated tail was how a red step looked green.
+
+**The second non-zero step was not a defect.** `scripts/versions.py check --remote
+--generated` exited 1 because one `gh api repos/…/git/tags/…` call failed; the same call
+succeeded when re-run, and the catalogue and the remote agreed. A network hiccup that
+reads as "GitHub disagrees" is its own defect in a verification tool, so the remote read
+now retries a bounded number of times with a growing pause and raises gh's own error text
+rather than a bare exit status.
+
+### The verification pass (all commands re-run at `eac158b`, nothing carried over)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `rustup run 1.98.1 cargo fmt --all -- --check` | exit 0 |
+| 2 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0 |
+| 3 | `cargo test --workspace --locked` | **559 passed, 0 failed**, 50 test-result lines |
+| 4 | `cargo deny check` | advisories ok, bans ok, licenses ok, sources ok |
+| 5 | `scripts/versions.py check --remote --generated` | OK: 12 catalogue entries; application version 0.1.10; published releases verified on GitHub |
+| 6 | `scripts/tests/test_versions.py` | **33 tests, OK** (3 new: a transient failure is retried and the read still succeeds; a persistent failure names gh's own error and stops after a bounded number of attempts; the asset read asks for `application/octet-stream`) |
+| 7 | `npm run typecheck` / `npm test` / `npm run build` | clean / **46 tests** / clean |
+| 8 | `scripts/tests/make-acceptance-package.test.sh` | 4 cases, 0 failures |
+| 8b | `scripts/release/test-packaging.ps1` | 6 cases, 0 failures |
+| 8c | `scripts/tests/package-linux.test.sh` | 10 cases, 54 checks, 0 failures |
+| 8d | `scripts/tests/linux-install-doc.test.sh` | 6 cases, 34 checks, 0 failures |
+| 8e | `scripts/tests/verify-linux-readings.test.sh` | 6 cases, 21 checks, 0 failures |
+| 9 | `docs/windows-validation/.../run-script-tests.ps1` | 18 cases, 151 checks, 0 failures (doubles only) |
+| 10 | cross-target `cargo check` for `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu` | exit 0, plus Linux-target Clippy |
+| 11 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** — 51 `PASS` lines, 0 `FAIL`; artefact `target/release/openhardwareos`, self-reported version `OpenHardwareOS 0.1.10 selftest` against a tree version of `0.1.10`; the two refusal paths now fail on the application's own message (`refusing to run the IPC self-test without an explicit configuration directory`, naming the provider) rather than on a missing file; the seeded `fan.lhm.0` handover untouched at `failed`/3 attempts; the real per-user config directory absent before and after |
+| 12 | delivered source packages still verify | every file matches its manifest |
+| 13 | repository hygiene | only the two untracked directories (`Prospector/`, `k10max-prospector/`) remain untracked, untouched |
+
+`non-zero steps: 0` — the first clean full pass since the pass at `a642d1c`, and the first
+in which step 11 has actually run since `29b95dd` renamed the artefact.
+
+This entry, the CHANGELOG entry and the requirements row were written **after** the pass;
+no command in the table above reads any of them. The pass recorded its own starting state
+as `2 path(s) reported by git status` — the two untracked directories named at the end.
+
+### Publication: v0.1.10
+
+Recorded here because the shipped bytes are the point of the exercise, and because this is
+the round in which the previous six rounds' records had to be corrected.
+
+* **Tag** `v0.1.10` (annotated) at `eac158b` — the commit the pass above ran at. The
+  commits carrying this entry follow it and change documentation only.
+* **Build**: `release.yml` dispatched at `eac158b` ([run 35051224816](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/35051224816)),
+  Windows and Linux jobs both green. The tag-triggered duplicate ([run 35052741907](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/35052741907)) was cancelled.
+* **CI** at `eac158b` ([run 35051226780](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/35051226780)): all eight jobs green, including `Rust (windows-latest)`, `Rust (ubuntu-latest)` and the NSIS bundle job.
+* **Verified from the published downloads**, not from the build artifacts:
+  * 12 assets, matching v0.1.9's set; every payload file is listed on exactly one platform
+    checksum list (`SHA256SUMS` covers the 6 Windows payload files,
+    `SHA256SUMS-linux-x86_64` the 4 Linux ones), and `shasum -a 256 -c` passes for both.
+    Neither list names a file that is not published — the defect round 8 found.
+  * Both metadata files name `eac158b65bb70755d971a573a1c045f9054bb31e`, `rustc 1.98.1`,
+    and the workflow run that produced them.
+  * The `.deb` declares `open-hardware-os` version `0.1.10`, `amd64`, a 64-bit x86_64 ELF
+    at `usr/bin/openhardwareos`, a `.desktop` entry whose `Exec` is `openhardwareos`, and
+    17 data files.
+  * The Linux CLI archive holds `ohm-cli`, `LICENSE`, `THIRD_PARTY_NOTICES.txt` and
+    `release-linux-x86_64.json`, and that metadata is identical to the published one; the
+    Windows CLI archive's embedded `release.json` is likewise identical. The installer is
+    an NSIS PE.
+* **Catalogue**: `versions.py record-release v0.1.10 --apply`, then `render`, then
+  `check --remote --generated` → OK. That check independently re-reads GitHub and requires
+  the tag to resolve to the commit `release.json` names.
+* **Acceptance package** for `eac158b`, built in a separate worktree so the packager saw a
+  clean tree: 264 files listed in its manifest, archive SHA-256
+  `bb482bfaf6f40c6fa3e5ac94e3d856705efa23fd0430dab97770862d4775f3cd`, manifest SHA-256
+  `f7f9c84629f604b51ea0e348177d49bc4cf84abb8870847c04f493bf95196981`; both verify.
+* **Windows public-path check** against the published download ([run 35053082654](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/35053082654)):
+  green, printing `Verified ohm-cli 0.1.10; published source commit eac158b…`, installing
+  under PowerShell 5.1, running `doctor` and the simulated closed loop, and comparing the
+  tag written in `README.md` with the published commit.
+
+Two record corrections were made while assembling this: the six false
+"IPC ROUND TRIP VERIFIED" rows (above), and the acceptance-package table in
+`docs/windows-validation/ACCEPTANCE-ENTRY.md`, whose seven rows from `29f1c34` to
+`fe39d19` counted every file in the package while the packager's own `files:` line counts
+the files listed in the manifest — one fewer, because the manifest does not list itself.
+The column is now named for what it counts.
+
+### What round 15 could **not** verify
+
+* **The round trip on any platform but this one.** macOS only, as always. The renaming bug
+  was found by reading a log rather than by a machine disagreeing with it, which is the
+  weakest kind of coverage: nothing in this repository would have failed a red step.
+* **Windows and Linux runs of the same script.** No host here can execute the desktop
+  binary on either.
+* **Real hardware.** Unchanged: no fan has been measured, no `pwm<N>` written, no
+  SuperIO chip read.
+
+### Deliberately **not** done in round 15
+
+No hardware was written to; no autostart entry was created and no global environment value
+was changed; nothing was installed on the host (colima was again left alone); no licence
+was approved on the user's behalf (ADR 0002 and ADR 0004 remain **Proposed**);
+`Prospector/` and `k10max-prospector/` were left exactly as found. The publication work in
+this round is confined to this project's own release flow: the tagged commit is the one
+this pass ran at, the artefacts are downloaded and checked before they are attached, and
+no earlier tag, release or download was modified.

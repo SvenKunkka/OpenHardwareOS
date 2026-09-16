@@ -52,6 +52,9 @@
 | CI 八个 job 全部通过（含按通道开启的 hwmon 写入测试） | v0.1.9 | [run 35047646450](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/35047646450) |
 | Windows 与 Linux 构建、夹具测试、装机与桌面应用自检、读数对照（首次包含带文档路由套件的 Linux 作业） | v0.1.9 | [run 35047644405](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/35047644405) |
 | 公开下载、校验、版本化安装、源码提交核对、诊断与模拟运行（PowerShell 5.1） | v0.1.9 | [run 35049344138](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/35049344138) |
+| CI 八个 job 全部通过（含 Ubuntu 上的全套 Rust 测试与 Windows NSIS 打包） | v0.1.10 | [run 35051226780](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/35051226780) |
+| Windows 与 Linux 构建、打包；Linux 作业构建 `.deb` 与 AppImage，并在 Ubuntu 上装上运行装好的 `/usr/bin/openhardwareos`，再运行读数对照检查 | v0.1.10 | [run 35051224816](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/35051224816) |
+| 公开下载、校验、版本化安装、源码提交核对、诊断与模拟运行（PowerShell 5.1）：该 run 打印 `Verified ohm-cli 0.1.10; published source commit eac158b…`，并把 README 里写的 tag 与已发布提交对照 | v0.1.10 | [run 35053082654](https://github.com/SvenKunkka/OpenHardwareOS/actions/runs/35053082654) |
 
 这些 run 的**结论、提交与 job 明细**都在 GitHub 上可查，本页只引用，不复制数字。
 它们证明"代码能在 Windows 上编译、测试、打包、安装"，**不证明**任何一台真实机器上的风扇、水泵、
@@ -70,7 +73,7 @@
 
 ## 3. 源码包版本与校验值
 
-| 提交 | 目录 / 压缩包 | 清单文件数 | 压缩包 SHA-256 |
+| 提交 | 目录 / 压缩包 | 清单里列出的文件数 | 压缩包 SHA-256 |
 |---|---|---|---|
 | `27ee667`（第三轮） | `dist/acceptance/OpenHardwareOS-27ee667-windows-acceptance{,.zip}` | 192 | `53f76a4fc64c738e96341c03c45ce30bccee96cc7a597ba8046014959a6fb21f`（**重建**，见下） |
 | `5fd8c23`（第四轮） | `dist/acceptance/OpenHardwareOS-5fd8c23-windows-acceptance{,.zip}` | 201 | `fddcd1886ca96c1ed119b7b6b90202b2fb538cff0e82bb980dd503654ab05e4d` |
@@ -78,13 +81,18 @@
 | `499008c` | `dist/acceptance/OpenHardwareOS-499008c-windows-acceptance{,.zip}` | 204 | **请勿使用**：该包由有缺陷的打包器产出，旁边有 `.DO-NOT-USE.txt` |
 | `2a0391d`（v0.1.2 准备） | `dist/acceptance/OpenHardwareOS-2a0391d-windows-acceptance{,.zip}` | 245 | `db1a875770026568d8662577767905ade22b84320ce9baedbd86f2155384aaaf`（清单文件本身：`67abd843e699daa5cbb5b0965e758e930e6c8d3885564ffae7244a47c4ec027b`） |
 | `1219457`（v0.1.2 发布提交） | `dist/acceptance/OpenHardwareOS-1219457-windows-acceptance{,.zip}` | 245 | `c11c0849fcfc08b06de27d7ad6a29f273526412c5e8a64474f11f54d33580cd1`（清单文件本身：`a259c6f17899cd1de2bced370fd44828067b45eea46e9c31c0fc6a2ba447c118`） |
-| `29f1c34`（v0.1.3 发布提交） | `dist/acceptance/OpenHardwareOS-29f1c34-windows-acceptance{,.zip}` | 254 | `26c99521ac54e1222dafa8c7066c3f64629a2bb3956470d431b7fca7135002e1`（清单文件本身：`f75cdbec8acb846322deb9487956e27f7e815e1d77a9bcbf33be517126e190dc`） |
-| `febc02a`（v0.1.4 发布提交） | `dist/acceptance/OpenHardwareOS-febc02a-windows-acceptance{,.zip}` | 256 | `8ef86ec044b40651574dc848fb19e05b6ba1062b6d658996f90c50e36587dd1e`（清单文件本身：`d8feccf9828a1b20828d2c0ca0846ba7d2b7e4e3926151d5acd01ba0ef9bc31b`） |
-| `5ec543a`（v0.1.5 发布提交） | `dist/acceptance/OpenHardwareOS-5ec543a-windows-acceptance{,.zip}` | 258 | `166ab3f38525c5c9b0556fc43f41bee4a658f3288fc303bd4b4ef48473e6c705`（清单文件本身：`2f322b2a915687058236a53152ffaadd88e853833b09e5bf453ece8717736df5`） |
-| `0c6e20c`（v0.1.6 发布提交） | `dist/acceptance/OpenHardwareOS-0c6e20c-windows-acceptance{,.zip}` | 262 | `9ff0a677347ab09c704b2a2237f75a7a03712c0e8c959afb30f3ec4858eea3e2`（清单文件本身：`920ee0731616277925a3e43c28573c009eac8cbde14667d4063711abb354ce0e`） |
-| `1c427e7`（v0.1.7 发布提交） | `dist/acceptance/OpenHardwareOS-1c427e7-windows-acceptance{,.zip}` | 263 | `8e1e47f700057e95699ac2121068de073d71fa49a154a3293bba2ae00c0da9b8`（清单文件本身：`adf9087dfead69dc8b304fd281ceb70a58ec9158fce1be7f8c0df13a8e465a94`） |
-| `9c4ffe2`（v0.1.8 发布提交） | `dist/acceptance/OpenHardwareOS-9c4ffe2-windows-acceptance{,.zip}` | 265 | `e15cf4924a2dad0a45fce0dd924597693750b730cd20edeeadc57ff551f9b4da`（清单文件本身：`6b5b85e40da780fb12cdce55943c88a4e10b72947237d3e5388f89c8af6751c9`） |
-| `fe39d19`（**v0.1.9 发布提交**，推荐给操作者） | `dist/acceptance/OpenHardwareOS-fe39d19-windows-acceptance{,.zip}` | 265 | `55be0265aa48284f6f6b8a9327b9fed25ab37a5a51450129be01a56725dd7954`（清单文件本身：`dae5a19ccdba60d5d2ef40cf5da9ea76b8766a1613a7f03310cf653550e64c64`） |
+| `29f1c34`（v0.1.3 发布提交） | `dist/acceptance/OpenHardwareOS-29f1c34-windows-acceptance{,.zip}` | 253 | `26c99521ac54e1222dafa8c7066c3f64629a2bb3956470d431b7fca7135002e1`（清单文件本身：`f75cdbec8acb846322deb9487956e27f7e815e1d77a9bcbf33be517126e190dc`） |
+| `febc02a`（v0.1.4 发布提交） | `dist/acceptance/OpenHardwareOS-febc02a-windows-acceptance{,.zip}` | 255 | `8ef86ec044b40651574dc848fb19e05b6ba1062b6d658996f90c50e36587dd1e`（清单文件本身：`d8feccf9828a1b20828d2c0ca0846ba7d2b7e4e3926151d5acd01ba0ef9bc31b`） |
+| `5ec543a`（v0.1.5 发布提交） | `dist/acceptance/OpenHardwareOS-5ec543a-windows-acceptance{,.zip}` | 257 | `166ab3f38525c5c9b0556fc43f41bee4a658f3288fc303bd4b4ef48473e6c705`（清单文件本身：`2f322b2a915687058236a53152ffaadd88e853833b09e5bf453ece8717736df5`） |
+| `0c6e20c`（v0.1.6 发布提交） | `dist/acceptance/OpenHardwareOS-0c6e20c-windows-acceptance{,.zip}` | 261 | `9ff0a677347ab09c704b2a2237f75a7a03712c0e8c959afb30f3ec4858eea3e2`（清单文件本身：`920ee0731616277925a3e43c28573c009eac8cbde14667d4063711abb354ce0e`） |
+| `1c427e7`（v0.1.7 发布提交） | `dist/acceptance/OpenHardwareOS-1c427e7-windows-acceptance{,.zip}` | 262 | `8e1e47f700057e95699ac2121068de073d71fa49a154a3293bba2ae00c0da9b8`（清单文件本身：`adf9087dfead69dc8b304fd281ceb70a58ec9158fce1be7f8c0df13a8e465a94`） |
+| `9c4ffe2`（v0.1.8 发布提交） | `dist/acceptance/OpenHardwareOS-9c4ffe2-windows-acceptance{,.zip}` | 264 | `e15cf4924a2dad0a45fce0dd924597693750b730cd20edeeadc57ff551f9b4da`（清单文件本身：`6b5b85e40da780fb12cdce55943c88a4e10b72947237d3e5388f89c8af6751c9`） |
+| `fe39d19`（v0.1.9 发布提交） | `dist/acceptance/OpenHardwareOS-fe39d19-windows-acceptance{,.zip}` | 264 | `55be0265aa48284f6f6b8a9327b9fed25ab37a5a51450129be01a56725dd7954`（清单文件本身：`dae5a19ccdba60d5d2ef40cf5da9ea76b8766a1613a7f03310cf653550e64c64`） |
+| `eac158b`（**v0.1.10 发布提交**，推荐给操作者） | `dist/acceptance/OpenHardwareOS-eac158b-windows-acceptance{,.zip}` | 264 | `bb482bfaf6f40c6fa3e5ac94e3d856705efa23fd0430dab97770862d4775f3cd`（清单文件本身：`f7f9c84629f604b51ea0e348177d49bc4cf84abb8870847c04f493bf95196981`） |
+
+**这一列数的是什么**：打包器自己报告的 `files:` 数字，即 `MANIFEST.sha256` 里列出的文件数
+（包内文件总数比它多 1，因为清单文件本身不在自己的清单里）。`29f1c34` 到 `fe39d19` 那七行
+原先写的是包内文件总数，比打包器的报告多 1；第 15 轮核对时按打包器的定义改正，旧数字不再保留。
 
 **你手上的这一包是哪一版**：看包根 `README-ACCEPTANCE.md` 顶部的 `Commit` 行（打包时写入），
 摘要看与压缩包同目录的 `<同名>.zip.sha256`（第一行是压缩包，第二行是包内清单文件）。

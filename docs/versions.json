@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "repository": "SvenKunkka/OpenHardwareOS",
-  "development": "v0.1.10",
+  "development": null,
   "versions": [
     {
       "id": "v0.1.0",
@@ -322,22 +322,28 @@
     {
       "id": "v0.1.10",
       "parent": "v0.1.9",
-      "status": "development",
+      "status": "released",
       "channel": "preview",
       "title": "报告带上供应商自己的答案；界面说明为什么不写",
       "summary": "实地报告收录 LibreHardwareMonitor 自己的传感器清单（Windows 那一半不再为空）；桌面界面说明规则为何没有运行。",
-      "tag": null,
-      "commit": null,
-      "branch": "codex/v0.1.10",
-      "release_url": null,
-      "published_at": null,
+      "tag": "v0.1.10",
+      "commit": "eac158b65bb70755d971a573a1c045f9054bb31e",
+      "branch": null,
+      "release_url": "https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.10",
+      "published_at": "2026-09-16T03:43:41Z",
       "changes": [
         "ohm-cli report 新增 platform.lhm：LHM 自己报告的每个传感器（id、名称、类型、硬件路径、原始值字符串），Windows 上平台那一半不再为空",
         "LHM 不可达时报告说明原因与尝试的地址，而不是看起来像一台没有传感器的机器",
         "LHM 适配器新增 platform_evidence()：抓取并展平它自己的树，单元测试用假服务器覆盖成功与不可达两条路径",
-        "桌面 Automation 界面在引擎因别的进程持有通道而退让时，显示原因（含 pid）与这个窗口仍会做什么；对应前端测试与变异验证"
+        "桌面 Automation 界面在引擎因别的进程持有通道而退让时，显示原因（含 pid）与这个窗口仍会做什么；对应前端测试与变异验证",
+        "验证修复：桌面 IPC 往返脚本改为按 tauri.conf.json 读取产物名、在产物存在**之前**不作任何判定，并核对产物自报版本与版本树声明一致；该步骤自 v0.1.4 起实际未运行，第 9–14 轮验证记录已就地更正"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "title": "GitHub 已发布版本与构建来源",
+          "url": "https://github.com/SvenKunkka/OpenHardwareOS/releases/tag/v0.1.10"
+        }
+      ],
       "hardware_validation": "not_verified",
       "plan": null
     },
