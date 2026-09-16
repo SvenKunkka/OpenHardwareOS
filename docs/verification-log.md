@@ -1611,7 +1611,7 @@ Debian.
 | 11 | `scripts/tests/linux-install-doc.test.sh` | **6 cases, 28 checks**, 0 failures |
 | 12 | `docs/windows-validation/.../run-script-tests.ps1` | 18 cases, 151 checks, 0 failures (doubles only) |
 | 13 | cross-target `cargo check` for `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu` | exit 0, plus Linux-target Clippy |
-| 14 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** |
+| 14 | `scripts/verify-ipc-roundtrip.sh` | **NOT VERIFIED — this step exited 1**: it looked for a binary name the build no longer produces, so the round trip never ran. Corrected and re-verified in round 15 |
 | 15 | delivered packages still match their manifests | every file |
 
 ### What round 9 could **not** verify
@@ -1768,7 +1768,7 @@ package was rebuilt from the release commit (
 | 12 | `scripts/tests/verify-linux-readings.test.sh` | **6 cases, 21 checks**, 0 failures |
 | 13 | `docs/windows-validation/.../run-script-tests.ps1` | 18 cases, 151 checks, 0 failures (doubles only) |
 | 14 | cross-target `cargo check` for `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu` | exit 0, plus Linux-target Clippy |
-| 15 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** |
+| 15 | `scripts/verify-ipc-roundtrip.sh` | **NOT VERIFIED — this step exited 1**: it looked for a binary name the build no longer produces, so the round trip never ran. Corrected and re-verified in round 15 |
 | 16 | delivered packages still match their manifests | every file |
 | 17 | `scripts/verify-linux-readings.sh` against the kernel's own sources | on CI's Ubuntu, macOS and Windows runners: every comparable reading `AGREE` |
 
@@ -1889,7 +1889,7 @@ source package was rebuilt from the release commit
 | 12 | `scripts/tests/verify-linux-readings.test.sh` | 6 cases, 21 checks, 0 failures |
 | 13 | `docs/windows-validation/.../run-script-tests.ps1` | 18 cases, 151 checks, 0 failures (doubles only) |
 | 14 | cross-target `cargo check` (Windows and Linux targets) | exit 0, plus Linux-target Clippy |
-| 15 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** |
+| 15 | `scripts/verify-ipc-roundtrip.sh` | **NOT VERIFIED — this step exited 1**: it looked for a binary name the build no longer produces, so the round trip never ran. Corrected and re-verified in round 15 |
 | 16 | delivered packages still match their manifests | every file |
 | 17 | `scripts/verify-linux-readings.sh` against the kernel's own sources | every comparable reading `AGREE` |
 
@@ -2034,7 +2034,7 @@ source package was rebuilt from the release commit
 | 12 | `scripts/tests/verify-linux-readings.test.sh` | 6 cases, 21 checks, 0 failures |
 | 13 | `docs/windows-validation/.../run-script-tests.ps1` | 18 cases, 151 checks, 0 failures (doubles only) |
 | 14 | cross-target `cargo check` (Windows and Linux targets) | exit 0, plus Linux-target Clippy |
-| 15 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** |
+| 15 | `scripts/verify-ipc-roundtrip.sh` | **NOT VERIFIED — this step exited 1**: it looked for a binary name the build no longer produces, so the round trip never ran. Corrected and re-verified in round 15 |
 | 16 | delivered packages still match their manifests | every file |
 | 17 | `scripts/verify-linux-readings.sh` against the kernel's own sources | every comparable reading `AGREE` |
 
@@ -2157,7 +2157,7 @@ package was rebuilt from the release commit
 | 12 | `scripts/tests/verify-linux-readings.test.sh` | 6 cases, 21 checks, 0 failures |
 | 13 | `docs/windows-validation/.../run-script-tests.ps1` | 18 cases, 151 checks, 0 failures (doubles only) |
 | 14 | cross-target `cargo check` (Windows and Linux targets) | exit 0, plus Linux-target Clippy |
-| 15 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** |
+| 15 | `scripts/verify-ipc-roundtrip.sh` | **NOT VERIFIED — this step exited 1**: it looked for a binary name the build no longer produces, so the round trip never ran. Corrected and re-verified in round 15 |
 | 16 | delivered packages still match their manifests | every file |
 | 17 | `scripts/verify-linux-readings.sh` against the kernel's own sources | every comparable reading `AGREE` |
 
@@ -2278,7 +2278,7 @@ package was rebuilt from the release commit
 | 12 | `scripts/tests/verify-linux-readings.test.sh` | 6 cases, 21 checks, 0 failures |
 | 13 | `docs/windows-validation/.../run-script-tests.ps1` | 18 cases, 151 checks, 0 failures (doubles only) |
 | 14 | cross-target `cargo check` (Windows and Linux targets) | exit 0, plus Linux-target Clippy |
-| 15 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** |
+| 15 | `scripts/verify-ipc-roundtrip.sh` | **NOT VERIFIED — this step exited 1**: it looked for a binary name the build no longer produces, so the round trip never ran. Corrected and re-verified in round 15 |
 | 16 | delivered packages still match their manifests | every file |
 | 17 | `scripts/verify-linux-readings.sh` against the kernel's own sources | every comparable reading `AGREE` |
 

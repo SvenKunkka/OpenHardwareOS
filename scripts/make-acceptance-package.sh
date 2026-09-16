@@ -195,7 +195,7 @@ Machine the checks below were run on: macOS 26.6.2 (25G83) arm64, pinned
 | Rust workspace test suite, \`clippy --workspace --all-targets -- -D warnings\`, \`cargo fmt --check\`, \`cargo deny check\` | **Read it from the log, not from here** | \`docs/verification-log.md\` — each entry opens with the revision it was run at, records every command, its environment and its result, and states the pass count |
 | Frontend typecheck, test suite, production build | **Read it from the log, not from here** | \`docs/verification-log.md\` |
 | The real desktop IPC round trip (\`scripts/verify-ipc-roundtrip.sh\`) | **Read it from the log, not from here** | \`docs/verification-log.md\` |
-| Simulated closed loop (\`ohm-cli demo\`, \`ohm-desktop --selftest --mock\`, \`ohm-cli doctor --mock\`) | **Read it from the log, not from here** | \`docs/verification-log.md\` |
+| Simulated closed loop (\`ohm-cli demo\`, \`cargo run -p ohm-desktop -- --selftest --mock\`, \`ohm-cli doctor --mock\`) | **Read it from the log, not from here** | \`docs/verification-log.md\` |
 | The acceptance entry points' control flow (\`precheck.ps1\`, \`build.ps1\`, \`verify-package.ps1\`, \`_tools.ps1\`) | Exercised on macOS **with test doubles only** | \`docs/windows-validation/package/scripts/tests/run-script-tests.ps1\` — one case per defect that was real, with the failing assertion named for each |
 | Windows: WMI storage, \`reg.exe\` autostart, tray, NVML, LibreHardwareMonitor against real hardware, NSIS install | **Prepared — never run** | \`docs/windows-validation/README.md\` (the honest baseline table) |
 | A physical fan responding to a write | **No evidence at all** | \`docs/windows-validation/README.md\` — needs a tachometer, separately from any Windows run |

@@ -7,8 +7,9 @@
 # the application — window, webview, `invoke`, command, engine — is disconnected, which
 # is what this script exists to rule out.
 #
-# It launches the **real** app (`ohm-desktop`, built from this tree, with a real window
-# and a real WebKit webview) against an isolated configuration directory and the
+# It launches the **real** app (the desktop artefact this tree builds — its name is read
+# from `tauri.conf.json`, never assumed: see the note where `APP_BIN` is resolved — with a
+# real window and a real WebKit webview) against an isolated configuration directory and the
 # simulated hardware provider. The backend then asks the frontend, in that webview, to
 # exercise the command surface with the same `api` functions the UI uses. The frontend
 # reports what it saw back through a real command, which writes it next to the app's own
@@ -168,7 +169,31 @@ fi
 # Run only after the build: with no binary these checks would "pass" because the
 # command failed to run at all, which is the opposite of evidence.
 step "Refusal paths: the probe must not be able to run unisolated"
-APP_BIN="$REPO_ROOT/target/release/ohm-desktop"
+
+# The artefact's name comes from the configuration, not from memory.
+#
+# This used to read `APP_BIN="$REPO_ROOT/target/release/ohm-desktop"` while
+# `tauri.conf.json` declares `mainBinaryName: "openhardwareos"`. From the commit that
+# renamed the artefact (29b95dd) the path stopped existing — and because a missing command
+# still exits non-zero, the two "is refused" checks below *passed* on exit 127, which is
+# the opposite of evidence, while the round trip itself never ran again. Resolve the name,
+# require the file, and stop before anything below is judged.
+APP_NAME="$(python3 - "$REPO_ROOT/apps/desktop/src-tauri/tauri.conf.json" <<'PY'
+import json, sys
+name = json.load(open(sys.argv[1])).get("mainBinaryName")
+if not name:
+    raise SystemExit("tauri.conf.json declares no mainBinaryName")
+print(name)
+PY
+)" || { say "  cannot read the artefact name from apps/desktop/src-tauri/tauri.conf.json"; exit 1; }
+APP_BIN="$REPO_ROOT/target/release/$APP_NAME"
+say "  artefact: $APP_BIN"
+if [ ! -x "$APP_BIN" ]; then
+  say "  missing $APP_BIN"
+  say "  the build above did not produce the name the configuration declares;"
+  say "  nothing below can be judged until it does."
+  exit 1
+fi
 
 # (a) `--ipc-selftest` on its own used to arm the probe against whatever config
 #     directory the app would have used — the real per-user one.
@@ -200,17 +225,29 @@ check "  and it did not write a probe report there" \
   "$([ ! -f "$REAL_PROVIDER_CONFIG/$PROBE_FILE" ] && echo 1 || echo 0)" "$REAL_PROVIDER_CONFIG"
 
 step "Launching the real application"
-[ -x "$APP_BIN" ] || { say "  missing $APP_BIN"; exit 1; }
-# The version probe runs the same binary, so it needs its own throwaway config
-# directory: `ConfigPaths::discover()` falls back to the *real* per-user config
-# directory, and an earlier version of this script therefore created one and wrote
-# mock-device audit records into it while claiming to be isolated.
+# The probe runs the artefact itself, in its own throwaway config directory:
+# `ConfigPaths::discover()` falls back to the *real* per-user config directory, and an
+# earlier version of this script therefore created one and wrote mock-device audit
+# records into it while claiming to be isolated.
+#
+# It also settles which binary is under test. Everything below trusts `$APP_BIN`, and a
+# stale artefact carrying the right name would let the whole step pass while testing code
+# that is not in this tree — so the version it reports is compared with the version the
+# tree declares, and a mismatch is a failure rather than a log line.
 mkdir -p "$WORK/version-probe"
-VERSION="$(cd "$REPO_ROOT" && OHM_CONFIG_DIR="$WORK/version-probe" "$RUSTUP" run "$TOOLCHAIN" cargo run -q -p ohm-desktop -- --selftest --mock 2>/dev/null | head -1)"
+TREE_VERSION="$(python3 - "$REPO_ROOT/apps/desktop/src-tauri/tauri.conf.json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1]))["version"])
+PY
+)"
+VERSION="$(cd "$REPO_ROOT" && OHM_CONFIG_DIR="$WORK/version-probe" "$APP_BIN" --selftest --mock 2>/dev/null | head -1)"
 say "  binary : $APP_BIN"
 say "  version: $VERSION"
 say "  args   : --mock --ipc-selftest"
 say "  env    : OHM_CONFIG_DIR=$CONFIG RUST_LOG=info"
+check "the artefact under test is the version this tree declares" \
+  "$(printf '%s' "$VERSION" | grep -q "$TREE_VERSION" && echo 1 || echo 0)" \
+  "$VERSION (tree declares $TREE_VERSION)"
 ( cd "$REPO_ROOT" && OHM_CONFIG_DIR="$CONFIG" RUST_LOG=info "$APP_BIN" --mock --ipc-selftest > "$APP_LOG" 2>&1 ) &
 APP_PID=$!
 

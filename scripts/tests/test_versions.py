@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import tomllib
 import unittest
@@ -135,6 +136,52 @@ class CatalogueTests(unittest.TestCase):
                 data["versions"][0][field] = changed
                 with self.assertRaisesRegex(versions.VersionError, "metadata differs"):
                     versions.recorded_release(data, "v0.1.0", fake_release(tag="v0.1.0", sha="d" * 40))
+
+
+class RemoteReadTests(unittest.TestCase):
+    """A flaky GitHub read must be retried, and a real failure must say what gh said."""
+
+    def test_a_transient_failure_is_retried_and_the_read_still_succeeds(self):
+        calls = []
+
+        def run(command, check, capture_output):
+            calls.append(command)
+            if len(calls) < 3:
+                raise subprocess.CalledProcessError(1, command, stderr=b"HTTP 502: Bad Gateway\n")
+            return subprocess.CompletedProcess(command, 0, stdout=b'{"ok": true}', stderr=b"")
+
+        sleeps = []
+        result = versions.github_json("repos/x/y", run=run, sleep=sleeps.append, pause=0.5)
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(len(calls), 3)
+        # Backoff grows, so a rate limit is not hammered by immediate retries.
+        self.assertEqual(sleeps, [0.5, 1.0])
+
+    def test_a_persistent_failure_names_ghs_own_error_and_stops(self):
+        calls = []
+
+        def run(command, check, capture_output=True):
+            calls.append(command)
+            raise subprocess.CalledProcessError(1, command, stderr=b"gh: Not Found (HTTP 404)\n")
+
+        with self.assertRaises(versions.VersionError) as caught:
+            versions.github_json("repos/x/y", attempts=3, run=run, sleep=lambda _: None)
+
+        self.assertIn("repos/x/y", str(caught.exception))
+        self.assertIn("gh: Not Found (HTTP 404)", str(caught.exception))
+        self.assertEqual(len(calls), 3, "the retry budget must be bounded")
+
+    def test_the_asset_read_asks_for_the_octet_stream(self):
+        seen = {}
+
+        def run(command, check, capture_output=True):
+            seen["command"] = command
+            return subprocess.CompletedProcess(command, 0, stdout=b"{}", stderr=b"")
+
+        versions.github_json("repos/x/y/releases/assets/1", asset=True, run=run, sleep=lambda _: None)
+
+        self.assertIn("Accept: application/octet-stream", seen["command"])
 
 
 class FilesTests(unittest.TestCase):

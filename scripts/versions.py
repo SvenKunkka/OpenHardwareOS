@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -420,12 +421,32 @@ def prepare(root, data, tag, branch=None):
     return updates
 
 
-def github_json(endpoint, *, asset=False):
+def github_json(endpoint, *, asset=False, attempts=4, pause=1.5, run=subprocess.run, sleep=time.sleep):
+    """Read one GitHub endpoint through gh, retrying a bounded number of times.
+
+    A single transient failure — a dropped connection, a rate-limit blip, a 5xx — used to
+    abort a whole verification pass and read as "the catalogue disagrees with GitHub": the
+    round-6 pass reported `check --remote --generated` non-zero because one `git/tags/...`
+    dereference failed while the catalogue and the remote were in fact in agreement.
+    Retrying separates a hiccup from a real disagreement, and the raised error carries gh's
+    own stderr so the failure says what GitHub actually said instead of a bare exit status.
+    """
     command = ["gh", "api", endpoint]
     if asset:
         command += ["-H", "Accept: application/octet-stream"]
-    result = subprocess.run(command, check=True, capture_output=True)
-    return json.loads(result.stdout.decode("utf-8-sig"))
+    for attempt in range(1, attempts + 1):
+        try:
+            result = run(command, check=True, capture_output=True)
+        except subprocess.CalledProcessError as error:
+            detail = (error.stderr or b"").decode("utf-8", "replace").strip().splitlines()
+            detail = detail[-1] if detail else f"exit status {error.returncode}"
+            if attempt == attempts:
+                raise VersionError(f"gh api {endpoint} failed {attempts} times; last error: {detail}") from error
+            print(f"  retrying gh api {endpoint} (attempt {attempt}: {detail})", file=sys.stderr)
+            sleep(pause * attempt)
+            continue
+        return json.loads(result.stdout.decode("utf-8-sig"))
+    raise VersionError(f"gh api {endpoint} was never attempted")
 
 
 def published_release(repo, tag, api=github_json):
