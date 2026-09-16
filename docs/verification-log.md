@@ -2546,3 +2546,156 @@ untouched; no tag, release or download was created or modified. No hardware was 
 no autostart entry was created and no global environment value was changed; nothing was
 installed on the host; no licence was approved on the user's behalf (ADR 0002 and ADR 0004
 remain **Proposed**); `Prospector/` and `k10max-prospector/` were left exactly as found.
+
+---
+
+## 2026-09-16 — round 17: a device's name is where it lives, not when it arrived
+
+**Revision: `b3cfb2e`** — the pass below ran at that commit, which is the tip of
+`codex/v0.1.11`, prepared in this round. Nothing was published: v0.1.11 is still
+`development` in the catalogue, and the install entries still point at v0.1.10, the newest
+version somebody can actually download.
+
+### 1. The second foundation defect — identity by position
+
+The review that opened this goal named it: *"LHM mapping depends on numbering and
+enumeration order; there is a source-level risk of duplicate entries overwriting and of
+mis-targeting after a reorder."* It was still there.
+
+`map_tree` handed out ids with a counter. Hardware nodes became `cpu.lhm.0`,
+`gpu.lhm.1`, `storage.lhm.2`, `motherboard.lhm.3` — the index was the position of the node
+in `tree.hardware_children()`. Fan channels became `fan.lhm.0`, `fan.lhm.1`, … in the
+order the flattened tree produced them. Both are our traversal order, and neither is an
+identity:
+
+* LHM enumerates a GPU before or after the motherboard depending on its own internals. If
+  it changes, `fan.lhm.0` is a different header — and **nothing reports anything**: the id
+  exists, the device is writable, reads answer, and a rule that was cooling one fan is now
+  driving another. The pair-duplication guard added in an earlier round catches two
+  channels claiming one number inside one node; it cannot see a whole device move.
+* The same failure arrives one sensor at a time: the id was computed from the channel that
+  happened to be present, so losing a tachometer and keeping a control could rename the
+  device — the same re-target, one driver reload later.
+
+### 2. What an id is now
+
+| Device | id | Why |
+|---|---|---|
+| CPU node | `cpu.lhm.cpu_0` | LHM path `/cpu/0` |
+| Motherboard / SuperIO | `motherboard.lhm.lpc_nct6687d_0` | LHM path `/lpc/nct6687d/0` |
+| Chassis fan channel 1 | `fan.lhm.lpc_nct6687d_0_1` | LHM path + the channel number LHM reports |
+| GPU fan (LHM's name carries no number) | `fan.lhm.gpu_0_0` | LHM path + the number in the sensor path |
+
+The path is how LHM addresses that machine on its next run; the channel number is what LHM
+calls that header; our position in a list is neither. `DeviceId::compose` stays for devices
+that have nothing better to be named after — the mock adapters, NVML's card index — and is
+no longer used by this adapter.
+
+Two deliberate decisions inside that scheme:
+
+* **The channel key ignores which half of a pair is present.** Keying it on the number's
+  *source* (the sensor name says `Fan #1`; the sensor path ends in `1`) was the first
+  version of this change, and a test caught what it would do: a fan whose tachometer
+  dropped out and left its control behind would have been renamed anyway. The source still
+  decides whether a tachometer and a control may be *paired* — that is what withholds a
+  control that cannot be shown to be the same physical channel — and it is now recorded as
+  `lhm_channel_number_from` metadata so a reader can tell a board layout's `Fan #1` from a
+  path that merely ends in 1.
+* **Identity that cannot be established is reported.** Two paths that normalise to the same
+  key would previously have overwritten each other in the sensor map — the insert keeps the
+  last, which is how a channel disappears without a trace. The second device now gets a
+  positional id *and* the adapter reports `Degraded`, in the same status message as the
+  channels whose control could not be matched to a physical fan.
+
+**This changes published ids.** A rule that targets `fan.lhm.0` will report "device not
+found" rather than silently driving another header — the failure is moved from silent to
+loud, which is the point — and the user re-points the rule at the id the UI now shows. No
+migration is attempted on the user's behalf: guessing which fan an old positional id meant
+is exactly the guess this round removes.
+
+### 3. Tests for the requirement, not for the code
+
+`adapters/libre-hardware-monitor` now has 51 tests (6 new):
+
+* the **whole fixture tree reversed** — every child list, recursively — produces an
+  identical id set, and the fan channel that survived reads the same sensor it read before;
+* two boards with **the same name** but different paths keep their own ids and their own
+  tachometers;
+* a channel **keeps its id** when its tachometer disappears and returns, and when only the
+  control is left (and the two halves of a broken pair still promise what they did: a lone
+  tachometer reads and cannot be written, a lone control stays writable with no RPM reading
+  to show the effect — LHM's number, not an identity this code invented);
+* a channel with **no number anywhere** is keyed by its sensor path, and says so in
+  metadata;
+* two keys that **collide** are reported rather than overwritten, and neither device is
+  dropped;
+* the adapter's own status carries **both** kinds of doubt as `Degraded` with the reason,
+  through the real `probe()` path against the fake LHM server — which needed a new
+  `FakeLhm::serve_tree`, since the fixture tree cannot describe a machine whose paths
+  collide.
+
+The third test above is the one that failed first, and it was right to: the initial
+implementation made the id depend on the anchor's origin, so a vanishing tachometer moved
+it.
+
+### 4. The id convention was documented in six places, four of them wrong
+
+Corrected: `docs/device-model.md` (the convention and the adapter table),
+`docs/windows-validation/checklist.md` §11.1 (the acceptance procedure told the operator to
+expect `cpu.lhm.0`, `gpu.lhm.1`, `fan.lhm.N`), `docs/windows-validation/result-template.md`
+(the worked example's `e.g. fan.lhm.3`), `examples/README.md`, and ADR 0005, which quoted
+`DeviceId::compose(…, index)` as what the adapter builds. The IPC probe's seeded
+"real-looking channel" is now `fan.lhm.lpc_nct6687d_0_1` rather than `fan.lhm.0`, so the
+fixture describes a device this adapter could actually produce.
+
+### 5. The verification pass (all commands re-run at `b3cfb2e`, nothing carried over)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `rustup run 1.98.1 cargo fmt --all -- --check` | exit 0 |
+| 2 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0 |
+| 3 | `cargo test --workspace --locked` | **565 passed, 0 failed**, 50 test-result lines |
+| 4 | `cargo deny check` | advisories ok, bans ok, licenses ok, sources ok |
+| 5 | `scripts/versions.py check --remote --generated` | OK: **13 catalogue entries**; application version **0.1.11**; published releases verified on GitHub |
+| 5b | `scripts/check-artefact-names.py` | OK: desktop `openhardwareos` and CLI `ohm-cli` agree with their sources; 16 install entries point at a downloadable version |
+| 5c | `unittest discover -s scripts/tests -p 'test_*.py'` | 48 tests, OK |
+| 6 | `npm run typecheck` / `npm test` / `npm run build` | clean / 46 tests / clean |
+| 7 | `scripts/tests/make-acceptance-package.test.sh` | 4 cases, 0 failures |
+| 8 | `scripts/release/test-packaging.ps1` | 6 cases, 0 failures |
+| 8b | `scripts/tests/package-linux.test.sh` | 11 cases, 58 checks, 0 failures |
+| 8c | `scripts/tests/linux-install-doc.test.sh` | 6 cases, 34 checks, 0 failures |
+| 8d | `scripts/tests/verify-linux-readings.test.sh` | 6 cases, 21 checks, 0 failures |
+| 9 | `docs/windows-validation/.../run-script-tests.ps1` | 18 cases, 151 checks, 0 failures (doubles only) |
+| 10 | cross-target `cargo check` for `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu` | exit 0, plus Linux-target Clippy |
+| 11 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** — 51 `PASS`, 0 `FAIL`; artefact self-reported version `OpenHardwareOS 0.1.11` against a tree version of `0.1.11`; the seeded handover `fan.lhm.lpc_nct6687d_0_1` untouched at `failed`/3 attempts |
+| 12 | delivered source packages still verify | every file matches its manifest |
+| 13 | repository hygiene | only `Prospector/` and `k10max-prospector/` untracked, untouched |
+
+`non-zero steps: 0`.
+
+### 6. What round 17 could **not** verify
+
+* **A real LibreHardwareMonitor.** Every id above comes from LHM's documented path
+  structure and from prepared trees. The claim that LHM's paths are stable across *its own*
+  re-enumeration — a driver update, a hardware change, an LHM release — is an assumption
+  about a program this repository does not contain, and only a real Windows machine running
+  LHM can test it. What is verified is the part that is ours: the id no longer follows our
+  traversal order, and a reorder of the same tree changes nothing.
+* **The reorder is one transformation of one fixture.** Reversing every child list is a
+  strong, deterministic way to catch position-dependence, but it is not a real driver
+  reload, and it cannot invent the paths a real machine would report.
+* **A real rule surviving the migration.** No actual saved rule was re-pointed; the code
+  path that reports "device not found" for a stale id is the one already covered by the
+  recovery tests, not one exercised against a user's rule file.
+* **Anything on real hardware.** Unchanged: no fan measured, no `pwm<N>` written, no
+  Windows or Linux run of the desktop application.
+
+### Deliberately **not** done in round 17
+
+No hardware was written to; no autostart entry was created and no global environment value
+was changed; nothing was installed on the host; no licence was approved on the user's
+behalf (ADR 0002 and ADR 0004 remain **Proposed**); `Prospector/` and `k10max-prospector/`
+were left exactly as found. v0.1.11 was prepared (workspace version, catalogue node,
+CHANGELOG section) but **not** built, tagged or published, and the install entries were
+left pointing at v0.1.10 — the version a reader can actually download — rather than at the
+version under development.
