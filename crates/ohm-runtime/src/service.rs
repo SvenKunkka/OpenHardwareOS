@@ -73,9 +73,43 @@ pub struct ServiceState {
     /// True when writes cannot reach hardware.
     #[serde(default)]
     pub dry_run: bool,
+    /// How many times this owner woke up after wall-clock time it did not run
+    /// through — a suspend, a hibernation, a very long stall. Recorded because the
+    /// gap is the one thing a heartbeat cannot show: while the process was frozen
+    /// its own file looked abandoned, and whoever read it had to decide alone.
+    #[serde(default)]
+    pub resumes: u64,
+    /// The most recent such gap, in wall-clock milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_resume_gap_ms: Option<i64>,
 }
 
 impl ServiceState {
+    /// A claim for this process, with nothing recorded yet.
+    pub fn claim(
+        pid: u32,
+        version: impl Into<String>,
+        heartbeat_interval_ms: u64,
+        simulated: bool,
+        dry_run: bool,
+    ) -> Self {
+        let now = ohm_core::now_ms();
+        Self {
+            pid,
+            version: version.into(),
+            started_at_ms: now,
+            heartbeat_at_ms: now,
+            heartbeat_interval_ms: heartbeat_interval_ms.max(50),
+            ticks: 0,
+            rules: 0,
+            outcomes: Vec::new(),
+            simulated,
+            dry_run,
+            resumes: 0,
+            last_resume_gap_ms: None,
+        }
+    }
+
     /// Age of the last heartbeat.
     pub fn age_ms(&self, now_ms: i64) -> i64 {
         now_ms.saturating_sub(self.heartbeat_at_ms)
@@ -88,6 +122,83 @@ impl ServiceState {
             .max(1)
             .saturating_mul(HEARTBEAT_TOLERANCE) as i64;
         self.age_ms(now_ms) <= window
+    }
+}
+
+/// A wake-up that spanned wall-clock time the process did not run through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SuspendGap {
+    /// Wall-clock milliseconds between the two observations.
+    pub wall_ms: i64,
+    /// Milliseconds the process itself measured between them.
+    pub process_ms: i64,
+}
+
+impl SuspendGap {
+    /// The part of the gap the process did not live through.
+    pub fn missed_ms(&self) -> i64 {
+        (self.wall_ms - self.process_ms).max(0)
+    }
+
+    /// A sentence for the log, naming both numbers: the size of the gap is the
+    /// evidence, and a reader needs to see that the two clocks disagreed.
+    pub fn describe(&self) -> String {
+        format!(
+            "woke up after {} of wall-clock time in which this process measured only {} — a \
+             suspend, a hibernation or a very long stall; while it was frozen its state file \
+             looked abandoned to anything that read it",
+            crate::release::format_gap(self.wall_ms),
+            crate::release::format_gap(self.process_ms)
+        )
+    }
+}
+
+/// Notices that the process was not running for a stretch of wall-clock time.
+///
+/// Two clocks, deliberately: wall-clock time keeps moving while a machine is
+/// suspended, and the process's own monotonic clock does not (on Linux and macOS it
+/// stops with the machine). Their disagreement *is* the detection — a process that
+/// was merely stopped with `SIGSTOP`, or starved of CPU, sees both clocks advance
+/// together and is not reported here, because from its own point of view no time was
+/// lost.
+///
+/// What the caller does with it matters more than the detection: before writing
+/// anything again it must ask who owns the channels now. While the process was
+/// frozen its heartbeat aged past the window, and another process is entitled to
+/// have taken over.
+#[derive(Debug, Clone)]
+pub struct WakeupDetector {
+    threshold_ms: i64,
+    last_wall_ms: Option<i64>,
+    last_process_ms: Option<i64>,
+}
+
+impl WakeupDetector {
+    /// `threshold_ms` is how far the two clocks must disagree before it counts.
+    pub fn new(threshold_ms: i64) -> Self {
+        Self {
+            threshold_ms: threshold_ms.max(0),
+            last_wall_ms: None,
+            last_process_ms: None,
+        }
+    }
+
+    /// Feed one observation of both clocks; the first one only establishes a baseline.
+    pub fn observe(&mut self, wall_ms: i64, process_ms: i64) -> Option<SuspendGap> {
+        let previous = self.last_wall_ms.zip(self.last_process_ms);
+        self.last_wall_ms = Some(wall_ms);
+        self.last_process_ms = Some(process_ms);
+
+        let (last_wall_ms, last_process_ms) = previous?;
+        let wall = wall_ms.saturating_sub(last_wall_ms);
+        let process = process_ms.saturating_sub(last_process_ms);
+        if wall.saturating_sub(process) >= self.threshold_ms {
+            return Some(SuspendGap {
+                wall_ms: wall,
+                process_ms: process,
+            });
+        }
+        None
     }
 }
 
@@ -104,6 +215,16 @@ pub enum ServiceError {
         path: PathBuf,
         error: std::io::Error,
     },
+    /// This process no longer owns the state file: another one took the channels
+    /// while this one was not running — a suspend, a long stall, a debugger. It is
+    /// the one thing a writer must never do anything about except stop: the file is
+    /// now that process's record, and the hardware is its responsibility.
+    OwnershipLost {
+        /// The pid this process claimed with.
+        pid: u32,
+        /// Whoever holds the file now, when it can be read.
+        found: Option<Box<ServiceState>>,
+    },
 }
 
 impl std::fmt::Display for ServiceError {
@@ -119,6 +240,20 @@ impl std::fmt::Display for ServiceError {
             Self::Write { path, error } => {
                 write!(f, "could not write {}: {error}", path.display())
             }
+            Self::OwnershipLost { pid, found } => match found {
+                Some(other) => write!(
+                    f,
+                    "another process took over the channels (pid {} started {}; this one is pid {}), so this one stopped instead of writing over its record or onto the same channels",
+                    other.pid,
+                    crate::release::format_ms(other.started_at_ms),
+                    pid
+                ),
+                None => write!(
+                    f,
+                    "the state file this process (pid {}) claimed is gone, so it no longer owns the channels and stopped rather than claim them again silently",
+                    pid
+                ),
+            },
         }
     }
 }
@@ -262,16 +397,43 @@ impl ServiceGuard {
         }
     }
 
+    /// Does the file this process claimed still belong to it?
+    ///
+    /// The heartbeat window is deliberately shorter than a suspend: a machine that
+    /// slept for an hour must not keep the channels reserved while somebody else
+    /// wants them. That decision is only safe if the owner checks the answer when it
+    /// wakes — otherwise the woken process rewrites the file (and drives the same
+    /// fan) as if nothing had happened, which is how a machine ends up with two
+    /// services alternating values onto one header.
+    pub fn verify_ownership(&self) -> Result<(), ServiceError> {
+        match read_state(&self.path) {
+            Some(current) if current.pid == self.state.pid => Ok(()),
+            found => Err(ServiceError::OwnershipLost {
+                pid: self.state.pid,
+                found: found.map(Box::new),
+            }),
+        }
+    }
+
+    /// Record a wake-up that spanned wall-clock time this process did not run.
+    pub fn record_resume(&mut self, gap_ms: i64) {
+        self.state.resumes = self.state.resumes.saturating_add(1);
+        self.state.last_resume_gap_ms = Some(gap_ms);
+    }
+
     /// Rewrite the file with the current counters.
     ///
     /// Written through a temporary file and renamed, so a reader never sees half a
-    /// state file: `service status` may be run at any moment.
+    /// state file: `service status` may be run at any moment. The ownership check
+    /// comes first and is not optional: a rename replaces whatever is there, so
+    /// without it this call is how one service deletes another's record.
     pub fn heartbeat(
         &mut self,
         ticks: u64,
         rules: usize,
         outcomes: Vec<ServiceOutcome>,
     ) -> Result<(), ServiceError> {
+        self.verify_ownership()?;
         self.state.ticks = ticks;
         self.state.rules = rules;
         self.state.outcomes = outcomes;
@@ -301,7 +463,13 @@ impl Drop for ServiceGuard {
     fn drop(&mut self) {
         // A clean stop leaves nothing behind. A crash leaves the file, and the
         // heartbeat makes it recognisable as abandoned.
-        let _ = fs::remove_file(&self.path);
+        //
+        // Only this process's own record is removed. A process that lost ownership
+        // still drops this value on its way out, and deleting the file then would
+        // erase the *new* owner's record — leaving its channels claimed by nobody.
+        if self.verify_ownership().is_ok() {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -321,18 +489,7 @@ mod tests {
     }
 
     fn state(pid: u32, interval_ms: u64) -> ServiceState {
-        ServiceState {
-            pid,
-            version: "0.0.0".into(),
-            started_at_ms: ohm_core::now_ms(),
-            heartbeat_at_ms: ohm_core::now_ms(),
-            heartbeat_interval_ms: interval_ms,
-            ticks: 0,
-            rules: 0,
-            outcomes: Vec::new(),
-            simulated: true,
-            dry_run: true,
-        }
+        ServiceState::claim(pid, "0.0.0", interval_ms, true, true)
     }
 
     fn temp_path(name: &str) -> PathBuf {
@@ -451,5 +608,155 @@ mod tests {
         assert!(written.is_fresh(now), "a 30 s window tolerates it");
         written.heartbeat_interval_ms = 100;
         assert!(!written.is_fresh(now), "a 300 ms window does not");
+    }
+
+    // --- identity across a wake-up, and across a takeover ------------------------
+
+    #[test]
+    fn a_suspend_is_detected_from_the_two_clocks_disagreeing() {
+        let mut detector = WakeupDetector::new(5_000);
+        assert_eq!(
+            detector.observe(1_000_000, 10_000),
+            None,
+            "the first call is a baseline"
+        );
+
+        // Eight hours of wall-clock time, one second of process time: the machine
+        // slept, and this process did not run through those eight hours.
+        let gap = detector
+            .observe(1_000_000 + 8 * 3_600_000, 11_000)
+            .expect("a suspend");
+        assert_eq!(gap.wall_ms, 28_800_000);
+        assert_eq!(gap.process_ms, 1_000);
+        assert_eq!(gap.missed_ms(), 28_799_000);
+        assert!(gap.describe().contains("8 h 0 min"), "{}", gap.describe());
+        assert!(gap.describe().contains("1.000 s"), "{}", gap.describe());
+    }
+
+    #[test]
+    fn a_process_that_was_merely_stopped_is_not_a_suspend() {
+        // `SIGSTOP`, a starved container, a debugger pause: both clocks advance by
+        // the same amount, because from this process's point of view no time was
+        // lost. Reporting a suspend here would be a false alarm.
+        let mut detector = WakeupDetector::new(5_000);
+        assert_eq!(detector.observe(1_000_000, 10_000), None);
+        assert_eq!(detector.observe(1_000_000 + 30_000, 40_000), None);
+    }
+
+    #[test]
+    fn ordinary_ticks_are_not_a_suspend() {
+        let mut detector = WakeupDetector::new(1_000);
+        assert_eq!(detector.observe(0, 0), None);
+        for step in 1..10 {
+            assert_eq!(detector.observe(step * 200, step * 200), None);
+        }
+        // A brief disagreement below the threshold is scheduling noise, not a wake-up.
+        assert_eq!(detector.observe(2_000 + 500, 1_800 + 500), None);
+    }
+
+    #[test]
+    fn a_gap_that_never_happened_is_not_negative() {
+        let gap = SuspendGap {
+            wall_ms: 1_000,
+            process_ms: 4_000,
+        };
+        assert_eq!(gap.missed_ms(), 0);
+    }
+
+    #[test]
+    fn a_heartbeat_that_lost_ownership_does_not_write_over_the_new_owner() {
+        let path = temp_path("lost").join("service.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut guard = ServiceGuard::acquire(&path, state(1, 100)).expect("claim");
+
+        // Another process took the channels while this one was not running.
+        let successor = ServiceState::claim(2, "9.9.9", 100, true, true);
+        fs::write(&path, serde_json::to_string_pretty(&successor).unwrap()).unwrap();
+        let before = fs::read_to_string(&path).unwrap();
+
+        let error = guard
+            .heartbeat(7, 3, Vec::new())
+            .expect_err("ownership is gone");
+        match &error {
+            ServiceError::OwnershipLost { pid, found } => {
+                assert_eq!(*pid, 1);
+                assert_eq!(found.as_ref().map(|state| state.pid), Some(2));
+            }
+            other => panic!("expected OwnershipLost, got {other:?}"),
+        }
+        assert!(
+            error.to_string().contains("took over the channels"),
+            "{error}"
+        );
+        // The file is the successor's record, byte for byte: a rename would have
+        // replaced it, and `service status` would then report the wrong owner.
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn a_deleted_state_file_is_lost_ownership_rather_than_a_new_claim() {
+        let path = temp_path("deleted").join("service.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut guard = ServiceGuard::acquire(&path, state(1, 100)).expect("claim");
+        fs::remove_file(&path).unwrap();
+
+        let error = guard
+            .heartbeat(1, 1, Vec::new())
+            .expect_err("the file is gone");
+        match &error {
+            ServiceError::OwnershipLost { found, .. } => assert!(found.is_none(), "{found:?}"),
+            other => panic!("expected OwnershipLost, got {other:?}"),
+        }
+        // Re-claiming silently would be the dangerous half of this: the process
+        // cannot know whether the file was removed by a hand or by a successor that
+        // has not written its own yet.
+        assert!(!path.exists(), "a heartbeat must not recreate the file");
+    }
+
+    #[test]
+    fn dropping_a_guard_that_lost_ownership_leaves_the_successors_file() {
+        let path = temp_path("successor").join("service.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let guard = ServiceGuard::acquire(&path, state(1, 100)).expect("claim");
+        let successor = ServiceState::claim(2, "9.9.9", 100, true, true);
+        fs::write(&path, serde_json::to_string_pretty(&successor).unwrap()).unwrap();
+
+        drop(guard);
+        let left = read_state(&path).expect("the successor's file must survive");
+        assert_eq!(left.pid, 2);
+    }
+
+    #[test]
+    fn dropping_a_guard_that_still_owns_removes_its_file() {
+        let path = temp_path("clean").join("service.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let guard = ServiceGuard::acquire(&path, state(1, 100)).expect("claim");
+        drop(guard);
+        assert!(!path.exists(), "a clean stop leaves nothing behind");
+    }
+
+    #[test]
+    fn a_resume_is_counted_and_persisted_for_the_next_reader() {
+        let path = temp_path("resume").join("service.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut guard = ServiceGuard::acquire(&path, state(1, 100)).expect("claim");
+        guard.record_resume(28_800_000);
+        guard.record_resume(1_500);
+        guard.heartbeat(2, 1, Vec::new()).expect("still the owner");
+
+        let written = read_state(&path).expect("state file");
+        assert_eq!(written.resumes, 2);
+        assert_eq!(written.last_resume_gap_ms, Some(1_500));
+    }
+
+    #[test]
+    fn a_state_file_from_before_this_version_reads_as_no_resumes() {
+        // The fields are additive: an older owner's file must still parse, or a
+        // service started after an upgrade would refuse to take over.
+        let json = r#"{"pid":1,"version":"0.1.10","started_at_ms":1,"heartbeat_at_ms":2,
+                       "heartbeat_interval_ms":100,"ticks":3,"rules":1}"#;
+        let state: ServiceState = serde_json::from_str(json).expect("an older file parses");
+        assert_eq!(state.resumes, 0);
+        assert_eq!(state.last_resume_gap_ms, None);
     }
 }

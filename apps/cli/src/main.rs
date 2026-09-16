@@ -1131,18 +1131,13 @@ async fn service_run(cli: &Cli, use_mock: bool, heartbeat_ms: u64, max_ticks: u6
     // Claim the channels before touching them: a second service must be refused
     // rather than allowed to alternate values onto the same fan.
     let state_path = session.paths.service_state_file();
-    let state = ServiceState {
-        pid: std::process::id(),
-        version: ohm_core::VERSION.to_string(),
-        started_at_ms: ohm_core::now_ms(),
-        heartbeat_at_ms: ohm_core::now_ms(),
-        heartbeat_interval_ms: heartbeat_ms.max(50),
-        ticks: 0,
-        rules: 0,
-        outcomes: Vec::new(),
-        simulated: use_mock,
-        dry_run: settings.dry_run,
-    };
+    let state = ServiceState::claim(
+        std::process::id(),
+        ohm_core::VERSION,
+        heartbeat_ms,
+        use_mock,
+        settings.dry_run,
+    );
     let mut guard = match ServiceGuard::acquire(&state_path, state) {
         Ok(guard) => guard,
         Err(ServiceError::AlreadyRunning { state, age_ms }) => {
@@ -1166,8 +1161,37 @@ async fn service_run(cli: &Cli, use_mock: bool, heartbeat_ms: u64, max_ticks: u6
     session.runtime.start().await?;
     session.engine.start().await?;
 
+    // A local helper, because the same answer is needed here and in the loop, and
+    // the *first* heartbeat is a real moment: a service that was suspended during
+    // its own start-up wakes up here, and another process may already hold the
+    // channels by then. Treating that as a fatal error would exit with a code that
+    // says "crash" instead of "somebody else is driving now".
+    let beat = |guard: &mut ServiceGuard, session: &Session| -> Result<bool, ServiceError> {
+        let stats = session.engine.stats();
+        match guard.heartbeat(stats.ticks, stats.rules, rule_outcomes(session)) {
+            Ok(()) => Ok(false),
+            Err(error @ ServiceError::OwnershipLost { .. }) => {
+                tracing::error!(target: "ohm::service", "{error}");
+                println!();
+                println!("{error}");
+                Ok(true)
+            }
+            Err(error) => Err(error),
+        }
+    };
+
     let rules = session.engine.stats();
-    guard.heartbeat(rules.ticks, rules.rules, rule_outcomes(&session))?;
+    if beat(&mut guard, &session)? {
+        // Stop the rule loop and release what this process took, then leave without
+        // touching the new owner's record.
+        session.stop().await?;
+        drop(guard);
+        println!(
+            "this process stopped; the channels belong to the process named above, and its state \
+file was left untouched"
+        );
+        std::process::exit(4);
+    }
 
     print_header("OpenHardwareOS service");
     println!("state file: {}", state_path.display());
@@ -1202,13 +1226,36 @@ async fn service_run(cli: &Cli, use_mock: bool, heartbeat_ms: u64, max_ticks: u6
     // banner can still be in memory when the process is asked to stop.
     let _ = std::io::Write::flush(&mut std::io::stdout());
 
+    // Two clocks, because one of them is the evidence. Wall-clock time keeps moving
+    // while the machine is suspended; this process's own monotonic clock does not.
+    // When they disagree, this process was not running — and while it was not, its
+    // heartbeat aged past the window that lets another process in.
+    let process_start = std::time::Instant::now();
+    let mut wakeups = ohm_runtime::service::WakeupDetector::new(heartbeat_ms.max(50) as i64);
     let mut heartbeat = tokio::time::interval(Duration::from_millis(heartbeat_ms.max(50)));
+    let mut lost_ownership = false;
     let reason = loop {
         tokio::select! {
             _ = stop.notified() => break "stop requested",
             _ = heartbeat.tick() => {
+                let wall = ohm_core::now_ms();
+                let process_ms = process_start.elapsed().as_millis() as i64;
+                if let Some(gap) = wakeups.observe(wall, process_ms) {
+                    // Say it before asking who owns the channels: if the answer is
+                    // "somebody else", this sentence is what explains why.
+                    tracing::warn!(target: "ohm::service", "{}", gap.describe());
+                    println!("{}", gap.describe());
+                    guard.record_resume(gap.missed_ms());
+                }
+                // Standing down is the whole point of the check inside `beat`: the
+                // file is another process's record now, and the hardware is its
+                // responsibility. Writing to the fan from here as well is the one
+                // thing that must not happen.
+                if beat(&mut guard, &session)? {
+                    lost_ownership = true;
+                    break "another process took over the channels";
+                }
                 let stats = session.engine.stats();
-                guard.heartbeat(stats.ticks, stats.rules, rule_outcomes(&session))?;
                 if max_ticks > 0 && stats.ticks >= max_ticks {
                     break "reached --max-ticks";
                 }
@@ -1226,8 +1273,19 @@ async fn service_run(cli: &Cli, use_mock: bool, heartbeat_ms: u64, max_ticks: u6
     // success for a write nobody saw land.
     session.stop().await?;
     // `guard` is dropped here, which removes the state file: a clean stop leaves
-    // nothing that could make the next start think a service is running.
+    // nothing that could make the next start think a service is running. After
+    // losing ownership it leaves the file alone, because that file is the new
+    // owner's — and it says so rather than claiming a clean stop.
     drop(guard);
+    if lost_ownership {
+        println!(
+            "this process stopped; the channels belong to the process named above, and its state \
+             file was left untouched"
+        );
+        // A service manager should not treat this as a clean run: the rules this
+        // process was responsible for are no longer being run by it.
+        std::process::exit(4);
+    }
     println!("state file removed; nothing is driving the channels now");
     Ok(())
 }

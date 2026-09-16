@@ -160,6 +160,20 @@ impl Fixture {
         );
     }
 
+    /// `service-1.log`, `service-2.log`, … — see [`Running::log`].
+    fn next_service_log(&self) -> PathBuf {
+        let next = fs::read_dir(&self.dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|entry| entry.file_name().to_string_lossy().starts_with("service-"))
+                    .count()
+            })
+            .unwrap_or(0)
+            + 1;
+        self.dir.join(format!("service-{next}.log"))
+    }
+
     fn run_cli(&self, args: &[&str]) -> std::process::Output {
         Command::new(BIN)
             .args(args)
@@ -179,11 +193,21 @@ impl Drop for Fixture {
 /// A service process that is stopped if the test ends before it does.
 struct Running {
     child: Child,
+    /// This process's own output.
+    ///
+    /// One file per process, not one per fixture: a test that starts a second service
+    /// used to truncate the file the first one still had open, so the first one's
+    /// later writes landed at its old offset and a log assertion read whatever
+    /// happened to be there. It passed in isolation and failed under a loaded
+    /// parallel run — the flakiest possible arrangement, and a test that cannot read
+    /// the evidence it asserts on is not evidence.
+    log: PathBuf,
 }
 
 impl Running {
     fn start(fixture: &Fixture, extra: &[&str]) -> Self {
-        let out = fs::File::create(fixture.dir.join("service-output.log")).expect("output file");
+        let log = fixture.next_service_log();
+        let out = fs::File::create(&log).expect("output file");
         let mut args = vec![
             "--log-level",
             "debug",
@@ -202,13 +226,18 @@ impl Running {
             .stderr(Stdio::from(out))
             .spawn()
             .expect("spawn ohm-cli service");
-        Self { child }
+        Self { child, log }
     }
 
     /// Only the suspend test asks who the service is; the sensor test never needs to.
     #[cfg(unix)]
     fn pid(&self) -> u32 {
         self.child.id()
+    }
+
+    /// Everything this process has written, once it has exited.
+    fn log(&self) -> String {
+        fs::read_to_string(&self.log).unwrap_or_default()
     }
 
     #[cfg(unix)]
@@ -218,6 +247,22 @@ impl Running {
             .status()
             .expect("send signal");
         assert!(status.success(), "kill {signal} {} failed", self.pid());
+    }
+
+    /// Wait for the process to exit **by itself**, without sending it anything.
+    ///
+    /// The stand-down path is a decision the process makes on its own; a test that
+    /// signalled it would be testing its own signal instead.
+    #[cfg(unix)]
+    fn wait_for_exit(&mut self, within: Duration) -> Option<std::process::ExitStatus> {
+        let deadline = Instant::now() + within;
+        while Instant::now() < deadline {
+            if let Some(status) = self.child.try_wait().expect("try_wait") {
+                return Some(status);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        None
     }
 
     fn stop(mut self) -> std::process::ExitStatus {
@@ -384,6 +429,114 @@ fn a_suspended_service_is_treated_as_stale_and_resumes_with_its_ownership_intact
     let exit = service.stop();
     assert_eq!(exit.code(), Some(0));
     assert!(!fixture.state_path().exists());
+}
+
+/// The half of the suspend story the test above cannot reach: while a service is
+/// stopped, another one may legitimately take the channels over. The woken process
+/// must notice and stand down — writing "my file" over the new owner's record and
+/// driving the same fans is how two services end up fighting over one header.
+///
+/// `stop_immediately` chooses *when* the first service is stopped: as soon as it has
+/// claimed the file, or once it is running the rules. Both are real — a laptop can
+/// sleep while a service is starting at boot — and both must end the same way, which
+/// is why the assertions below are identical for the two callers.
+#[cfg(unix)]
+fn takeover_after_a_stop(name: &str, stop_immediately: bool) {
+    let fixture = Fixture::new(name);
+    let first = Running::start(&fixture, &[]);
+    let claimed = fixture.wait_for_state("the first owner's state file");
+    assert_eq!(claimed["pid"].as_u64().unwrap(), u64::from(first.pid()));
+    if !stop_immediately {
+        // Running the rules, not merely owning the file.
+        let running = fixture.wait_for_ticks_above(0);
+        assert_eq!(running["pid"].as_u64().unwrap(), u64::from(first.pid()));
+    }
+
+    // Stopped past the heartbeat window. From outside this is indistinguishable from
+    // a sleeping machine, which is exactly why the heartbeat window is what decides
+    // ownership while the process cannot speak for itself.
+    first.signal("-STOP");
+    std::thread::sleep(Duration::from_millis(1_500));
+    let during = fixture.run_cli(&["service", "status"]);
+    assert_eq!(
+        during.status.code(),
+        Some(1),
+        "the stopped service is not considered alive: {}",
+        String::from_utf8_lossy(&during.stdout)
+    );
+
+    // A second service takes the stale file over and starts driving the rules.
+    let second = Running::start(&fixture, &[]);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut taken = None;
+    while Instant::now() < deadline {
+        if let Some(state) = fixture.state()
+            && state["pid"].as_u64() == Some(u64::from(second.pid()))
+        {
+            taken = Some(state);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let taken = taken.expect("the second service takes the channels over");
+    assert_eq!(taken["pid"].as_u64(), Some(u64::from(second.pid())));
+
+    // The first one wakes up. Its next heartbeat must find the file is not its own.
+    first.signal("-CONT");
+    let mut first = first;
+    let exit = first
+        .wait_for_exit(Duration::from_secs(30))
+        .expect("the woken service stops instead of carrying on");
+    let log = first.log();
+    assert_eq!(
+        exit.code(),
+        Some(4),
+        "it reports the loss rather than a clean stop; log:\n{log}"
+    );
+    assert!(
+        log.contains("took over the channels"),
+        "and says who owns them now:\n{log}"
+    );
+    assert!(
+        log.contains("left untouched"),
+        "and that it did not touch that process's file:\n{log}"
+    );
+    assert!(
+        !log.contains("is pid                      "),
+        "the message has no whitespace artefact in it:\n{log}"
+    );
+
+    // The second service still owns the file, and is still working: the first one
+    // neither overwrote the record nor deleted it on the way out.
+    let after = fixture
+        .state()
+        .expect("the successor's state file survives");
+    assert_eq!(after["pid"].as_u64(), Some(u64::from(second.pid())));
+    let ticks = after["ticks"].as_u64().unwrap_or(0);
+    let moved = fixture.wait_for_ticks_above(ticks);
+    assert!(
+        moved["ticks"].as_u64().unwrap_or(0) > ticks,
+        "the successor keeps running the rules after the other one stood down"
+    );
+
+    let exit = second.stop();
+    assert_eq!(exit.code(), Some(0), "the successor stops cleanly");
+    assert!(!fixture.state_path().exists(), "and leaves nothing behind");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_service_that_wakes_up_after_a_takeover_stands_down_instead_of_writing() {
+    takeover_after_a_stop("takeover-running", false);
+}
+
+/// The same property, for a suspend that lands in the middle of the service's own
+/// start-up: the claim happens before the engine starts, so a machine that sleeps in
+/// that window wakes up with its file already taken over.
+#[cfg(unix)]
+#[test]
+fn a_service_suspended_during_its_own_start_up_also_stands_down() {
+    takeover_after_a_stop("takeover-starting", true);
 }
 
 /// The override the fixtures above depend on, checked where it is cheap to check:

@@ -19,18 +19,10 @@ use ohm_runtime::{Runtime, ServiceGuard, ServiceState};
 
 /// A state file that says "a service is running", owned by a process that is not us.
 fn state(pid: u32) -> ServiceState {
-    ServiceState {
-        pid,
-        version: "0.0.0".into(),
-        started_at_ms: ohm_core::now_ms(),
-        heartbeat_at_ms: ohm_core::now_ms(),
-        heartbeat_interval_ms: 1_000,
-        ticks: 12,
-        rules: 1,
-        outcomes: Vec::new(),
-        simulated: false,
-        dry_run: false,
-    }
+    let mut state = ServiceState::claim(pid, "0.0.0", 1_000, false, false);
+    state.ticks = 12;
+    state.rules = 1;
+    state
 }
 
 #[tokio::test]

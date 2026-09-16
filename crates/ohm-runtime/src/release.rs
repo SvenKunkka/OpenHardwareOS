@@ -250,6 +250,27 @@ pub fn format_ms(ms: i64) -> String {
     ohm_core::unix_ms_to_rfc3339(ms)
 }
 
+/// A duration in milliseconds, spelled the way a person reads it.
+///
+/// Used where the size of a gap is the point — how long a machine was suspended —
+/// so that "28800000 ms" is never what the log says.
+pub fn format_gap(ms: i64) -> String {
+    let ms = ms.max(0);
+    let seconds = ms / 1_000;
+    if seconds < 60 {
+        return format!("{}.{:03} s", seconds, ms % 1_000);
+    }
+    let minutes = seconds / 60;
+    if minutes < 60 {
+        return format!("{} min {} s", minutes, seconds % 60);
+    }
+    let hours = minutes / 60;
+    if hours < 48 {
+        return format!("{} h {} min", hours, minutes % 60);
+    }
+    format!("{} days {} h", hours / 24, hours % 24)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
