@@ -2919,3 +2919,110 @@ created and no global environment value was changed; nothing was installed on th
 licence was approved on the user's behalf (ADR 0002 and ADR 0004 remain **Proposed**);
 `Prospector/` and `k10max-prospector/` were left exactly as found. v0.1.11 remains prepared
 and unpublished.
+
+---
+
+## 2026-09-16 — round 20: "it is running" and "it can write" are different facts
+
+**Revision: `6a70e48`** — the pass below ran at that commit, on `codex/v0.1.11`, still the
+version under development. Nothing was published; the install entries still point at
+v0.1.10, the newest version somebody can download.
+
+### 1. The failure this round is about
+
+A background service that **cannot** write looks exactly like one with nothing to do: the
+banner prints, the cycle counter climbs, the rules evaluate, the state file is healthy —
+and the fan does not move. The cause is not this program: writing `pwm<N>` needs root on
+Linux, LibreHardwareMonitor needs Administrator on Windows, and NVML's fan control needs
+elevation too. But nothing *asked*. Until now the only signal was a stream of refused
+writes, one per second, in a log nobody reads while the machine runs unattended.
+
+That is the last named item of the goal's 接下来② (“权限管理”), and it is the one thing a
+person wants to know before leaving rules running with no window open.
+
+### 2. `ohm-cli service check`: read-only, and answers the question
+
+| Printed | Meaning |
+|---|---|
+| `owner:` | who holds the channels now — pid, version, cycles, heartbeat age — or nobody, or a stale file and whose it is |
+| `automation:` / `dry run:` | whether the rules are enabled, and whether a dry run means no write can reach hardware |
+| `providers:` | every adapter's status with its reason (LHM unreachable, NVML without a driver, …) |
+| `writable channels:` | the cooling channels **this configuration confirms**, and the platform's own answer for each: `permitted`, `REFUSED — …` quoting the kernel, or `unknown — this provider does not say` |
+| `rules:` / `on exit:` | rules loaded and enabled; whether control is handed back on exit |
+| `verdict:` | `READY` · `READY (READ ONLY)` · `READY (DRY RUN)` · **`NOT READY`** (a confirmed channel this process cannot write — exit code 1) |
+
+The verdict is about the **configured intent**. A confirmed channel that cannot be written
+is a failure; a configuration that confirms nothing is a complete, honest read-only setup,
+not a problem to be nagged about. `service run` prints the same findings as warnings when
+it starts, so the one process that would otherwise fail silently says it once instead.
+
+**How "can this process write" is answered.** Not by comparing user ids — by *opening*
+`pwm<N>` for writing and closing it again. The kernel refuses when this process is not
+allowed, and it refuses for a read-only mount, a policy module and a missing file too, and
+its message is the sentence that tells a person what to fix (`Permission denied` is what
+says "you need root"). The open writes nothing; asking changes nothing, which is also why
+this can run while another service owns the channels.
+
+### 3. Tests, and the mutation that proves they bite
+
+* `adapters/system` (+5 unit tests): a confirmed channel is `Permitted`; an unconfirmed one
+  is refused **naming `pwm_write_allow`**; a platform refusal quotes the path and says who
+  refused; a capability this adapter does not write is `Unknown` rather than a hopeful yes;
+  a channel no longer in the tree is refused. The mode-bit case is `#[cfg(unix)]` and
+  **skips when the tests run as root**, because root can write a file whose mode forbids it
+  — the helper and the test carry the same gate, which is the rule this repository wrote
+  down three rounds ago after it cost three CI runs.
+* `apps/cli/tests/service_preflight.rs` (+6 process-level cases, the real binary against
+  prepared trees): permitted → `READY` and the channel is named; **refused → exit 1**,
+  `REFUSED`, the file named; nothing confirmed → `READY (READ ONLY)` and how to change it;
+  dry run → `READY (DRY RUN)`; automation off → says it would only read; a running service
+  is named with its cycle count **and its state file is byte-for-byte untouched**.
+* **Mutation-checked**: making the platform refusal return `Permitted` fails the adapter
+  unit test *and* the process-level refusal case.
+
+### 4. The verification pass (all commands re-run at `6a70e48`, nothing carried over)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `rustup run 1.98.1 cargo fmt --all -- --check` | exit 0 |
+| 2 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0 |
+| 3 | `cargo test --workspace --locked` | **597 passed, 0 failed**, 51 test-result lines |
+| 4 | `cargo deny check` | advisories ok, bans ok, licenses ok, sources ok |
+| 5 | `scripts/versions.py check --remote --generated` | OK: 13 catalogue entries; application version 0.1.11; published releases verified on GitHub |
+| 5b | `scripts/check-artefact-names.py` | OK: desktop `openhardwareos` and CLI `ohm-cli` agree with their sources; 16 install entries point at a downloadable version |
+| 5c | `unittest discover -s scripts/tests -p 'test_*.py'` | 48 tests, OK |
+| 6 | `npm run typecheck` / `npm test` / `npm run build` | clean / 46 tests / clean |
+| 7 | `scripts/tests/make-acceptance-package.test.sh` | 4 cases, 0 failures |
+| 8 | `scripts/release/test-packaging.ps1` | 6 cases, 0 failures |
+| 8b | `scripts/tests/package-linux.test.sh` | 11 cases, 58 checks, 0 failures |
+| 8c | `scripts/tests/linux-install-doc.test.sh` | 6 cases, 34 checks, 0 failures |
+| 8d | `scripts/tests/verify-linux-readings.test.sh` | 6 cases, 21 checks, 0 failures |
+| 9 | `docs/windows-validation/.../run-script-tests.ps1` | 18 cases, 151 checks, 0 failures (doubles only) |
+| 10 | cross-target `cargo check` for `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu` | exit 0, plus Linux-target Clippy |
+| 11 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** — 51 `PASS`, 0 `FAIL` |
+| 12 | delivered source packages still verify | every file matches its manifest |
+| 13 | repository hygiene | only `Prospector/` and `k10max-prospector/` untracked, untouched |
+
+`non-zero steps: 0`.
+
+### 5. What round 20 could **not** verify
+
+* **Real permissions.** The refusal in the tests is produced by `chmod 0444` on a prepared
+  file, and it is skipped where root makes it unproducible. No real Linux has been run as a
+  non-root user and no real Windows without elevation, so "writing needs root /
+  Administrator" remains a claim about those platforms rather than a measurement of them.
+* **Whether the platform's answer matches a real write.** The check opens the file; nobody
+  has compared its verdict with an actual write on a real motherboard, where a driver may
+  accept the open and still ignore the value.
+* **Windows-specific refusals**: LHM not elevated is reported as a provider status, and the
+  preflight prints it, but the case has only been exercised on macOS and in CI.
+* Everything from rounds 18–19 that is still open: a real kernel suspend, a real crash
+  landing in the millisecond publish window, and any real fan.
+
+### Deliberately **not** done in round 20
+
+No hardware was written to outside `OHM_HWMON_ROOT` fixture trees; no autostart entry was
+created and no global environment value was changed; nothing was installed on the host; no
+licence was approved on the user's behalf (ADR 0002 and ADR 0004 remain **Proposed**);
+`Prospector/` and `k10max-prospector/` were left exactly as found. v0.1.11 remains prepared
+and unpublished.
