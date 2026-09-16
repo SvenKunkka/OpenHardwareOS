@@ -9,6 +9,7 @@ checker that reads nothing at all.
 
 import importlib.util
 import json
+import re
 import shutil
 import tempfile
 import unittest
@@ -20,6 +21,21 @@ checker = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(checker)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# The install entries move with every release, so a test that mutates "the" version must
+# read it from the file it is mutating. These tests used to spell it out, and the commit
+# that bumped the entries from v0.1.10 to v0.1.11 turned every one of those mutations into
+# a no-op: five of them failed in CI while passing locally a commit earlier, because
+# "replace v0.1.10 with a planned version" quietly became "replace nothing".
+VERSION = re.compile(r"v\d+\.\d+\.\d+")
+
+
+def version_in(rel):
+    """The version this file's install entries name (the first one it mentions)."""
+    found = VERSION.search((REPO_ROOT / rel).read_text(encoding="utf-8"))
+    if not found:
+        raise AssertionError(f"{rel} names no version at all")
+    return found.group(0)
 
 
 def fixture(**mutations):
@@ -111,8 +127,8 @@ class RenameTests(unittest.TestCase):
 class InstallEntryTests(unittest.TestCase):
     def test_a_planned_version_is_not_downloadable(self):
         root = fixture(**{
-            checker.README: lambda text: text.replace("$ohmVersion = 'v0.1.10'",
-                                                      "$ohmVersion = 'v0.2.0'"),
+            checker.README: lambda text: re.sub(
+                r"\$ohmVersion = 'v[\d.]+'", "$ohmVersion = 'v0.2.0'", text),
         })
         found = checker.problems(root)
         self.assertTrue(any("v0.2.0" in problem and "not downloadable" in problem
@@ -120,8 +136,9 @@ class InstallEntryTests(unittest.TestCase):
 
     def test_an_older_released_version_is_reported_as_not_the_newest(self):
         root = fixture(**{
-            checker.WINDOWS_PAGE: lambda text: text.replace("releases/download/v0.1.10/",
-                                                            "releases/download/v0.1.5/"),
+            checker.WINDOWS_PAGE: lambda text: text.replace(
+                f"releases/download/{version_in(checker.WINDOWS_PAGE)}/",
+                "releases/download/v0.1.5/"),
         })
         found = checker.problems(root)
         self.assertTrue(any("v0.1.5" in problem and "newest released" in problem
@@ -135,17 +152,23 @@ class InstallEntryTests(unittest.TestCase):
         root = fixture(**{
             checker.CATALOGUE: lambda text: json.dumps(
                 _catalogue_with(text, development="v0.2.0"), ensure_ascii=False),
-            checker.README: lambda text: text.replace("'v0.1.10'", "'v0.2.0'"),
-            checker.WINDOWS_PAGE: lambda text: text.replace("v0.1.10", "v0.2.0"),
-            checker.LINUX_PAGE: lambda text: text.replace("v0.1.10", "v0.2.0"),
+            # Every mention, not only the quoted one: `cli-v<version>` paths, download
+            # URLs, `--tag` and release-page links are entries too, and a fixture that
+            # moved only some of them would be testing a half-bumped page.
+            checker.README: lambda text: text.replace(
+                version_in(checker.README), "v0.2.0"),
+            checker.WINDOWS_PAGE: lambda text: text.replace(
+                version_in(checker.WINDOWS_PAGE), "v0.2.0"),
+            checker.LINUX_PAGE: lambda text: text.replace(
+                version_in(checker.LINUX_PAGE), "v0.2.0"),
         })
         found = [problem for problem in checker.problems(root) if "not downloadable" in problem]
         self.assertEqual(found, [], found)
 
     def test_a_stale_release_page_link_is_reported(self):
         root = fixture(**{
-            checker.README: lambda text: text.replace("releases/tag/v0.1.10",
-                                                      "releases/tag/v0.1.8"),
+            checker.README: lambda text: text.replace(
+                f"releases/tag/{version_in(checker.README)}", "releases/tag/v0.1.8"),
         })
         found = checker.problems(root)
         self.assertTrue(any("v0.1.8" in problem and "newest released" in problem
@@ -156,7 +179,8 @@ class InstallEntryTests(unittest.TestCase):
         # the version above them; a partially bumped page sends users to a directory
         # that is not there.
         root = fixture(**{
-            checker.WINDOWS_PAGE: lambda text: text.replace("cli-v0.1.10", "cli-v0.1.9"),
+            checker.WINDOWS_PAGE: lambda text: text.replace(
+                f"cli-v{version_in(checker.WINDOWS_PAGE)[1:]}", "cli-v0.1.9"),
         })
         found = checker.problems(root)
         self.assertTrue(any("versioned CLI install path" in problem for problem in found), found)

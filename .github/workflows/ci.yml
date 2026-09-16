@@ -66,6 +66,12 @@ jobs:
         with:
           toolchain: 1.98.1
           components: clippy, rustfmt
+          # The Windows target is linted here too, not only in the release workflow.
+          # A `mut` that is used only behind `#[cfg(unix)]`, or a dependency table written
+          # inside `[dependencies]`, is a warning or an error on Windows and invisible on
+          # this runner — and `cargo check` exits 0 on warnings besides. Both reached a
+          # release build before this step existed.
+          targets: x86_64-pc-windows-msvc
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -77,6 +83,16 @@ jobs:
 
       - name: Clippy (warnings are errors)
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # The adapter that talks to sysfs, WMI and NVML is the one whose code differs per
+      # platform, and it is the crate the release workflow lints for Windows. Doing it
+      # here means a platform-specific mistake is a red CI run rather than a red release.
+      #
+      # Scoped to that crate because the workspace-wide version needs a Windows C
+      # cross-compiler for the desktop crate's TLS stack; the adapter and its dependency
+      # closure are pure Rust. The release workflow lints the whole workspace for Windows.
+      - name: Clippy for the Windows target (warnings are errors)
+        run: cargo clippy --locked --target x86_64-pc-windows-msvc -p ohm-adapter-system --all-targets -- -D warnings
 
   # The runtime, adapters, automation engine and CLI on every supported OS. This
   # is the part that must pass everywhere, with no controllable hardware: the

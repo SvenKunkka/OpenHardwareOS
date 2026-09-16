@@ -751,7 +751,7 @@ impl SystemAdapter {
         }
 
         if let Some(index) = disk_index_of(device) {
-            let (mut free_space, name, mount) = {
+            let (free_space, name, mount) = {
                 let disks = self.disks.lock();
                 match disks.list().get(index) {
                     Some(disk) => (
@@ -768,10 +768,12 @@ impl SystemAdapter {
             // written *now*, and on the machine this was found on the two differed by
             // 6.1 GB. A reading that matches no platform tool is not checkable, so on
             // Unix the kernel is asked directly.
+            // Shadowed rather than assigned: on Windows there is nothing to replace, and a
+            // `mut` that is only used behind a `cfg` is a warning on the platform where it
+            // is not — which is how this reached a release build (`cargo check` exits 0 on
+            // warnings; only clippy with `-D warnings` says no).
             #[cfg(unix)]
-            {
-                free_space = Self::available_bytes(&mount).or(free_space);
-            }
+            let free_space = Self::available_bytes(&mount).or(free_space);
             let Some(free_space) = free_space else {
                 return state.offline(
                     UnavailableReason::NotPresent,
