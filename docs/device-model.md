@@ -239,10 +239,16 @@ letters/digits plus `.`, `_`, `-`, `:` only, serialised transparently (a
 lowercases and replaces anything else with `_`, which is how
 `("gpu", "NVIDIA GeForce", 0)` becomes `gpu.nvidia_geforce.0`.
 
-Convention: `<type>.<source>.<index>`, e.g. `cpu.system.0`, `gpu.nvidia.0`,
-`fan.lhm.3`, `fan.openhardwareos_of4_0001.0`. Ids are stable while the hardware is
-present, not across restarts (nothing persists them — see `docs/architecture.md`
-§10).
+Convention: `<type>.<source>.<instance>`, e.g. `cpu.system.0`, `gpu.nvidia.0`,
+`fan.openhardwareos_of4_0001.0`, `fan.lhm.lpc_nct6687d_0_1`. The instance is an
+adapter's own addressing, not a position in a list: `compose` numbers devices that
+have nothing better, while an adapter that can name a device after the hardware
+does so. The LibreHardwareMonitor adapter, for example, composes its ids from LHM's
+own path (`/cpu/0`, `/lpc/nct6687d/0`) and the channel number LHM reports, because
+a rule that targeted `fan.lhm.3` by position would follow our enumeration order to
+whichever fan happened to be third after a re-enumeration. Ids are stable while the
+hardware is present, not across restarts (nothing persists them — see
+`docs/architecture.md` §10).
 
 Well-known capability ids — `ohm_core::ids::capability`, re-exported as
 `ohm_device_model::caps`:
@@ -275,7 +281,7 @@ actuator); a cooling curve validates its source with
 `BindingRole::TemperatureSource` (`unit.is_temperature()`) and its target with
 `BindingRole::CoolingActuator` (`unit.is_duty()`). The same rule text therefore
 works against `gpu.mock.0 → fan.mock.0` in CI and `gpu.nvidia.0 →
-fan.lhm.2` on a real machine. Matching on `device.name` or `vendor` would make
+fan.lhm.lpc_nct6687d_0_1` on a real machine. Matching on `device.name` or `vendor` would make
 every rule a per-model special case, and would break the moment a user renames a
 device or a vendor ships a new SKU.
 
@@ -342,8 +348,8 @@ are the ones the code actually builds.
 | | `temperature.system.{N}` (TemperatureSensor) | `temperature.system` | only OS thermal zones; Apple Silicon exposes dozens of near-duplicates, so `devices::select_thermal_zones` picks the meaningful ones and the rest are summarised in CPU metadata |
 | | `storage.system.{N}` (Storage) | `temperature.core`, `storage.free` | drive temperature only on Windows (WMI `MSFT_StorageReliabilityCounter`); elsewhere reported `unsupported`. Removable volumes skipped; duplicate (name, capacity) pairs collapsed |
 | `nvidia` (NVML, write needs elevation) | `gpu.nvidia.{index}` (Gpu) | `temperature.core`, `load.gpu`, `power.gpu`, `memory.used`, `clock.mhz`, `temperature.hotspot` (always `unsupported`), and when `num_fans() > 0`: `fan.rpm` + `fan.speed_percent` (0–100, actuator) | hotspot/junction (not exposed by NVML); per-fan reads/writes (only fan index 0 is used); memory-junction temperature; fan **curve** — NVML has duty + policy only, so a curve is our own poll-and-set loop; fan write without Administrator (`NVML_ERROR_NO_PERMISSION` → `permission_denied`) |
-| `lhm` (needs a running, elevated LibreHardwareMonitor with its web server on) | one device per top-level LHM hardware node, id `<type>.lhm.{index}` (Cpu, Gpu, Motherboard, Storage, …) | mapped from LHM sensors: `temperature.core` / `.hotspot` / `.system` (or `temperature.{slug}`), `load.cpu` / `load.gpu` (or `load.{slug}`), `power.total` / `power.gpu`, `clock.mhz`, `memory.used` | nothing without LHM running as Administrator; the out-of-process bridge transport is roadmap (HTTP JSON only today); ad-hoc ids (`temperature.vrm`) are LHM-specific and not portable to other adapters |
-| | fan channel devices `fan.lhm.{N}` / `pump.lhm.{N}` (Fan, Pump) | `fan.rpm` + `fan.speed_percent`, or `pump.rpm` + `pump.speed_percent` (pump control is `safety_critical`, 0–100) | only channels LHM exposes as `Control` sensors; board-dependent (many headers have none, some revert to firmware control); write requires LHM to be elevated |
+| `lhm` (needs a running, elevated LibreHardwareMonitor with its web server on) | one device per top-level LHM hardware node, id `<type>.lhm.<LHM path>` (Cpu, Gpu, Motherboard, Storage, …) — e.g. `cpu.lhm.cpu_0`, `motherboard.lhm.lpc_nct6687d_0` | mapped from LHM sensors: `temperature.core` / `.hotspot` / `.system` (or `temperature.{slug}`), `load.cpu` / `load.gpu` (or `load.{slug}`), `power.total` / `power.gpu`, `clock.mhz`, `memory.used` | nothing without LHM running as Administrator; the out-of-process bridge transport is roadmap (HTTP JSON only today); ad-hoc ids (`temperature.vrm`) are LHM-specific and not portable to other adapters |
+| | fan channel devices `fan.lhm.<LHM path>_<channel>` / `pump.lhm.<LHM path>_<channel>` — e.g. `fan.lhm.lpc_nct6687d_0_1`, `fan.lhm.gpu_0_0` when LHM's sensor name carries no number (Fan, Pump) | `fan.rpm` + `fan.speed_percent`, or `pump.rpm` + `pump.speed_percent` (pump control is `safety_critical`, 0–100) | only channels LHM exposes as `Control` sensors; board-dependent (many headers have none, some revert to firmware control); write requires LHM to be elevated |
 | `opd` (Open Device Protocol) | `fan.<vendor>_<serial>.0` (Fan) | whatever the device's `DeviceDescriptor` advertises; the simulated OpenFan advertises `fan.speed_percent`, `fan.rpm`, `temperature.core`, `status.message` | no real USB enumeration yet — the only transport implemented is in-process loopback to `MockOpenFan`; the device must implement ODP itself |
 | `mock` (opt-in; deterministic; never real hardware) | `cpu.mock.0`, `gpu.mock.0`, `ssd.mock.0`, `fan.mock.{N}`, `pump.mock.{N}`, `temperature.mock.{N}` | Cpu: `temperature.core`, `load.cpu`, `power.total`, `clock.mhz`; Gpu: `temperature.core`, `temperature.hotspot`, `load.gpu`, `power.gpu`, `fan.rpm`, `fan.speed_percent`; Storage: `temperature.core`, `storage.free`; Fan: `fan.rpm`, `fan.speed_percent`; Pump: `pump.rpm`, `pump.speed_percent` (60–100, `safety_critical`); TemperatureSensor: `temperature.system` | writes are reported as `WriteStatus::Simulated`, never `Applied`, so no caller can mistake simulation for hardware |
 

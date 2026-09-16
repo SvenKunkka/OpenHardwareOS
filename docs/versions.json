@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "repository": "SvenKunkka/OpenHardwareOS",
-  "development": null,
+  "development": "v0.1.11",
   "versions": [
     {
       "id": "v0.1.0",
@@ -348,8 +348,31 @@
       "plan": null
     },
     {
-      "id": "v0.2.0",
+      "id": "v0.1.11",
       "parent": "v0.1.10",
+      "status": "development",
+      "channel": "preview",
+      "title": "稳定身份：重排不再换目标",
+      "summary": "LHM 设备 id 改由 LHM 自己的硬件路径与通道号组成，provider 重排或重连不再移动规则目标；名字与安装入口新增检查，改名或入口指向不可下载版本会直接失败。",
+      "tag": null,
+      "commit": null,
+      "branch": "codex/v0.1.11",
+      "release_url": null,
+      "published_at": null,
+      "changes": [
+        "LHM 设备 id 不再按枚举位置编号，改为 LHM 自己的硬件路径加通道号（例如 fan.lhm.lpc_nct6687d_0_1、motherboard.lhm.lpc_nct6687d_0）",
+        "通道 id 不依赖当前存在的是转速还是控制（失联再回来仍是同一个 id）；编号来自名字还是路径写进设备元数据",
+        "两个节点无法区分时按位置编号并在适配器状态里报 Degraded，与“控制无法归属”的通道并列，不再静默",
+        "新增 scripts/check-artefact-names.py：产物名只有一个来源，安装入口只能指向可下载版本；接入 CI",
+        "Linux 打包器从 mainBinaryName 推导期望的二进制名，拒绝装出别的名字的 .deb"
+      ],
+      "evidence": [],
+      "hardware_validation": "not_verified",
+      "plan": null
+    },
+    {
+      "id": "v0.2.0",
+      "parent": "v0.1.11",
       "status": "planned",
       "channel": "preview",
       "title": "水泵支持",

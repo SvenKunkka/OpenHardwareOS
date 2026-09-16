@@ -131,7 +131,7 @@ not read the channel back itself.
 
 | Device id | Capability | Machine / component model (board, SuperIO chip, GPU, or header label) | Requested value | Value the device reported back (and how you read it) | RPM before | RPM after | Applied or refused | Exact refusal reason / detail text | Verdict (Verified / Build-run passed / not attempted) |
 |---|---|---|---|---|---|---|---|---|---|
-| e.g. `fan.lhm.3` | `fan.speed_percent` | ASUS … / Nuvoton NCT6687D / `Fan #1` header | 40 % | 40 % (`/Sensor?action=Get`, SensorId `/lpc/nct6687d/control/0`) | 810 | 1180 | applied | — | |
+| e.g. `fan.lhm.lpc_nct6687d_0_1` | `fan.speed_percent` | ASUS … / Nuvoton NCT6687D / `Fan #1` header | 40 % | 40 % (`/Sensor?action=Get`, SensorId `/lpc/nct6687d/control/0`) | 810 | 1180 | applied | — | |
 | | | | | | | | | | |
 | | | | | | | | | | |
 | | | | | | | | | | |

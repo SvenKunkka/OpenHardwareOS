@@ -246,18 +246,34 @@ impl HardwareAdapter for LhmAdapter {
                          is running as Administrator",
                     );
                 }
+                let mut limits: Vec<String> = Vec::new();
                 if !mapping.ambiguous_channels.is_empty() {
                     // Usable but limited, and the reason is specific: these
                     // channels can be read and must not be written.
+                    limits.push(format!(
+                        "{} channel(s) are read-only because their control could not be \
+                         matched to a physical channel: {}",
+                        mapping.ambiguous_channels.len(),
+                        mapping.ambiguous_channels.join("; ")
+                    ));
+                }
+                if !mapping.ambiguous_devices.is_empty() {
+                    // Reported beside the channels rather than instead of them: an id that
+                    // follows enumeration order can point a rule at another fan, and a
+                    // status that swallowed it would be the same silence this guards
+                    // against.
+                    limits.push(format!(
+                        "{} device(s) are named by their position because nothing stable \
+                         distinguished them: {}",
+                        mapping.ambiguous_devices.len(),
+                        mapping.ambiguous_devices.join("; ")
+                    ));
+                }
+                if !limits.is_empty() {
                     return AdapterStatus::degraded(
                         self.id(),
                         UnavailableReason::HardwareLimitation,
-                        format!(
-                            "{} channel(s) are read-only because their control could not be \
-                             matched to a physical channel: {}",
-                            mapping.ambiguous_channels.len(),
-                            mapping.ambiguous_channels.join("; ")
-                        ),
+                        limits.join(" | "),
                     )
                     .with_device_count(mapping.devices.len());
                 }
@@ -520,6 +536,48 @@ mod tests {
         assert!(!error.detail("http://127.0.0.1:1/").is_empty());
     }
 
+    /// An ambiguous model must reach the user, not stop at the mapper. `Degraded` with
+    /// the reason is what the adapter reports for both kinds of doubt: a channel whose
+    /// control cannot be shown to belong to it (read-only), and a device named by its
+    /// position because nothing stable distinguished it (its id may move).
+    #[tokio::test]
+    async fn an_ambiguous_model_is_reported_as_degraded_with_its_reason() {
+        let ambiguous_channel = FakeLhm::start();
+        ambiguous_channel.serve_tree(
+            r#"{"id":"/","Text":"Sensor","Children":[
+                {"id":"/lpc/0","Text":"Nuvoton NCT6687D","HardwareType":"Motherboard","Children":[
+                    {"id":"/lpc/0/fan/0","Text":"Fan #1","Type":"Fan","Value":"900 RPM"},
+                    {"id":"/lpc/0/fan/1","Text":"Fan #1","Type":"Fan","Value":"950 RPM"},
+                    {"id":"/lpc/0/control/0","Text":"Fan Control #1","Type":"Control","Value":"50.0 %"}]}]}"#,
+        );
+        let status = adapter(&ambiguous_channel).probe().await;
+        assert_eq!(status.state, ohm_adapter_api::AdapterState::Degraded);
+        let detail = status.detail.unwrap_or_default();
+        assert!(
+            detail.contains("read-only because their control"),
+            "{detail}"
+        );
+
+        // Two paths that normalise to the same key: the second device is addressed by
+        // position, and the status says so instead of presenting it as stable.
+        let colliding = FakeLhm::start();
+        colliding.serve_tree(
+            r#"{"id":"/","Text":"Sensor","Children":[
+                {"id":"/lpc/a-b/0","Text":"Board one","HardwareType":"Motherboard","Children":[
+                    {"id":"/lpc/a-b/0/fan/0","Text":"Fan #1","Type":"Fan","Value":"900 RPM"}]},
+                {"id":"/lpc/a_b/0","Text":"Board two","HardwareType":"Motherboard","Children":[
+                    {"id":"/lpc/a_b/0/fan/0","Text":"Fan #1","Type":"Fan","Value":"700 RPM"}]}]}"#,
+        );
+        let status = adapter(&colliding).probe().await;
+        assert_eq!(status.state, ohm_adapter_api::AdapterState::Degraded);
+        let detail = status.detail.unwrap_or_default();
+        assert!(
+            detail.contains("named by their position because nothing stable"),
+            "{detail}"
+        );
+        assert!(detail.contains("follows the order"), "{detail}");
+    }
+
     #[tokio::test]
     async fn probe_and_discovery_work_against_a_live_server() {
         let server = FakeLhm::start();
@@ -530,8 +588,8 @@ mod tests {
         assert!(status.device_count >= 5, "{}", status.device_count);
 
         let devices = adapter.discover().await.unwrap();
-        assert!(devices.iter().any(|d| d.id.as_str() == "cpu.lhm.0"));
-        assert!(devices.iter().any(|d| d.id.as_str() == "gpu.lhm.1"));
+        assert!(devices.iter().any(|d| d.id.as_str() == "cpu.lhm.cpu_0"));
+        assert!(devices.iter().any(|d| d.id.as_str() == "gpu.lhm.gpu_0"));
         let fan = devices
             .iter()
             .find(|d| d.supports(caps::FAN_SPEED_PERCENT))
@@ -556,7 +614,7 @@ mod tests {
 
         let gpu_state = results
             .iter()
-            .find(|(id, _)| id.as_str() == "gpu.lhm.1")
+            .find(|(id, _)| id.as_str() == "gpu.lhm.gpu_0")
             .map(|(_, state)| state.as_ref().unwrap().clone())
             .unwrap();
         assert_eq!(gpu_state.number(caps::TEMPERATURE_CORE), Some(76.0));

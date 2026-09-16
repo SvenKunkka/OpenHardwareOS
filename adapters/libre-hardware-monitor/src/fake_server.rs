@@ -34,6 +34,10 @@ pub struct FakeLhm {
     /// How `Get` answers: normally the channel value, or a refusal/N-A that makes
     /// the confirmation impossible.
     read_mode: Arc<Mutex<ReadMode>>,
+    /// A tree to serve instead of the fixture, so a test can describe a machine whose
+    /// tree the fixture does not contain (two boards with one name, a path that
+    /// collides with another).
+    tree: Arc<Mutex<Option<String>>>,
 }
 
 /// How the fake channel answers a read-back.
@@ -60,6 +64,7 @@ impl FakeLhm {
         let stuck_at = Arc::new(Mutex::new(None::<f64>));
         let reads = Arc::new(AtomicU32::new(0));
         let read_mode = Arc::new(Mutex::new(ReadMode::Value));
+        let tree = Arc::new(Mutex::new(None::<String>));
 
         {
             let requests = Arc::clone(&requests);
@@ -70,6 +75,7 @@ impl FakeLhm {
             let stuck_at = Arc::clone(&stuck_at);
             let reads = Arc::clone(&reads);
             let read_mode = Arc::clone(&read_mode);
+            let tree = Arc::clone(&tree);
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
                     if shutdown.load(Ordering::Relaxed) {
@@ -83,6 +89,7 @@ impl FakeLhm {
                     let stuck_at = Arc::clone(&stuck_at);
                     let reads = Arc::clone(&reads);
                     let read_mode = Arc::clone(&read_mode);
+                    let tree = Arc::clone(&tree);
                     std::thread::spawn(move || {
                         handle(
                             stream,
@@ -93,6 +100,7 @@ impl FakeLhm {
                             &stuck_at,
                             &reads,
                             &read_mode,
+                            &tree,
                         );
                     });
                 }
@@ -109,10 +117,16 @@ impl FakeLhm {
             stuck_at,
             reads,
             read_mode,
+            tree,
         }
     }
 
     /// Make read-backs answer `N/A` (the channel reports nothing).
+    /// Serve this tree instead of the fixture.
+    pub fn serve_tree(&self, json: &str) {
+        *self.tree.lock() = Some(json.to_string());
+    }
+
     pub fn read_not_available(&self) {
         *self.read_mode.lock() = ReadMode::NotAvailable;
     }
@@ -184,6 +198,7 @@ fn handle(
     stuck_at: &Mutex<Option<f64>>,
     reads: &AtomicU32,
     read_mode: &Mutex<ReadMode>,
+    tree: &Mutex<Option<String>>,
 ) {
     let mut reader = BufReader::new(match stream.try_clone() {
         Ok(clone) => clone,
@@ -212,7 +227,11 @@ fn handle(
         .to_string();
 
     let response = if path.starts_with("/data.json") {
-        reply(200, "application/json", DATA_JSON)
+        let custom: Option<String> = tree.lock().as_ref().cloned();
+        match custom {
+            Some(body) => reply(200, "application/json", &body),
+            None => reply(200, "application/json", DATA_JSON),
+        }
     } else if path.starts_with("/Sensor") {
         writes.lock().push(request_line.trim().to_string());
         if fail_writes.load(Ordering::Relaxed) {

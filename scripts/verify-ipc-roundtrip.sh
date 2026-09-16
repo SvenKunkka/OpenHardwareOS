@@ -104,7 +104,7 @@ cat > "$CONFIG/control-state.json" <<'JSON'
   "saved_at_ms": 1700000000000,
   "handovers": [
     {
-      "device": "fan.lhm.0",
+      "device": "fan.lhm.lpc_nct6687d_0_1",
       "capability": "fan.speed_percent",
       "from_rule": "not-the-probe",
       "reason": "left behind by an earlier session, on a channel this machine does not have",
@@ -456,7 +456,7 @@ except FileNotFoundError:
     print("  FAIL  the seeded handover: the control record is gone entirely")
     sys.exit(1)
 
-seeded = [h for h in record.get("handovers", []) if h["device"] == "fan.lhm.0"]
+seeded = [h for h in record.get("handovers", []) if h["device"] == "fan.lhm.lpc_nct6687d_0_1"]
 if not seeded:
     print("  FAIL  the seeded handover is no longer in the record at all")
     sys.exit(1)

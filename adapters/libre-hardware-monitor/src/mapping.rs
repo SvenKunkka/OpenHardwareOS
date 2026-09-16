@@ -19,7 +19,7 @@
 //! `GET /Sensor?action=Set&id=...` needs, and it is the only vendor specific
 //! string the runtime ever stores (in `Device::metadata`, never in logic).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ohm_core::{AdapterId, CapabilityId, DeviceId};
 use ohm_device_model::{
@@ -45,6 +45,11 @@ pub struct LhmMapping {
     /// beside it, with the reason. Non-empty means part of the model is
     /// deliberately read-only; the adapter reports it as a degraded status.
     pub ambiguous_channels: Vec<String>,
+    /// Devices whose id had to fall back to something that depends on the order
+    /// LibreHardwareMonitor reports them in, with the reason. A rule targeting such
+    /// a device may point at a different one after a re-enumeration, so the adapter
+    /// says so instead of presenting a positional name as a stable one.
+    pub ambiguous_devices: Vec<String>,
 }
 
 impl LhmMapping {
@@ -79,9 +84,83 @@ fn adapter() -> AdapterId {
     AdapterId::new_unchecked(NAMESPACE)
 }
 
+/// A stable key for a hardware node, taken from LibreHardwareMonitor's own path.
+///
+/// The tree's order is deliberately not used. Our traversal order is an artefact of
+/// this program, and a rule that targets a fan must not follow it: this module used
+/// to number devices by position, so a GPU enumerating before the board moved
+/// `fan.lhm.0` to a different header — with no error anywhere, because both ids
+/// exist and both are writable. LHM's own path (`/lpc/nct6687d/0`, `/gpu/0`) is how
+/// LHM addresses the same machine on the next run, so that is what the id is built
+/// from. A node with neither a path nor a name falls back to its position, and the
+/// allocator records that case as ambiguous rather than hiding it.
+fn hardware_key(hardware: &LhmNode, slot: usize) -> String {
+    if !hardware.id.trim_matches('/').is_empty() {
+        return slugify(&hardware.id);
+    }
+    if !hardware.text.trim().is_empty() {
+        return slugify(&hardware.text);
+    }
+    format!("slot{slot}")
+}
+
+/// The stable key for one fan or pump channel.
+///
+/// The hardware's path plus the number LibreHardwareMonitor reports for the channel.
+/// *Which* of the two carriers that number came from — the sensor's name or its path —
+/// decides whether a tachometer and a control may be paired (see [`anchor_of`]), not
+/// what the device is called: keying on it here would rename the device the moment a
+/// tachometer dropped out and left its control behind, which is the re-target this
+/// scheme exists to prevent. A channel with no number anywhere is keyed by the path of
+/// the sensor that defines it — still LHM's addressing, not our traversal order — and
+/// it is read-only either way.
+fn channel_key(hardware: &LhmNode, channel: &FanChannel, slot: usize) -> String {
+    let base = hardware_key(hardware, slot);
+    match channel.index {
+        Some(number) => format!("{base}_{number}"),
+        None => {
+            let node = channel.rpm.as_ref().or(channel.control.as_ref());
+            match node {
+                Some(node) if !node.id.is_empty() => format!("{base}_{}", slugify(&node.id)),
+                _ => format!("{base}_unnumbered{slot}"),
+            }
+        }
+    }
+}
+
+/// Hands out device ids and records when a key had to be made unique by position.
+///
+/// Two nodes whose keys collide would otherwise overwrite each other in `sensors` —
+/// the map insert keeps the last — which is how a channel disappears silently. The
+/// second one keeps its own id, derived from its position, and the collision is
+/// reported: identity that cannot be told apart is never presented as certain.
+#[derive(Default)]
+struct Ids {
+    used: BTreeSet<String>,
+    ambiguous: Vec<String>,
+}
+
+impl Ids {
+    fn claim(&mut self, candidate: String, describe: &str, slot: usize) -> DeviceId {
+        if self.used.insert(candidate.clone()) {
+            return DeviceId::new_unchecked(candidate);
+        }
+        let mut attempt = format!("{candidate}_slot{slot}");
+        while !self.used.insert(attempt.clone()) {
+            attempt.push('_');
+        }
+        self.ambiguous.push(format!(
+            "{describe}: another device already claims `{candidate}`, so this one is addressed as \
+             `{attempt}`, which follows the order LibreHardwareMonitor reports them in"
+        ));
+        DeviceId::new_unchecked(attempt)
+    }
+}
+
 /// Build the device model from a freshly fetched tree.
 pub fn map_tree(tree: &LhmNode) -> LhmMapping {
     let mut mapping = LhmMapping::default();
+    let mut ids = Ids::default();
 
     // 1. One device per top level hardware node.
     let mut index = 0usize;
@@ -90,8 +169,18 @@ pub fn map_tree(tree: &LhmNode) -> LhmMapping {
         if device_type == DeviceType::Unknown && hardware.flatten().len() == 1 {
             continue;
         }
-        let id = DeviceId::compose(device_type.as_str(), NAMESPACE, index);
+        let slot = index;
         index += 1;
+        let id = ids.claim(
+            format!(
+                "{}.{}.{}",
+                device_type.as_str(),
+                NAMESPACE,
+                hardware_key(hardware, slot)
+            ),
+            &hardware.text,
+            slot,
+        );
 
         let mut sensors = SensorMap::new();
         let mut capabilities: Vec<Capability> = Vec::new();
@@ -138,22 +227,41 @@ pub fn map_tree(tree: &LhmNode) -> LhmMapping {
     }
 
     // 2. Fan and control channels, wherever they live in the tree.
-    let mut fan_index = 0usize;
+    //    `slot` counts nodes only so that the rare fallback id has *something*
+    //    deterministic to say; it is never the identity of a channel that has a name
+    //    or a path of its own.
+    let mut slot = 0usize;
     for hardware in tree.flatten() {
         let fans = fan_channels(hardware);
         if fans.is_empty() {
             continue;
         }
+        slot += 1;
         for channel in fans {
             if let Some(reason) = &channel.ambiguous {
                 mapping
                     .ambiguous_channels
                     .push(format!("{}: {reason}", hardware.text));
             }
-            let Some((device, sensors)) = build_fan_device(hardware, &channel, fan_index) else {
+            let device_type = if channel.is_pump {
+                DeviceType::Pump
+            } else {
+                DeviceType::Fan
+            };
+            let id = ids.claim(
+                format!(
+                    "{}.{}.{}",
+                    device_type.as_str(),
+                    NAMESPACE,
+                    channel_key(hardware, &channel, slot)
+                ),
+                &channel.label,
+                slot,
+            );
+            let Some((device, sensors)) = build_fan_device(hardware, &channel, device_type, id)
+            else {
                 continue;
             };
-            fan_index += 1;
             if device.validate().is_ok() {
                 mapping.sensors.insert(device.id.clone(), sensors);
                 mapping.devices.push(device);
@@ -161,6 +269,7 @@ pub fn map_tree(tree: &LhmNode) -> LhmMapping {
         }
     }
 
+    mapping.ambiguous_devices = ids.ambiguous;
     mapping
 }
 
@@ -174,7 +283,7 @@ fn descendant_sensors(node: &LhmNode) -> Vec<&LhmNode> {
 
 /// Where a channel's pairing number came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Anchor {
+pub(crate) enum Anchor {
     /// The display name carries the number (`Fan #1`). LibreHardwareMonitor
     /// derives these names from the board layout, so the same number is the same
     /// physical channel on the next run.
@@ -213,6 +322,11 @@ fn anchor_of(sensor: &LhmNode) -> Option<Anchor> {
 pub struct FanChannel {
     /// Pairing key, taken from the sensor names (`Fan #1` <-> `Fan Control #1`).
     pub index: Option<usize>,
+    /// Where that number came from. Kept because a number from the sensor name and a
+    /// number from the sensor path mean different things, and the device id has to
+    /// say which one it used: the same number from two different sources is a
+    /// coincidence, not an identity.
+    pub(crate) anchor: Option<Anchor>,
     /// Display label exactly as LibreHardwareMonitor spells it, e.g. `Fan #1`.
     pub label: String,
     pub rpm: Option<LhmNode>,
@@ -297,7 +411,10 @@ fn fan_channels(hardware: &LhmNode) -> Vec<FanChannel> {
         }
 
         channels.push(one_channel(
-            Some(number),
+            rpm_here
+                .first()
+                .and_then(|(anchor, _)| *anchor)
+                .or_else(|| control_here.first().and_then(|(anchor, _)| *anchor)),
             rpm_here.first().map(|(_, node)| node.clone()),
             control_here.first().map(|(_, node)| node.clone()),
             ambiguous,
@@ -327,11 +444,12 @@ fn fan_channels(hardware: &LhmNode) -> Vec<FanChannel> {
 
 /// Assemble one channel, deriving its label and whether it is a pump.
 fn one_channel(
-    index: Option<usize>,
+    anchor: Option<Anchor>,
     rpm: Option<LhmNode>,
     control: Option<LhmNode>,
     ambiguous: Option<String>,
 ) -> FanChannel {
+    let index = anchor.map(Anchor::number);
     let label = rpm
         .as_ref()
         .or(control.as_ref())
@@ -347,6 +465,7 @@ fn one_channel(
         .any(|node| node.text.to_ascii_lowercase().contains("pump"));
     FanChannel {
         index,
+        anchor,
         label,
         rpm,
         control,
@@ -359,7 +478,8 @@ fn one_channel(
 fn build_fan_device(
     hardware: &LhmNode,
     channel: &FanChannel,
-    fan_index: usize,
+    device_type: DeviceType,
+    id: DeviceId,
 ) -> Option<(Device, SensorMap)> {
     let mut sensors = SensorMap::new();
     let mut capabilities = Vec::new();
@@ -367,11 +487,6 @@ fn build_fan_device(
     // Use LibreHardwareMonitor's own spelling (`Fan #1`, `GPU Fan`, `Pump #2`)
     // so the UI matches what the user sees in LHM.
     let channel_label = channel.label.clone();
-    let device_type = if channel.is_pump {
-        DeviceType::Pump
-    } else {
-        DeviceType::Fan
-    };
 
     let mut name = channel_label.clone();
     if name.is_empty() || name.eq_ignore_ascii_case("fan") || name.eq_ignore_ascii_case("control") {
@@ -415,18 +530,23 @@ fn build_fan_device(
         return None;
     }
 
-    let device = Device::new(
-        DeviceId::compose(device_type.as_str(), NAMESPACE, fan_index),
-        name,
-        device_type,
-        Transport::Web,
-        adapter(),
-    )
-    .with_vendor("LibreHardwareMonitor")
-    .with_capabilities(capabilities)
-    .with_metadata("lhm_id", hardware.id.clone())
-    .with_metadata("lhm_channel", channel_label)
-    .with_metadata("source", "LibreHardwareMonitor web server");
+    let device = Device::new(id, name, device_type, Transport::Web, adapter())
+        .with_vendor("LibreHardwareMonitor")
+        .with_capabilities(capabilities)
+        .with_metadata("lhm_id", hardware.id.clone())
+        .with_metadata("lhm_channel", channel_label)
+        // The id is built from the hardware's path and the channel's number; this says
+        // which carrier that number came from, so a reader can tell a board layout's
+        // `Fan #1` from a sensor path that merely happens to end in 1.
+        .with_metadata(
+            "lhm_channel_number_from",
+            match channel.anchor {
+                Some(Anchor::Name(_)) => "sensor name",
+                Some(Anchor::Path(_)) => "sensor path",
+                None => "no number; keyed by the sensor path",
+            },
+        )
+        .with_metadata("source", "LibreHardwareMonitor web server");
     let device = match &channel.ambiguous {
         Some(reason) => device.with_metadata("lhm_control_withheld", reason.clone()),
         None => device,
@@ -631,10 +751,10 @@ mod tests {
     fn hardware_nodes_become_devices() {
         let (_, mapping) = mapping();
         let ids: Vec<&str> = mapping.devices.iter().map(|d| d.id.as_str()).collect();
-        assert!(ids.contains(&"cpu.lhm.0"), "{ids:?}");
-        assert!(ids.contains(&"gpu.lhm.1"), "{ids:?}");
-        assert!(ids.contains(&"storage.lhm.2"), "{ids:?}");
-        assert!(ids.contains(&"motherboard.lhm.3"), "{ids:?}");
+        assert!(ids.contains(&"cpu.lhm.cpu_0"), "{ids:?}");
+        assert!(ids.contains(&"gpu.lhm.gpu_0"), "{ids:?}");
+        assert!(ids.contains(&"storage.lhm.nvme_0"), "{ids:?}");
+        assert!(ids.contains(&"motherboard.lhm.motherboard_0"), "{ids:?}");
         for device in &mapping.devices {
             device.validate().unwrap();
         }
@@ -643,7 +763,7 @@ mod tests {
     #[test]
     fn cpu_capabilities_are_normalised() {
         let (_, mapping) = mapping();
-        let cpu = mapping.device("cpu.lhm.0").unwrap();
+        let cpu = mapping.device("cpu.lhm.cpu_0").unwrap();
         assert_eq!(cpu.device_type, DeviceType::Cpu);
         assert_eq!(cpu.name, "AMD Ryzen 9 9800X3D");
         assert!(cpu.supports(caps::TEMPERATURE_CORE));
@@ -665,7 +785,7 @@ mod tests {
     #[test]
     fn gpu_gets_hotspot_and_gpu_specific_ids() {
         let (_, mapping) = mapping();
-        let gpu = mapping.device("gpu.lhm.1").unwrap();
+        let gpu = mapping.device("gpu.lhm.gpu_0").unwrap();
         assert_eq!(gpu.device_type, DeviceType::Gpu);
         assert!(gpu.supports(caps::TEMPERATURE_CORE));
         assert!(gpu.supports(caps::TEMPERATURE_HOTSPOT));
@@ -678,7 +798,7 @@ mod tests {
     #[test]
     fn motherboard_includes_nested_superio_sensors() {
         let (_, mapping) = mapping();
-        let board = mapping.device("motherboard.lhm.3").unwrap();
+        let board = mapping.device("motherboard.lhm.motherboard_0").unwrap();
         assert!(board.supports(caps::TEMPERATURE_SYSTEM));
         assert!(board.supports("voltage.vin0"), "{:?}", board.capabilities);
         assert_eq!(
@@ -745,6 +865,39 @@ mod tests {
             r#"{{"id":"/","Text":"Sensor","Children":[{{"id":"/lpc/0","Text":"Nuvoton NCT6687D","HardwareId":"/lpc/0","HardwareType":"Motherboard","Children":[{sensors}]}}]}}"#
         );
         map_tree(&parse_tree(&json).unwrap())
+    }
+
+    /// Map a tree written as JSON here, so a test can build the shape it needs —
+    /// two nodes with the same name, a path that collides with another, a tree with
+    /// its children in the other order.
+    fn map_json(json: &str) -> LhmMapping {
+        map_tree(&parse_tree(json).unwrap())
+    }
+
+    /// The same tree with every child list reversed: the same machine, reported in a
+    /// different order, which is what happens when a provider re-enumerates.
+    fn reversed(json: &str) -> String {
+        fn walk(node: &mut serde_json::Value) {
+            if let Some(children) = node.get_mut("Children").and_then(|c| c.as_array_mut()) {
+                for child in children.iter_mut() {
+                    walk(child);
+                }
+                children.reverse();
+            }
+        }
+        let mut value: serde_json::Value = serde_json::from_str(json).unwrap();
+        walk(&mut value);
+        value.to_string()
+    }
+
+    fn ids_of(mapping: &LhmMapping) -> Vec<String> {
+        let mut ids: Vec<String> = mapping
+            .devices
+            .iter()
+            .map(|device| device.id.to_string())
+            .collect();
+        ids.sort();
+        ids
     }
 
     fn fans(mapping: &LhmMapping) -> Vec<&Device> {
@@ -982,7 +1135,7 @@ mod tests {
     #[test]
     fn readings_come_from_the_tree() {
         let (tree, mapping) = mapping();
-        let gpu = mapping.device("gpu.lhm.1").unwrap();
+        let gpu = mapping.device("gpu.lhm.gpu_0").unwrap();
         let state = state_from_tree(&tree, &mapping, gpu, 1_000);
         assert_eq!(state.number(caps::TEMPERATURE_CORE), Some(76.0));
         assert_eq!(state.number(caps::TEMPERATURE_HOTSPOT), Some(88.5));
@@ -992,7 +1145,7 @@ mod tests {
         assert_eq!(state.number(caps::MEMORY_USED), Some(14_500_000_000.0));
         assert!(!state.has_failure());
 
-        let cpu = mapping.device("cpu.lhm.0").unwrap();
+        let cpu = mapping.device("cpu.lhm.cpu_0").unwrap();
         let cpu_state = state_from_tree(&tree, &mapping, cpu, 1_000);
         assert_eq!(cpu_state.number(caps::TEMPERATURE_CORE), Some(68.2));
         assert_eq!(cpu_state.number(caps::CPU_LOAD), Some(32.0));
@@ -1026,7 +1179,7 @@ mod tests {
         let (tree, mapping) = mapping();
         let mut pruned = tree.clone();
         pruned.children.retain(|node| node.id != "/gpu/0");
-        let gpu = mapping.device("gpu.lhm.1").unwrap();
+        let gpu = mapping.device("gpu.lhm.gpu_0").unwrap();
         let state = state_from_tree(&pruned, &mapping, gpu, 1_000);
         assert!(!state.online);
         assert!(
@@ -1063,5 +1216,157 @@ mod tests {
         assert_eq!(round_for(Unit::Rpm, 1120.4), Value::Integer(1120));
         assert_eq!(round_for(Unit::Celsius, 68.24), Value::Number(68.2));
         assert_eq!(round_for(Unit::Volt, 12.05123), Value::Number(12.051));
+    }
+
+    /// The reason the id scheme was rewritten: a rule targets an id, and our traversal
+    /// order is not an identity. Before this, `fan.lhm.<n>` was handed out by position,
+    /// so a tree that listed the GPU first moved every fan rule one header over — with
+    /// no error, because every id still existed and every one of them was writable.
+    #[test]
+    fn device_ids_do_not_follow_the_order_of_the_tree() {
+        let doc = include_str!("../tests/fixtures/data.json");
+        let forward = map_json(doc);
+        let backward = map_json(&reversed(doc));
+
+        assert_eq!(
+            ids_of(&forward),
+            ids_of(&backward),
+            "the same machine described in another order must describe the same devices"
+        );
+        assert!(
+            ids_of(&forward).contains(&"fan.lhm.lpc_nct6687d_0_1".to_string()),
+            "{:?}",
+            ids_of(&forward)
+        );
+        // And the channel that survived still reads the sensor it read before.
+        let sensor = |mapping: &LhmMapping, id: &str| {
+            mapping
+                .sensor_id(
+                    &DeviceId::new_unchecked(id.to_string()),
+                    &CapabilityId::new_unchecked(caps::FAN_RPM),
+                )
+                .map(str::to_string)
+        };
+        assert_eq!(
+            sensor(&forward, "fan.lhm.lpc_nct6687d_0_1"),
+            sensor(&backward, "fan.lhm.lpc_nct6687d_0_1")
+        );
+        assert!(sensor(&forward, "fan.lhm.lpc_nct6687d_0_1").is_some());
+    }
+
+    /// Two boards with the same name — a pair of identical SuperIO chips, or the same
+    /// controller on two boards — are told apart by their path, not by their label.
+    #[test]
+    fn two_hardware_nodes_with_the_same_name_keep_their_own_ids() {
+        let mapping = map_json(
+            r#"{"id":"/","Text":"Sensor","Children":[
+                {"id":"/lpc/0","Text":"Nuvoton NCT6687D","HardwareType":"Motherboard","Children":[
+                    {"id":"/lpc/0/fan/0","Text":"Fan #1","Type":"Fan","Value":"900 RPM"},
+                    {"id":"/lpc/0/control/0","Text":"Fan Control #1","Type":"Control","Value":"50.0 %"}]},
+                {"id":"/lpc/1","Text":"Nuvoton NCT6687D","HardwareType":"Motherboard","Children":[
+                    {"id":"/lpc/1/fan/0","Text":"Fan #1","Type":"Fan","Value":"700 RPM"},
+                    {"id":"/lpc/1/control/0","Text":"Fan Control #1","Type":"Control","Value":"40.0 %"}]}]}"#,
+        );
+
+        let channels = fans(&mapping);
+        let ids: Vec<&str> = channels.iter().map(|device| device.id.as_str()).collect();
+        assert_eq!(ids, vec!["fan.lhm.lpc_0_1", "fan.lhm.lpc_1_1"], "{ids:?}");
+        // Each one reads the tachometer it belongs to, not the one beside it.
+        assert_eq!(
+            sensor_of(&mapping, channels[0], caps::FAN_RPM).as_deref(),
+            Some("/lpc/0/fan/0")
+        );
+        assert_eq!(
+            sensor_of(&mapping, channels[1], caps::FAN_RPM).as_deref(),
+            Some("/lpc/1/fan/0")
+        );
+    }
+
+    /// A sensor that vanishes and returns — a driver reload, a reconnect — must not
+    /// rename its device: the id comes from the hardware's path and the channel number,
+    /// not from which of the pair happens to be present.
+    #[test]
+    fn a_channel_keeps_its_id_when_a_sensor_disappears_and_returns() {
+        let paired = tree_with(
+            r#"
+            { "id": "/lpc/0/fan/0", "Text": "Fan #1", "Type": "Fan", "Value": "900 RPM" },
+            { "id": "/lpc/0/control/0", "Text": "Fan Control #1", "Type": "Control", "Value": "50.0 %" }
+            "#,
+        );
+        // The tachometer is gone; the control is still there and still reports.
+        let control_only = tree_with(
+            r#"{ "id": "/lpc/0/control/0", "Text": "Fan Control #1", "Type": "Control", "Value": "50.0 %" }"#,
+        );
+        // Only the tachometer is left.
+        let rpm_only = tree_with(
+            r#"{ "id": "/lpc/0/fan/0", "Text": "Fan #1", "Type": "Fan", "Value": "900 RPM" }"#,
+        );
+
+        assert_eq!(ids_of(&paired), vec!["fan.lhm.lpc_0_1".to_string()]);
+        assert_eq!(ids_of(&control_only), ids_of(&paired));
+        assert_eq!(ids_of(&rpm_only), ids_of(&paired));
+        // What each side of a broken pair still promises, unchanged by this round: a
+        // lone tachometer reads and cannot be written; a lone control keeps the channel
+        // number LibreHardwareMonitor reports and stays writable, with no RPM reading to
+        // show the effect. Neither is an identity this code invented — the number is
+        // LHM's, and the safety layer still applies to the write.
+        let control = &fans(&control_only)[0];
+        assert!(!control.supports(caps::FAN_RPM));
+        assert!(control.supports(caps::FAN_SPEED_PERCENT));
+        let tachometer = &fans(&rpm_only)[0];
+        assert!(tachometer.supports(caps::FAN_RPM));
+        assert!(!tachometer.supports(caps::FAN_SPEED_PERCENT));
+    }
+
+    /// A channel with no number anywhere is keyed by the path of the sensor that
+    /// defines it, so it does not move when the tree is reordered either.
+    #[test]
+    fn a_channel_without_a_number_is_keyed_by_its_sensor_path() {
+        let mapping = map_json(
+            r#"{"id":"/","Text":"Sensor","Children":[
+                {"id":"/gpu/0","Text":"NVIDIA GeForce RTX 5090","HardwareType":"GpuNvidia","Children":[
+                    {"id":"/gpu/0/fan/0","Text":"GPU Fan","Type":"Fan","Value":"1200 RPM"},
+                    {"id":"/gpu/0/control/0","Text":"GPU Fan","Type":"Control","Value":"60.0 %"}]}]}"#,
+        );
+        assert_eq!(ids_of(&mapping), vec!["fan.lhm.gpu_0_0".to_string()]);
+        let device = &fans(&mapping)[0];
+        assert_eq!(
+            device
+                .metadata
+                .get("lhm_channel_number_from")
+                .map(String::as_str),
+            Some("sensor path"),
+            "the device must say where its number came from: {:?}",
+            device.metadata
+        );
+    }
+
+    /// Two paths that normalise to the same key cannot be told apart by name, so the
+    /// second one is addressed by position and **said so**. Silence here is how a
+    /// channel disappears: the sensor map keys on the device id.
+    #[test]
+    fn colliding_keys_are_reported_rather_than_overwritten() {
+        let mapping = map_json(
+            r#"{"id":"/","Text":"Sensor","Children":[
+                {"id":"/lpc/a-b/0","Text":"Board one","HardwareType":"Motherboard","Children":[
+                    {"id":"/lpc/a-b/0/fan/0","Text":"Fan #1","Type":"Fan","Value":"900 RPM"}]},
+                {"id":"/lpc/a_b/0","Text":"Board two","HardwareType":"Motherboard","Children":[
+                    {"id":"/lpc/a_b/0/fan/0","Text":"Fan #1","Type":"Fan","Value":"700 RPM"}]}]}"#,
+        );
+
+        let channels = fans(&mapping);
+        assert_eq!(channels.len(), 2, "neither device may be dropped");
+        let ids: Vec<&str> = channels.iter().map(|device| device.id.as_str()).collect();
+        assert_ne!(ids[0], ids[1], "{ids:?}");
+        assert_eq!(mapping.sensors.len(), mapping.devices.len());
+        assert!(
+            !mapping.ambiguous_devices.is_empty(),
+            "a key that collided must be reported, not silently suffixed"
+        );
+        assert!(
+            mapping.ambiguous_devices[0].contains("follows the order"),
+            "{:?}",
+            mapping.ambiguous_devices
+        );
     }
 }

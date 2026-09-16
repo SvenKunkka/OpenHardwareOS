@@ -14,8 +14,10 @@ Two providers can see the same physical NVIDIA GPU: `adapters/nvidia` through NV
 (`Nvml::init()` → `device_by_index(i)`), device id `gpu.nvidia.0`
 (`gpu_device_id`, `adapters/nvidia/src/lib.rs`); and
 `adapters/libre-hardware-monitor` through LHM's NVIDIA backend (NVAPI for the cooler
-and hotspot surfaces), device id `gpu.lhm.0`
-(`DeviceId::compose(device_type, NAMESPACE, index)`, `NAMESPACE = "lhm"`).
+and hotspot surfaces), device id `gpu.lhm.gpu_0` (`NAMESPACE = "lhm"`, then LHM's own
+path for the hardware; the positional `DeviceId::compose(device_type, NAMESPACE, index)`
+this ADR quoted when it was written is no longer what the adapter builds — see
+`docs/verification-log.md` round 17).
 
 Nothing collapses those two ids: `crates/ohm-runtime/src/discovery.rs` deduplicates
 *adapters* by `AdapterId` (`deduplicate_adapters`) and device ids are

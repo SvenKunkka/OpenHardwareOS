@@ -2422,7 +2422,7 @@ dependencies = [
 
 [[package]]
 name = "ohm-adapter-api"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "async-trait",
  "ohm-core",
@@ -2436,7 +2436,7 @@ dependencies = [
 
 [[package]]
 name = "ohm-adapter-lhm"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "async-trait",
  "ohm-adapter-api",
@@ -2452,7 +2452,7 @@ dependencies = [
 
 [[package]]
 name = "ohm-adapter-mock"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "async-trait",
  "ohm-adapter-api",
@@ -2467,7 +2467,7 @@ dependencies = [
 
 [[package]]
 name = "ohm-adapter-nvidia"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "async-trait",
  "nvml-wrapper",
@@ -2481,7 +2481,7 @@ dependencies = [
 
 [[package]]
 name = "ohm-adapter-opd"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "async-trait",
  "ohm-adapter-api",
@@ -2496,7 +2496,7 @@ dependencies = [
 
 [[package]]
 name = "ohm-adapter-system"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "async-trait",
  "ohm-adapter-api",
@@ -2513,7 +2513,7 @@ dependencies = [
 
 [[package]]
 name = "ohm-adapters"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "ohm-adapter-api",
  "ohm-adapter-lhm",
@@ -2529,7 +2529,7 @@ dependencies = [
 
 [[package]]
 name = "ohm-automation"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "ohm-adapter-api",
  "ohm-adapter-mock",
@@ -2548,7 +2548,7 @@ dependencies = [
 
 [[package]]
 name = "ohm-cli"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2571,7 +2571,7 @@ dependencies = [
 
 [[package]]
 name = "ohm-core"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "chrono",
  "dirs 7.0.0",
@@ -2587,7 +2587,7 @@ dependencies = [
 
 [[package]]
 name = "ohm-desktop"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "ohm-adapter-api",
@@ -2609,7 +2609,7 @@ dependencies = [
 
 [[package]]
 name = "ohm-device-model"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "chrono",
  "ohm-core",
@@ -2621,7 +2621,7 @@ dependencies = [
 
 [[package]]
 name = "ohm-integration-tests"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "async-trait",
  "ohm-adapter-api",
@@ -2644,7 +2644,7 @@ dependencies = [
 
 [[package]]
 name = "ohm-protocol"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "ohm-core",
  "ohm-device-model",
@@ -2656,7 +2656,7 @@ dependencies = [
 
 [[package]]
 name = "ohm-runtime"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "async-trait",
  "chrono",

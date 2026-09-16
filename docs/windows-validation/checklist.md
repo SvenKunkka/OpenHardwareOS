@@ -799,8 +799,13 @@ cargo run -p ohm-cli -- --log-level debug doctor
 ```
 
 Expected: `lhm available <N> device(s)`, with motherboard, CPU, GPU and fan devices
-present. Device ids carry the `lhm` namespace (`cpu.lhm.0`, `gpu.lhm.1`, `fan.lhm.N`,
-`pump.lhm.N`, `motherboard.lhm.N`, `storage.lhm.N`).
+present. Device ids carry the `lhm` namespace, and they are built from LibreHardwareMonitor's own
+path plus the channel number it reports — not from the order devices came back in:
+`cpu.lhm.cpu_0`, `gpu.lhm.gpu_0`, `motherboard.lhm.lpc_nct6687d_0`,
+`fan.lhm.lpc_nct6687d_0_1`. A fan whose LHM sensor name carries no number, as NVIDIA's
+GPUs report it, is named after its sensor path (`fan.lhm.gpu_0_0`). Record the ids you
+see verbatim: they are what a rule targets, and comparing them with a second run is how
+you find out whether the provider is numbering by position rather than by path.
 
 ### 11.2 Mapping rules to check by eye
 

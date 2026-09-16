@@ -39,12 +39,15 @@ curve. Comments survive editing because rules are plain YAML.
 
 ## Device and capability ids: what they mean
 
-An id is `<kind>.<namespace>.<index>` — built by `DeviceId::compose` in
-`crates/ohm-core/src/ids.rs`:
+An id is `<kind>.<namespace>.<instance>`. `DeviceId::compose` in
+`crates/ohm-core/src/ids.rs` numbers devices that have nothing better to be named
+after; an adapter that can name one after the hardware it came from does so:
 
 - `gpu.nvidia.0` — GPU 0 as seen by the NVML provider
-- `gpu.lhm.0` — the same card as seen by LibreHardwareMonitor
-- `fan.lhm.1` — chassis fan header 1 through LibreHardwareMonitor
+- `gpu.lhm.gpu_0` — the same card as seen by LibreHardwareMonitor
+- `fan.lhm.lpc_nct6687d_0_1` — chassis fan header 1 through LibreHardwareMonitor,
+  named after LHM's own sensor path and the channel number rather than a position,
+  so reordering the tree cannot move a rule to another header
 - `cpu.mock.0`, `fan.mock.0`, `fan.mock.1` — the **simulated** machine
   (`adapters/mock`), which is why the examples use them: they resolve on any
   machine, including CI, with no hardware at all
