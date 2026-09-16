@@ -2699,3 +2699,119 @@ were left exactly as found. v0.1.11 was prepared (workspace version, catalogue n
 CHANGELOG section) but **not** built, tagged or published, and the install entries were
 left pointing at v0.1.10 — the version a reader can actually download — rather than at the
 version under development.
+
+---
+
+## 2026-09-16 — round 18: two writers, one header — and the half of the suspend rule that was only a comment
+
+**Revision: `b0e7ae9`** — the pass below ran at that commit, on `codex/v0.1.11`, still the
+version under development. Nothing was published, and the install entries still point at
+v0.1.10, the newest version somebody can download.
+
+### 1. What the code said, and what it did
+
+The heartbeat window is documented as *shorter than a suspend on purpose*, with the reason
+written out:
+
+> Three intervals is enough to ride out a scheduling hiccup — a suspended laptop resumes
+> well past any short window, and **a service that was suspended should not be considered
+> alive while another wants the channels**
+
+That reasoning is sound, and it was only half implemented. It justified letting another
+process take the channels over. It said nothing about the process that wakes up, and the
+code did nothing about it either:
+
+* `ServiceGuard::heartbeat` rewrote the state file on every beat **without re-reading it**.
+  `fs::rename` replaces whatever is there, so a woken owner overwrote the new owner's
+  record — the record `service status` reads, and the one the desktop engine consults
+  before deciding whether to start its own rule loop;
+* `Drop` removed the file unconditionally, so if the woken process ever stopped it deleted
+  the successor's record, leaving channels that had been taken over claimed by nobody;
+* the two together are exactly the failure the whole mechanism exists to prevent: two
+  processes driving the same fan, each believing it is the owner, alternating values.
+
+Nothing in the suite could see it: every existing ownership test had one live process.
+
+### 2. The rule now
+
+| | |
+|---|---|
+| Before every heartbeat | `ServiceGuard::verify_ownership` reads the file and requires it to name this pid. Another pid, or a missing file, is `ServiceError::OwnershipLost`. |
+| On loss | The heartbeat **does not write**; `Drop` **does not delete**. Re-claiming silently is deliberately not an option: the process cannot know whether the file was removed by a hand or by a successor that has not written its own yet. |
+| What the service does | Logs *"another process took over the channels (pid …, started …)"*, stops its loop, releases what it took, prints that it left the other process's file untouched, and exits **4**. It is not a clean stop and no longer reports as one. |
+| Start-up too | The first heartbeat after claiming goes through the same handler. A machine can sleep while a service is starting at boot, and that window is real: the first version of this change failed its own test there, exiting 1 as a generic error. |
+| A real suspend | Wall-clock time keeps moving while a machine sleeps; the process's own monotonic clock does not (on Linux and macOS). `WakeupDetector` reports that disagreement as a gap, and the service records it in the state file as `resumes` / `last_resume_gap_ms`. It is the one thing a heartbeat cannot show: while the process was frozen its own file looked abandoned to anybody who read it. |
+| Not a false alarm | A process that was merely stopped — `SIGSTOP`, a starved container, a debugger pause — sees both clocks advance together, so it is not reported. The distinction is the point: the clock disagreement is the evidence, not the duration. |
+
+### 3. Tests
+
+`crates/ohm-runtime/src/service.rs` (10 new): the detector's cases (8 hours of wall time
+against 1 second of process time is a wake-up; both clocks advancing together is not; the
+first observation is only a baseline; a degenerate gap never reports negative missed time);
+a heartbeat that lost ownership leaves the file **byte for byte** as the successor wrote it;
+a deleted file is reported as lost ownership and is **not** recreated by a heartbeat;
+`Drop` leaves a successor's file and removes its own; a resume is counted and persisted; and
+a state file written before this version still parses — otherwise an upgrade would be a
+process that can never take over a stale file.
+
+`apps/cli/tests/service_resilience.rs` (2 new, both with **two real processes**):
+`SIGSTOP` past the window → a second service takes the channels over and starts running the
+rules → `SIGCONT` → the first one exits 4 by itself, its own log naming the new owner and
+saying the record was left untouched, while the successor's pid and cycle counter carry on
+and it stops cleanly at the end. The second test does the same with the stop landing **in
+the middle of start-up**.
+
+The fixtures now give each service **its own log file**. Two processes were writing one
+file that each new start truncated, so the earlier process's writes landed at its old
+offset; a log assertion therefore passed in isolation and failed under a loaded parallel
+run. A test that cannot reliably read the evidence it asserts on is not evidence.
+
+### 4. The verification pass (all commands re-run at `b0e7ae9`, nothing carried over)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `rustup run 1.98.1 cargo fmt --all -- --check` | exit 0 |
+| 2 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0 |
+| 3 | `cargo test --workspace --locked` | **577 passed, 0 failed**, 50 test-result lines |
+| 4 | `cargo deny check` | advisories ok, bans ok, licenses ok, sources ok |
+| 5 | `scripts/versions.py check --remote --generated` | OK: 13 catalogue entries; application version 0.1.11; published releases verified on GitHub |
+| 5b | `scripts/check-artefact-names.py` | OK: desktop `openhardwareos` and CLI `ohm-cli` agree with their sources; 16 install entries point at a downloadable version |
+| 5c | `unittest discover -s scripts/tests -p 'test_*.py'` | 48 tests, OK |
+| 6 | `npm run typecheck` / `npm test` / `npm run build` | clean / 46 tests / clean |
+| 7 | `scripts/tests/make-acceptance-package.test.sh` | 4 cases, 0 failures |
+| 8 | `scripts/release/test-packaging.ps1` | 6 cases, 0 failures |
+| 8b | `scripts/tests/package-linux.test.sh` | 11 cases, 58 checks, 0 failures |
+| 8c | `scripts/tests/linux-install-doc.test.sh` | 6 cases, 34 checks, 0 failures |
+| 8d | `scripts/tests/verify-linux-readings.test.sh` | 6 cases, 21 checks, 0 failures |
+| 9 | `docs/windows-validation/.../run-script-tests.ps1` | 18 cases, 151 checks, 0 failures (doubles only) |
+| 10 | cross-target `cargo check` for `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu` | exit 0, plus Linux-target Clippy |
+| 11 | `scripts/verify-ipc-roundtrip.sh` | **IPC ROUND TRIP VERIFIED** — 51 `PASS`, 0 `FAIL` |
+| 12 | delivered source packages still verify | every file matches its manifest |
+| 13 | repository hygiene | only `Prospector/` and `k10max-prospector/` untracked, untouched |
+
+`non-zero steps: 0`.
+
+### 5. What round 18 could **not** verify
+
+* **A real suspend.** No machine was suspended. What is verified is the two halves that
+  belong to this program: the detector's criterion as a pure function, and the rule that a
+  woken owner must ask who holds the channels — exercised by two real processes under
+  `SIGSTOP`. **Not** verified: the premise the detector rests on (that Linux and macOS stop
+  the monotonic clock across a suspend while wall time continues), and the kernel path where
+  drivers re-enumerate afterwards. That needs a machine that can sleep.
+* **The firmware-control handover after a takeover.** Recorded as a known gap in
+  `docs/background-service.md` rather than worked around: if the predecessor had switched a
+  `pwm<N>_enable` to manual and remembered the original, and is then killed or taken over
+  while suspended, the successor reads *manual* as the original and will restore that — so
+  firmware control may never come back. Closing it means publishing the taken channels and
+  their original modes in the state file for the successor to adopt; `ServiceState` carries
+  no such fields today, and this round deliberately did not invent a half-protocol for it.
+* **Anything on real hardware.** Unchanged: no fan measured, no `pwm<N>` written, no Windows
+  or Linux run of the desktop application.
+
+### Deliberately **not** done in round 18
+
+No hardware was written to; no autostart entry was created and no global environment value
+was changed; nothing was installed on the host; no licence was approved on the user's behalf
+(ADR 0002 and ADR 0004 remain **Proposed**); `Prospector/` and `k10max-prospector/` were left
+exactly as found. v0.1.11 remains prepared and unpublished.
