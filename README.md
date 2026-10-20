@@ -1,3 +1,7 @@
+<!-- SVENKUNKKA-README-NAV:BEGIN -->
+[中文项目说明](#project-overview-zh) · [English overview](#project-overview-en) · [维护者 X / Maintainer on X](https://x.com/Svenu1s5)
+<!-- SVENKUNKKA-README-NAV:END -->
+
 # OpenHardwareOS
 
 **An open runtime, device layer and automation engine for PC hardware.**
@@ -457,3 +461,30 @@ project requires any of these to be present.
 ## Licence
 
 Apache-2.0. See [`LICENSE`](LICENSE).
+
+
+---
+
+<!-- SVENKUNKKA-PROJECT-INFO:BEGIN -->
+
+<a id="project-overview-zh"></a>
+## 中文项目说明
+
+面向 PC 硬件的本地运行时、设备抽象与自动化引擎。通过适配器读取温度、负载和风扇等状态，并用规则联动设备，提供桌面界面、命令行和模拟硬件环境。
+
+**使用入口：** 先运行 `cargo run -p ohm-cli -- demo --steps 90` 体验模拟散热回路；Windows 安装入口见 [安装说明](docs/windows-install.md)。
+
+**范围说明：** 当前为早期预览；真实风扇控制需逐主板、逐 GPU 验证，模拟测试不能证明设备兼容性。
+
+<a id="project-overview-en"></a>
+## English project overview
+
+A local runtime, device abstraction and automation engine for PC hardware. Adapters expose temperature, load and fan state to rules, a desktop UI, a CLI and simulated hardware.
+
+**Getting started:** Try the simulated cooling loop with `cargo run -p ohm-cli -- demo --steps 90`; see the [Windows installation guide](docs/windows-install.md) for installation.
+
+**Scope:** This is an early preview. Real fan control must be validated per motherboard and GPU; simulation does not establish hardware compatibility.
+
+**仓库维护者 / Repository maintainer:** [SvenKunkka](https://github.com/SvenKunkka) · [X / Twitter](https://x.com/Svenu1s5)
+
+<!-- SVENKUNKKA-PROJECT-INFO:END -->
